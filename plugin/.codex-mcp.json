@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "kenaz": {
+      "command": "kenaz",
+      "args": [
+        "mcp"
+      ],
+      "tools": {
+        "skills_publish": {
+          "approval_mode": "prompt"
+        },
+        "context_share": {
+          "approval_mode": "prompt"
+        },
+        "context_promote": {
+          "approval_mode": "prompt"
+        },
+        "memory_forget": {
+          "approval_mode": "prompt"
+        }
+      }
+    }
+  }
+}

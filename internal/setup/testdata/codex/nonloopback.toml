@@ -1,0 +1,2 @@
+[otel]
+exporter = { otlp-grpc = { endpoint = "https://otel.example.com:4317" } }

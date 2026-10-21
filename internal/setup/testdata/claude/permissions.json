@@ -1,0 +1,1 @@
+{"permissions":{"allow":["Bash(npm run test:*)"],"deny":["Read(./.env)"]},"model":"opus","env":{"ANTHROPIC_SMALL_FAST_MODEL":"haiku","OTEL_LOG_TOOL_DETAILS":"1","OTEL_LOG_USER_PROMPTS":"false","NOTE":"a <b> & c"},"enabledPlugins":{"other@market":true},"statusLine":{"type":"command","command":"~/bin/status"}}

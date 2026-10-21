@@ -1,0 +1,9 @@
+model = "gpt-5-codex"
+
+[otel]
+environment = "dev" # keep me
+exporter = { otlp-http = { endpoint = "http://localhost:9999/v1/logs", protocol = "json" } }
+log_user_prompt = true
+
+[profiles.fast]
+model = "gpt-5-mini"

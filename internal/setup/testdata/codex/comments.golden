@@ -1,0 +1,21 @@
+# Codex config — personal
+model = "gpt-5-codex"   # default model
+approval_policy = "on-request"
+
+[mcp_servers.docs]
+command = "npx"
+args = [
+  "-y",
+  "docs-mcp",
+]
+
+# profiles below
+[profiles.fast]
+model = "gpt-5-mini"
+
+[otel]
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }
+trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }
+log_user_prompt = false
+tool_result = { max_bytes = 0 }

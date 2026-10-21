@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "kenaz": {
+      "command": "kenaz",
+      "args": [
+        "mcp"
+      ],
+      "env": {
+        "KENAZ_ENV": "${user_config.fleet_env}",
+        "KENAZ_ORG_HINT": "${user_config.org_hint}"
+      }
+    }
+  }
+}

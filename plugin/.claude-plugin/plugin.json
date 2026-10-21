@@ -1,0 +1,30 @@
+{
+  "name": "kenaz",
+  "version": "0.3.0",
+  "description": "Kenaz, a Kameas AI product. Connects your Claude Code and Codex sessions to your organization's Kameas Fleet. Claude and Claude Code are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz for Claude Code and Codex is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
+  "author": {
+    "name": "Kameas AI, Inc.",
+    "url": "https://kameas.ai"
+  },
+  "homepage": "https://kameas.ai",
+  "license": "Apache-2.0",
+  "userConfig": {
+    "fleet_env": {
+      "type": "string",
+      "title": "Kameas Fleet environment",
+      "description": "Which Kameas Fleet environment to sign in to.",
+      "options": [
+        "prod",
+        "stage",
+        "dev"
+      ],
+      "default": "prod"
+    },
+    "org_hint": {
+      "type": "string",
+      "title": "Organization hint",
+      "description": "Optional organization hint shown at sign-in.",
+      "required": false
+    }
+  }
+}
