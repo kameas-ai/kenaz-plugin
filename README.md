@@ -5,7 +5,7 @@
 Kenaz for Claude Code and Codex connects your Claude Code and Codex sessions to your organization's Kameas Fleet. You can:
 
 - **Sign in** with your Kameas account, and register this device under a display name you control.
-- **Report session metadata** to your organization's Fleet analytics: session counts and durations, tool names, latency and success, error categories, model names, token usage, and cost when the harness itself reports it (Kenaz does not estimate prices). Prompts, responses, code, file paths and tool output are never sent. Nothing is sent until you sign in yourself and opt in.
+- **Report session metadata** to your organization's Fleet analytics: session counts and durations, tool kinds (built-in tools by name; tools and servers you added are reported only as "mcp" or "other"), latency and success, error categories, model names, token usage, and cost when the harness itself reports it (Kenaz does not estimate prices). Prompts, responses, code, file paths and tool output are never sent. Nothing is sent until you sign in yourself and opt in.
 - **Use your organization's skills**, and share the skills you write.
 - **Search and share team context.**
 - **Remember things across sessions** with on-device memory: your AI tool can save short notes (facts, decisions, conventions, fixes) and find them again later. See [Memory](#memory).
