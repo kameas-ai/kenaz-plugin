@@ -165,14 +165,11 @@ func Open(path string) (*Store, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	f.Close()
-	if err := os.Chmod(path, 0o600); err != nil {
-		return nil, err
-	}
+	// SQLite creates the file. Never open and close it here: closing any
+	// descriptor of a file drops every POSIX lock this process holds on
+	// it, including those of another open Store's connection (overlapping
+	// tool calls each open the store), and two writers would then corrupt
+	// the database.
 	db, err := sql.Open("sqlite", dsn(path, false, 2*time.Second))
 	if err != nil {
 		return nil, err
@@ -181,6 +178,12 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("memory store: %w", err)
+	}
+	// The directory is 0700, so the file is never reachable by others
+	// before this; the journal takes the database file's mode.
+	if err := os.Chmod(path, 0o600); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return &Store{db: db, path: path, now: time.Now}, nil
 }
