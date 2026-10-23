@@ -83,4 +83,7 @@ fresh; mkdir -p "$tmp/r/cmd/$old"; touch "$tmp/r/cmd/$old/main.go"; expect_fail 
 fresh; mkdir -p "$tmp/r/internal/project"; printf 'package project\nconst ServiceName = "%s"\n' "$old" > "$tmp/r/internal/project/encode.go"; python3 "$checks" legacy-name "$tmp/r" >/dev/null
 echo "ok: allowlisted wire constant passes"
 
+# Release verifier regression fixtures.
+bash "$here/scripts/test-verify-release.sh"
+
 echo "test-checks: ok"
