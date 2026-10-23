@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -197,6 +200,36 @@ func TestMemoryDisclosureOnceFromCLI(t *testing.T) {
 	if _, ok := saved["notice"]; ok {
 		t.Fatal("memory_save repeated the disclosure")
 	}
+}
+
+// `kenaz mcp` must not leave goroutines writing into the state directory
+// after it returns. Its daemon pinger used to log "daemon unavailable" to
+// logs/mcp.log a little later, which raced t.TempDir's cleanup
+// ("directory not empty") and made TestMemoryDisclosureOnceFromCLI flaky.
+func TestMCPLeavesNoWriterBehind(t *testing.T) {
+	h := newHarness(t, stub.New())
+	h.mcpCall(t, "memory_save", map[string]any{"title": "t", "body": "b"})
+	before := listTree(t, h.home)
+	time.Sleep(300 * time.Millisecond) // the leaked write landed well within this
+	if after := listTree(t, h.home); !slices.Equal(before, after) {
+		t.Fatalf("state changed after kenaz mcp returned:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
+func listTree(t *testing.T, root string) []string {
+	t.Helper()
+	var out []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		out = append(out, p)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func TestMemoryHelpCarriesNotice(t *testing.T) {

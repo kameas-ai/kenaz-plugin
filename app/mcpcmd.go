@@ -45,7 +45,9 @@ func (l *daemonLink) client(ctx context.Context) *daemon.Client {
 	}
 	c, err := daemon.EnsureRunning(ctx, l.stateDir, l.spawn, 2*time.Second)
 	if err != nil {
-		l.log.Warn("daemon unavailable", "err", err.Error())
+		if ctx.Err() == nil { // shutdown cancels a pending ping: not a daemon fault
+			l.log.Warn("daemon unavailable", "err", err.Error())
+		}
 		return nil
 	}
 	l.c = c
@@ -92,8 +94,13 @@ func runMCP(env Env, args []string) int {
 	link := &daemonLink{stateDir: r.StateDir, spawn: spawn, id: "mcp-" + hex.EncodeToString(idb), log: log}
 
 	ctx, cancel := context.WithCancel(env.Ctx)
-	defer cancel()
+	// The pinger logs through rot. Stop it and wait for it before rot is
+	// closed (defers run in reverse), so no write reopens mcp.log after
+	// runMCP has returned.
+	pingDone := make(chan struct{})
+	defer func() { cancel(); <-pingDone }()
 	go func() {
+		defer close(pingDone)
 		link.ping(ctx)
 		for {
 			select {

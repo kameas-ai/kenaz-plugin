@@ -13,11 +13,15 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # go-version-file honours the toolchain line in go.mod (go1.27.3), so CI
+      # builds and tests with the same Go as release builds.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       # Public CI builds and tests the unofficial (stub) flavor only.
@@ -25,3 +29,67 @@ jobs:
       - run: make check
       - run: make build
       - run: ./bin/kenaz --version | grep -q "unofficial build"
+
+  # Vulnerability gate. Blocks when a vulnerable function is reachable from
+  # this module (govulncheck "called" level) AND a fixed version exists.
+  # Stdlib findings count: their fix is a Go toolchain bump in go.mod.
+  # Reachable findings without a fix, and imported-only or required-only
+  # findings, are listed in the job summary but do not block.
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOVULNCHECK_VERSION: v1.9.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # govulncheck reports stdlib vulnerabilities for the Go it runs with, so
+      # it must be the toolchain release builds use (go.mod toolchain line).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install govulncheck
+        run: |
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Run govulncheck
+        run: |
+          set -euo pipefail
+          mkdir -p .vuln-gate
+          echo "Go $(go env GOVERSION); govulncheck ${GOVULNCHECK_VERSION}"
+          # Text output for the log; it exits 3 on any finding, so do not fail here.
+          govulncheck ./... || true
+          # -format json exits 0 on findings; non-zero means the scan itself
+          # failed (build error, network), which must not pass silently.
+          govulncheck -format json ./... > .vuln-gate/govulncheck.json
+      - name: Evaluate findings
+        run: |
+          set -euo pipefail
+          # One row per vulnerability, at its most severe level: "called" when
+          # trace[0].function is set, otherwise "imported" or "required".
+          rows=$(jq -sc '
+            [ .[] | select(.finding) | .finding
+              | { id: .osv,
+                  fixed: (.fixed_version // ""),
+                  pkg: (.trace[0].package // .trace[0].module // ""),
+                  level: (if (.trace[0].function // "") != "" then "called"
+                          elif (.trace[0].package // "") != "" then "imported"
+                          else "required" end) } ]
+            | group_by(.id)
+            | map( (map(select(.level=="called")) | first) // first )
+            | map(. + { blocks: (.level=="called" and .fixed != "") })
+          ' .vuln-gate/govulncheck.json)
+          {
+            echo "## govulncheck"
+            echo
+            echo "| ID | Level | Fixed in | Package | Status |"
+            echo "|---|---|---|---|---|"
+            echo "$rows" | jq -r '.[] |
+              "| \(.id) | \(.level) | \(if .fixed=="" then "no fix" else .fixed end) | \(.pkg) | \(if .blocks then "**BLOCKING**" else "report" end) |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+          n=$(echo "$rows" | jq '[.[] | select(.blocks)] | length')
+          echo "$rows" | jq -r '.[] | select(.blocks) |
+            "::error title=govulncheck \(.id)::reachable vulnerability \(.id) in \(.pkg); fixed in \(.fixed)"'
+          echo "Blocking findings: $n" >> "$GITHUB_STEP_SUMMARY"
+          [ "$n" -eq 0 ]
