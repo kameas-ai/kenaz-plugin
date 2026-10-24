@@ -1,6 +1,6 @@
 {
   "name": "@kameas/kenaz-opencode",
-  "version": "0.3.1",
+  "version": "0.4.1",
   "description": "Kenaz adapter for OpenCode: reports metadata-only session telemetry to the local Kenaz relay.",
   "license": "Apache-2.0",
   "author": "Kameas AI, Inc.",

@@ -15,7 +15,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/bundle"
 )
 
-const testBundleVersion = "0.3.1"
+const testBundleVersion = "0.4.1"
 
 func copyTree(t *testing.T, src, dst string) {
 	t.Helper()
