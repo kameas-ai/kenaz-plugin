@@ -163,7 +163,7 @@ func SpawnSelf(stateDir string, env fleetapi.Env) SpawnFunc {
 			return err
 		}
 		defer out.Close()
-		cmd := exec.Command(exe, "daemon", "--env", string(env))
+		cmd := spawnCommand(exe, stateDir, env)
 		cmd.Stdout, cmd.Stderr, cmd.Stdin = out, out, nil
 		detach(cmd)
 		if err := cmd.Start(); err != nil {
@@ -171,6 +171,18 @@ func SpawnSelf(stateDir string, env fleetapi.Env) SpawnFunc {
 		}
 		return cmd.Process.Release()
 	}
+}
+
+// spawnCommand is the detached daemon's command. It runs in the state
+// directory, never in the spawner's working directory: an MCP host may start
+// kenaz from inside a versioned install folder (Claude Desktop runs extensions
+// from theirs), and a long-lived relay whose working directory is that folder
+// would keep it in use, which on Windows blocks the host's update or
+// uninstall.
+func spawnCommand(exe, stateDir string, env fleetapi.Env) *exec.Cmd {
+	cmd := exec.Command(exe, "daemon", "--env", string(env))
+	cmd.Dir = stateDir
+	return cmd
 }
 
 // IsNotRunning reports whether err means no daemon is reachable.

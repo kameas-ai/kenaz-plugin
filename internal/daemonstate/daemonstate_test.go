@@ -68,3 +68,18 @@ func TestSessionHash(t *testing.T) {
 		t.Fatalf("bad hash %q", h)
 	}
 }
+
+// the Windows state directory is %LocalAppData%\kameas\kenaz\state\<env>,
+// the same place config.DefaultPaths uses.
+func TestStateDirWindows(t *testing.T) {
+	r := Resolver{Home: filepath.Join("C:", "Users", "u"), GOOS: "windows", Getenv: func(k string) string {
+		if k == "LocalAppData" {
+			return filepath.Join("C:", "Users", "u", "AppData", "Local")
+		}
+		return ""
+	}}
+	want := filepath.Join("C:", "Users", "u", "AppData", "Local", "kameas", "kenaz", "state", "prod")
+	if got := r.StateDir("prod"); got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}

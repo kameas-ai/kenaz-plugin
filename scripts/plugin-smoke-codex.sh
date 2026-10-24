@@ -9,6 +9,6 @@ export CODEX_HOME="$(mktemp -d)"
 trap 'rm -rf "$CODEX_HOME"' EXIT
 printf '%s' "${OPENAI_API_KEY:?set OPENAI_API_KEY}" | codex login --with-api-key
 codex plugin marketplace add "$repo"
-codex plugin install kenaz@kenaz
+codex plugin add kenaz@kenaz   # Codex has no `plugin install` (0.140 through 0.164 checked)
 codex exec --skip-git-repo-check "Call the kenaz fleet_status tool and print its raw result." | tee /dev/stderr | grep -qi 'fleet'
 echo "plugin-smoke-codex: ok"

@@ -75,6 +75,7 @@ type Command struct {
 
 // commands is the subcommand table. Extend it to add a subcommand.
 var commands = map[string]Command{
+	"init":     {"Set everything up: PATH, sign-in, and every app found", runInit},
 	"login":    {"Sign in to Kameas Fleet", runLogin},
 	"logout":   {"Sign out and purge local queued data", runLogout},
 	"memory":   {"Manage memories (on this device; optional sync to your Kameas Fleet account)", runMemory},
@@ -84,7 +85,7 @@ var commands = map[string]Command{
 	"daemon":   {"Run the on-demand relay (started by mcp and hooks)", runDaemon},
 	"mcp":      {"Run the MCP stdio server (started by the harness)", runMCP},
 	"hook":     {"Harness hook entry point (SessionStart/SessionEnd)", runHook},
-	"setup":    {"Configure Claude Code or Codex to use Kameas Fleet", runSetup},
+	"setup":    {"Configure one app (Claude Code or Codex) to use Kameas Fleet", runSetup},
 	"skills":   {"List or sync shared Agent Skills from Kameas Fleet", runSkills},
 	"device":   {"Show or rename this device's display name", runDevice},
 	"licenses": {"Print license and notice texts", runLicenses},

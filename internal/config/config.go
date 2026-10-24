@@ -39,6 +39,9 @@ const (
 type Paths struct {
 	ConfigDir string
 	StateRoot string
+	// LegacyStateRoot is where an earlier release kept StateRoot (Windows:
+	// %AppData%\kameas\kenaz\state); "" when it never moved.
+	LegacyStateRoot string
 }
 
 // ConfigFile returns the config.toml path.
@@ -51,11 +54,65 @@ func (p Paths) State(env fleetapi.Env) string { return filepath.Join(p.StateRoot
 //
 //	macOS:   ~/Library/Application Support/kameas/kenaz/{,state/}
 //	Linux:   $XDG_CONFIG_HOME/kameas/kenaz, $XDG_STATE_HOME/kameas/kenaz
-//	Windows: %AppData%\kameas\kenaz\{,state\}
+//	Windows: %AppData%\kameas\kenaz (config.toml), %LocalAppData%\kameas\kenaz\state
+//
+// On Windows the state (queued uploads, sign-in files, memory, the relay's
+// daemon.json) is machine-local, so it lives in %LocalAppData% and never
+// roams with a roaming profile; config.toml (the env choice) may roam.
+// Releases up to 0.4.x kept the state in %AppData%; DefaultPaths moves it
+// on first use (see MigrateLegacyState).
 //
 // KENAZ_HOME overrides both roots (tests, in-VM mode).
 func DefaultPaths() (Paths, error) {
-	return pathsFor(runtime.GOOS, os.Getenv, os.UserHomeDir, os.UserConfigDir)
+	p, err := pathsFor(runtime.GOOS, os.Getenv, os.UserHomeDir, os.UserConfigDir)
+	if err != nil {
+		return p, err
+	}
+	return p.MigrateLegacyState(), nil
+}
+
+// MigrateLegacyState moves LegacyStateRoot to StateRoot when only the
+// legacy one exists, and returns the paths to use:
+//
+//   - no legacy state: p unchanged;
+//   - legacy state only: it is renamed to StateRoot (one atomic rename on
+//     the same volume). If the rename fails because another process moved
+//     it first, StateRoot is used; if it fails while the legacy state is
+//     still there (a running relay holds files open), this process keeps
+//     using the legacy root and the move is retried on the next run;
+//   - both exist: StateRoot wins and the legacy root is left untouched.
+func (p Paths) MigrateLegacyState() Paths {
+	if p.LegacyStateRoot == "" || p.LegacyStateRoot == p.StateRoot {
+		return p
+	}
+	if !isDir(p.LegacyStateRoot) || exists(p.StateRoot) {
+		return p
+	}
+	if err := os.MkdirAll(filepath.Dir(p.StateRoot), 0o700); err == nil {
+		if err := os.Rename(p.LegacyStateRoot, p.StateRoot); err == nil {
+			return p
+		}
+	}
+	// The rename failed. If another kenaz process (kenaz mcp and the
+	// SessionStart hook start together after an upgrade) moved it first,
+	// StateRoot exists now and is the one to use. Only when the legacy
+	// state is still there (its files are open somewhere) does this process
+	// keep using it, and the move is retried next time.
+	if exists(p.StateRoot) || !isDir(p.LegacyStateRoot) {
+		return p
+	}
+	p.StateRoot = p.LegacyStateRoot
+	return p
+}
+
+func isDir(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
+func exists(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
 }
 
 func pathsFor(goos string, getenv func(string) string, home, userConfig func() (string, error)) (Paths, error) {
@@ -78,6 +135,21 @@ func pathsFor(goos string, getenv func(string) string, home, userConfig func() (
 			st = filepath.Join(hd, ".local", "state")
 		}
 		return Paths{ConfigDir: filepath.Join(cfg, sub), StateRoot: filepath.Join(st, sub)}, nil
+	case "windows":
+		base, err := userConfig() // %AppData%
+		if err != nil {
+			return Paths{}, err
+		}
+		local := getenv("LocalAppData")
+		if local == "" {
+			hd, err := home()
+			if err != nil {
+				return Paths{}, err
+			}
+			local = filepath.Join(hd, "AppData", "Local")
+		}
+		root := filepath.Join(base, sub)
+		return Paths{ConfigDir: root, StateRoot: filepath.Join(local, sub, "state"), LegacyStateRoot: filepath.Join(root, "state")}, nil
 	default:
 		base, err := userConfig()
 		if err != nil {

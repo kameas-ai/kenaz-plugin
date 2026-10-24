@@ -104,11 +104,22 @@ func NewGroup(o Options) mcp.Group {
 
 // defaultWorkdir prefers the project directory Claude Code exports, then
 // the working directory both harnesses start MCP servers in.
-func defaultWorkdir() string {
-	if d := os.Getenv("CLAUDE_PROJECT_DIR"); d != "" {
+func defaultWorkdir() string { return workdir(os.Getenv, os.Getwd, os.UserHomeDir) }
+
+// workdir: Claude Desktop chat has no project and starts extensions in its
+// own working directory ("/" on macOS, the versioned app folder on
+// Windows, which changes with every update), so there the home directory
+// stands in as the one stable "current project".
+func workdir(getenv func(string) string, getwd, home func() (string, error)) string {
+	if d := getenv("CLAUDE_PROJECT_DIR"); d != "" {
 		return d
 	}
-	d, _ := os.Getwd()
+	if strings.TrimSpace(getenv(mcp.HostEnvVar)) == mcp.HostClaudeDesktop {
+		if h, err := home(); err == nil && h != "" {
+			return h
+		}
+	}
+	d, _ := getwd()
 	return d
 }
 
@@ -433,7 +444,7 @@ func userErr(err error) *ToolError {
 	case errors.Is(err, memory.ErrNotFound):
 		return &ToolError{Code: "not_found", Message: err.Error()}
 	case errors.Is(err, memory.ErrLocalProfile):
-		return &ToolError{Code: "not_signed_in", Message: err.Error()}
+		return &ToolError{Code: "not_signed_in", Message: err.Error() + ". " + mcp.SignInRemedy()}
 	case errors.Is(err, memory.ErrSyncUnavailable):
 		return &ToolError{Code: "sync_unavailable", Message: err.Error()}
 	case errors.Is(err, memory.ErrNotBlocked), memory.IsUserError(err):

@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/kameas-ai/kenaz-plugin/internal/apps"
 	"github.com/kameas-ai/kenaz-plugin/internal/bundle"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemonstate"
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
@@ -83,6 +85,20 @@ type Options struct {
 	// (`claude`, `codex`) for bundle registration; nil uses exec.
 	BundleRoot string
 	HostRun    Runner
+	// BundleExplicit is true when --bundle named the bundle: it then
+	// replaces the public GitHub marketplace instead of adopting it.
+	BundleExplicit bool
+	// HostBins maps "claude" and "codex" to the executable to run when the
+	// name is not on PATH ("" or absent: run the name).
+	HostBins map[string]string
+	// KenazOnPath reports whether `kenaz` resolves on PATH (the GitHub
+	// plugin launches it from there); nil skips the check.
+	KenazOnPath func() bool
+	// StartRelay starts the relay for this environment when it is not
+	// running (nil: setup asks the user to start it).
+	StartRelay func() error
+	// RelayWait bounds how long setup waits for a relay it started.
+	RelayWait time.Duration
 
 	// System-wide managed files, read (never written) by doctor.
 	ClaudeManagedPath string
@@ -145,7 +161,10 @@ func defaultOptions(env string, stdout, stderr io.Writer, resolve StateDirResolv
 		// so upgrades, rollbacks and pruning reach the hosts.
 		bin = bundle.StablePath(bin)
 	}
+	probe := apps.System()
 	return Options{
+		HostBins:          map[string]string{"claude": probe.ClaudeCLI(), "codex": probe.CodexCLI()},
+		KenazOnPath:       func() bool { _, err := exec.LookPath("kenaz"); return err == nil },
 		ClaudeDir:         claudeDir,
 		CodexDir:          codexDir,
 		OpenCodeDir:       openCodeConfigDir(r.Home, os.Getenv),
@@ -196,18 +215,31 @@ const (
 )
 
 const usageOpenCode = `usage:
-  kenaz setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR]
-  kenaz setup opencode [--yes] [--dry-run] [--env E] [--adapter DIR] [--bundle DIR]
+  kenaz setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
+  kenaz setup opencode [--yes] [--dry-run] [--env E] [--adapter DIR] [--bundle DIR | --no-bundle]
   kenaz setup --undo claude|codex|opencode [--yes] [--dry-run] [--env E]
   kenaz setup print-managed claude|codex [--port N] [--raw]
   kenaz setup doctor [--env E]
-`
+
+To set up PATH, sign-in and every app at once, run kenaz init.
+` + usageMarketplace
 
 const usageBase = `usage:
-  kenaz setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR]
+  kenaz setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
   kenaz setup --undo claude|codex [--yes] [--dry-run] [--env E]
   kenaz setup print-managed claude|codex [--port N] [--raw]
   kenaz setup doctor [--env E]
+
+To set up PATH, sign-in and every app at once, run kenaz init.
+` + usageMarketplace
+
+const usageMarketplace = `
+Plugin source (Claude Code, Codex): a downloaded kenaz registers its own
+plugin by absolute path. If the "kenaz" marketplace from GitHub
+(kameas-ai/kenaz-plugin) is already registered, setup uses that instead,
+which starts kenaz from PATH. --bundle DIR registers that bundle's plugin
+and replaces the GitHub marketplace; --no-bundle never registers a bundle.
+Setup starts the Kenaz relay if it is not running.
 `
 
 // Usage is the setup help for this build (OpenCode only when enabled).
@@ -225,6 +257,32 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 // CommandWith is Command with the relay's state-dir resolver.
 func CommandWith(ctx context.Context, args []string, stdout, stderr io.Writer, resolve StateDirResolver) int {
+	return CommandHooks(ctx, args, stdout, stderr, Hooks{Resolve: resolve})
+}
+
+// Hooks are the app's seams into `kenaz setup`.
+type Hooks struct {
+	Resolve StateDirResolver
+	// StartRelay starts the relay for the environment whose state
+	// directory is stateDir (see Options.StartRelay).
+	StartRelay func(stateDir string) error
+	// In replaces stdin for confirmations (kenaz init shares one reader
+	// across steps); Interactive then says whether it is a terminal.
+	In          io.Reader
+	Interactive *bool
+	// Result receives Apply's or Undo's error (nil on success), so a
+	// caller can tell a declined change from a failure.
+	Result func(error)
+}
+
+// Diff is the unified diff setup prints before a change.
+func Diff(path string, before, after []byte) string {
+	return unifiedDiff(path, path+" (after kenaz)", string(before), string(after))
+}
+
+// CommandHooks is Command with every app seam.
+func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, hk Hooks) int {
+	resolve := hk.Resolve
 	fl := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fl.SetOutput(stderr)
 	yes := fl.Bool("yes", false, "apply without asking")
@@ -275,6 +333,20 @@ func CommandWith(ctx context.Context, args []string, stdout, stderr io.Writer, r
 	}
 	opts.Yes, opts.DryRun, opts.Traces = *yes, *dry, *traces
 	opts.FleetEnv = *env
+	if hk.In != nil {
+		opts.In = hk.In
+	}
+	if hk.Interactive != nil {
+		opts.Interactive = *hk.Interactive
+	}
+	if hk.StartRelay != nil {
+		dir := opts.StateDir
+		opts.StartRelay = func() error { return hk.StartRelay(dir) }
+	}
+	if *bundleDir != "" && *noBundle {
+		fmt.Fprintln(stderr, "kenaz setup: --bundle and --no-bundle cannot be used together")
+		return exitUsage
+	}
 	if *adapter != "" {
 		a, err := filepath.Abs(*adapter)
 		if err != nil {
@@ -286,6 +358,7 @@ func CommandWith(ctx context.Context, args []string, stdout, stderr io.Writer, r
 	switch {
 	case *bundleDir != "":
 		opts.BundleRoot = bundle.StableRoot(*bundleDir)
+		opts.BundleExplicit = true
 	case !*noBundle:
 		opts.BundleRoot = DetectBundle(opts.KenazBin)
 	}
@@ -295,7 +368,15 @@ func CommandWith(ctx context.Context, args []string, stdout, stderr io.Writer, r
 	}
 
 	if len(pos) == 1 && pos[0] == "doctor" {
-		return printDoctor(stdout, Doctor(ctx, opts, ExecRunner))
+		// Run the same claude and codex setup would (PATH, or the copy a
+		// desktop app ships).
+		run := func(ctx context.Context, name string, args ...string) (string, error) {
+			if p := opts.HostBins[name]; p != "" {
+				name = p
+			}
+			return ExecRunner(ctx, name, args...)
+		}
+		return printDoctor(stdout, Doctor(ctx, opts, run))
 	}
 	if len(pos) != 1 {
 		fmt.Fprint(stderr, Usage())
@@ -310,6 +391,9 @@ func CommandWith(ctx context.Context, args []string, stdout, stderr io.Writer, r
 		err = Undo(opts, h)
 	} else {
 		err = Apply(opts, h)
+	}
+	if hk.Result != nil {
+		hk.Result(err)
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "kenaz setup:", err)
@@ -339,10 +423,7 @@ func Apply(o Options, h harness) error {
 			return err
 		}
 	} else {
-		st, err := daemonstate.Read(o.StateDir)
-		if errors.Is(err, daemonstate.ErrNoDaemon) {
-			return errors.New("the Kenaz relay has not started yet, so its port is unknown. Start a harness session with the plugin installed (or run `kenaz daemon`), then re-run setup")
-		}
+		st, err := o.relayState()
 		if err != nil {
 			return err
 		}
@@ -362,9 +443,36 @@ func Apply(o Options, h harness) error {
 		return err
 	}
 
-	// Claude Code and Codex from a bundle: plan the plugin registration.
+	// Claude Code and Codex: which plugin registration to use. The public
+	// GitHub marketplace, when the user already registered it, is adopted
+	// rather than replaced, unless --bundle asked for this download's copy.
 	var cmds [][]string
 	var reg *BundleReg
+	var adopt *Adopted
+	var mk marketplace
+	if h != harnessOpenCode {
+		mk = o.kenazMarketplace(h)
+	}
+	if bundle != nil && h != harnessOpenCode && mk.official() && !o.BundleExplicit {
+		fmt.Fprintf(o.Out, "%s already has the Kenaz plugin marketplace from GitHub (%s); setup uses it instead of registering this download's copy. Pass --bundle to replace it.\n", h.label(), OfficialRepo)
+		bundle = nil
+	}
+	if bundle == nil && h != harnessOpenCode && mk.official() {
+		adopt = &Adopted{Source: mk.Remote}
+		if prev != nil && prev.Adopted != nil {
+			adopt.InstalledPlugin = prev.Adopted.InstalledPlugin
+		}
+		switch {
+		case !mk.Installed:
+			cmds = [][]string{installCmd(h)}
+			adopt.InstalledPlugin = true
+		case !mk.Enabled:
+			// Installed by the user and turned off: their choice. Setup
+			// neither re-enables it nor, on --undo, uninstalls it.
+			fmt.Fprintf(o.Err, "warning: the Kenaz plugin (%s) is installed in %s but turned off, so it will not run. %s\n", bundlePluginID, h.label(), enableHint(h))
+		}
+		o.warnNotOnPath(h)
+	}
 	if bundle != nil && h != harnessOpenCode {
 		rendered := o.renderDir(bundle)
 		digest, err := renderPlugin(bundle, rendered, false)
@@ -375,10 +483,16 @@ func Apply(o Options, h harness) error {
 		if prev != nil {
 			prevReg = prev.Bundle
 		}
-		if cmds, err = o.planRegistration(h, bundle, rendered, digest, prevReg); err != nil {
+		if cmds, err = o.planRegistration(h, mk, rendered, digest, prevReg); err != nil {
 			return err
 		}
 		reg = &BundleReg{Root: bundle.Root, Version: bundle.Version, Rendered: rendered, Digest: digest}
+		switch {
+		case mk.official():
+			reg.Replaced = mk.Remote
+		case prevReg != nil:
+			reg.Replaced = prevReg.Replaced
+		}
 	}
 
 	next, fs, changed, err := o.applyKeys(h, cur, port, oc, prev)
@@ -390,7 +504,11 @@ func Apply(o Options, h harness) error {
 		return nil
 	}
 	if len(cmds) > 0 {
-		fmt.Fprintf(o.Out, "Setup will register the Kenaz plugin from %s:\n", bundle.Root)
+		if reg != nil {
+			fmt.Fprintf(o.Out, "Setup will register the Kenaz plugin from %s:\n", bundle.Root)
+		} else {
+			fmt.Fprintf(o.Out, "Setup will install the Kenaz plugin from the %q marketplace you already registered:\n", bundleMarketplace)
+		}
 		for _, c := range cmds {
 			fmt.Fprintf(o.Out, "  %s %s\n", hostCLI(h), strings.Join(c, " "))
 		}
@@ -425,8 +543,10 @@ func Apply(o Options, h harness) error {
 		}
 	}
 	if len(cmds) > 0 {
-		if _, err := renderPlugin(bundle, reg.Rendered, true); err != nil {
-			return err
+		if reg != nil {
+			if _, err := renderPlugin(bundle, reg.Rendered, true); err != nil {
+				return err
+			}
 		}
 		if err := o.runAll(h, cmds); err != nil {
 			return err
@@ -444,8 +564,11 @@ func Apply(o Options, h harness) error {
 			cur = next
 		}
 	}
-	if reg != nil {
-		fs.Bundle = reg
+	switch {
+	case reg != nil:
+		fs.Bundle, fs.Adopted = reg, nil
+	case adopt != nil:
+		fs.Bundle, fs.Adopted = nil, adopt
 	}
 	final := next
 	if len(cmds) > 0 {
@@ -466,8 +589,11 @@ func Apply(o Options, h harness) error {
 		fmt.Fprintf(o.Out, "Configured OpenCode to load the Kenaz adapter and the kenaz MCP server (%s). Restart OpenCode to pick it up.\n", path)
 		return nil
 	}
-	if reg != nil {
+	switch {
+	case reg != nil:
 		fmt.Fprintf(o.Out, "Registered the Kenaz plugin from %s in %s (launching %s).\n", bundle.Root, h.label(), bundle.Exe)
+	case adopt != nil:
+		fmt.Fprintf(o.Out, "%s uses the Kenaz plugin from GitHub (%s), which launches kenaz from PATH.\n", h.label(), OfficialRepo)
 	}
 	fmt.Fprintf(o.Out, "Configured %s to send telemetry to the Kenaz relay on 127.0.0.1:%d. Restart running sessions to pick it up.\n", h.label(), port)
 	return nil
@@ -567,6 +693,26 @@ func Undo(o Options, h harness) error {
 	// any host CLI touches it.
 	untouched := exists && sha(cur) == fs.WrittenSHA256
 
+	var pluginErr error
+	if fs.Adopted != nil && fs.Adopted.InstalledPlugin && h != harnessOpenCode {
+		c := uninstallCmd(h)
+		fmt.Fprintf(o.Out, "Setup will uninstall the Kenaz plugin it installed from the %q marketplace (the marketplace itself stays registered):\n  %s %s\n", bundleMarketplace, hostCLI(h), strings.Join(c, " "))
+		if o.DryRun {
+			fmt.Fprintln(o.Out, "(dry run: nothing run)")
+		} else {
+			if err := o.confirmRun(); err != nil {
+				return err
+			}
+			if err := o.run(h, c); err != nil {
+				// Keep restoring the configuration, then report it.
+				pluginErr = fmt.Errorf("the Kenaz plugin may still be installed (%v); remove it with `%s %s`", err, hostCLI(h), strings.Join(c, " "))
+				fmt.Fprintln(o.Err, "warning:", pluginErr)
+			}
+			if cur, exists, err = readFile(fs.Path); err != nil {
+				return err
+			}
+		}
+	}
 	if fs.Bundle != nil && h != harnessOpenCode {
 		cmds := unregisterCmds(h)
 		fmt.Fprintf(o.Out, "Setup will remove the Kenaz plugin registered from %s:\n", fs.Bundle.Root)
@@ -585,10 +731,16 @@ func Undo(o Options, h harness) error {
 			}
 			_ = os.RemoveAll(fs.Bundle.Rendered)
 		}
+		if fs.Bundle.Replaced != "" {
+			fmt.Fprintf(o.Out, "Setup had replaced the %q marketplace from %s. To use it again: %s plugin marketplace add %s\n", bundleMarketplace, fs.Bundle.Replaced, hostCLI(h), OfficialRepo)
+		}
 	}
 	if !exists {
 		fmt.Fprintf(o.Err, "warning: %s no longer exists; forgetting setup state\n", fs.Path)
-		return o.forget(state, h, fs)
+		if err := o.forget(state, h, fs); err != nil {
+			return err
+		}
+		return pluginErr
 	}
 
 	var next []byte
@@ -648,7 +800,7 @@ func Undo(o Options, h harness) error {
 		return err
 	}
 	fmt.Fprintf(o.Out, "Restored %s.\n", fs.Path)
-	return nil
+	return pluginErr
 }
 
 // confirmRun asks before running host commands (same rules as confirm).
@@ -732,4 +884,60 @@ func (o Options) openCodePreflight() (openCodeConfig, error) {
 		return openCodeConfig{}, errors.New("cannot locate the OpenCode config directory or the relay state directory")
 	}
 	return openCodeConfig{Bin: o.KenazBin, AdapterDir: o.AdapterDir, StateDir: o.StateDir, Env: o.FleetEnv}, nil
+}
+
+// relayState returns the running relay's state. When the relay has not
+// started (or has exited) and o.StartRelay is set, setup starts it and
+// waits for it to write daemon.json.
+func (o Options) relayState() (daemonstate.State, error) {
+	st, err := daemonstate.Read(o.StateDir)
+	if err == nil || !errors.Is(err, daemonstate.ErrNoDaemon) {
+		return st, err
+	}
+	if o.StartRelay == nil {
+		return st, errors.New("the Kenaz relay has not started yet, so its port is unknown. Run `kenaz login` (or `kenaz daemon`), then re-run setup")
+	}
+	if o.DryRun {
+		return st, errors.New("the Kenaz relay is not running and a dry run does not start it. Run `kenaz login` (or set up without --dry-run)")
+	}
+	fmt.Fprintln(o.Out, "Starting the Kenaz relay...")
+	if err := o.StartRelay(); err != nil {
+		return st, fmt.Errorf("starting the Kenaz relay: %w", err)
+	}
+	wait := o.RelayWait
+	if wait <= 0 {
+		wait = 10 * time.Second
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		st, err = daemonstate.Read(o.StateDir)
+		if err == nil || !errors.Is(err, daemonstate.ErrNoDaemon) {
+			return st, err
+		}
+		if time.Now().After(deadline) {
+			return st, fmt.Errorf("the Kenaz relay did not start within %s; see %s, then re-run setup", wait, filepath.Join(o.StateDir, "logs", "daemon.out"))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// warnNotOnPath warns when the adopted GitHub plugin would not find
+// `kenaz` on PATH.
+func (o Options) warnNotOnPath(h harness) {
+	if o.KenazOnPath == nil || o.KenazOnPath() {
+		return
+	}
+	dir := ""
+	if o.KenazBin != "" {
+		dir = filepath.Dir(o.KenazBin)
+	}
+	fmt.Fprintf(o.Err, "warning: the Kenaz plugin from GitHub starts `kenaz` from PATH, and kenaz is not on PATH. Run `kenaz init` to add %s to PATH, then restart %s.\n", dir, h.label())
+}
+
+// enableHint says how to turn the plugin back on in h.
+func enableHint(h harness) string {
+	if h == harnessClaude {
+		return "Turn it on with `claude plugin enable " + bundlePluginID + "`."
+	}
+	return "Turn it on by setting enabled = true under [plugins.\"" + bundlePluginID + "\"] in ~/.codex/config.toml (or in Codex's /plugins)."
 }

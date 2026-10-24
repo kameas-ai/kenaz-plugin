@@ -87,6 +87,18 @@ func doctorBundle(o Options) []Check {
 	var cs []Check
 	for _, h := range []harness{harnessClaude, harnessCodex} {
 		fs := state.get(h)
+		if fs != nil && fs.Adopted != nil {
+			mk := o.kenazMarketplace(h)
+			switch {
+			case !mk.official() || !mk.Enabled:
+				cs = append(cs, Check{h.label(), "warn", "the Kenaz plugin from GitHub is no longer registered or enabled; re-run setup"})
+			case o.KenazOnPath != nil && !o.KenazOnPath():
+				cs = append(cs, Check{h.label(), "warn", "the Kenaz plugin from GitHub starts kenaz from PATH, and kenaz is not on PATH; run `kenaz init`"})
+			default:
+				cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin from GitHub (%s), launching kenaz from PATH", OfficialRepo)})
+			}
+			continue
+		}
 		if fs == nil || fs.Bundle == nil {
 			continue
 		}

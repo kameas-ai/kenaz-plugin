@@ -31,20 +31,65 @@ Each harness exports its own OpenTelemetry to a receiver on `127.0.0.1` inside t
 
 See [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Getting started: `kenaz init`
+
+After you unpack a release archive (or run its `install.sh`), run its `kenaz` by its full path once:
+
+```
+"<archive>/bin/kenaz" init
+```
+
+`kenaz init` sets everything up in one go, asking before every change:
+
+1. **PATH.** If `kenaz` is not on your `PATH` yet, it shows the change and asks `Add <dir> to PATH in <profile>? [y/N]`. On macOS and Linux it adds one marked block (`# >>> kenaz PATH >>>`) to your login shell's profile: `~/.zshrc` (or `$ZDOTDIR/.zshrc`); for bash on macOS the first of `~/.bash_profile`, `~/.bash_login` and `~/.profile` that exists (else a new `~/.bash_profile`), and `~/.bashrc` on Linux; or `~/.config/fish/conf.d/kenaz.fish`. Running it again changes nothing, and a new install directory replaces the block. The profile as it was before kenaz first changed it is kept as `<profile>.kenaz-backup`. A profile that is a symbolic link (dotfiles managers) is edited where the link points, and the link is kept. A profile that is read-only, a broken link, or has a kenaz block with no end marker is left alone, and init prints the line to add yourself. On Windows it adds the folder to the front of your user `Path` (`HKCU\Environment`) unless it is already there, also when written with variables such as `%LOCALAPPDATA%`. For an installer-managed install it adds `install/current/bin`, so upgrades keep working. With `--no-path` it changes nothing and prints the line to add. Open a new terminal afterwards, and quit and reopen Claude Desktop and ChatGPT so they see it.
+2. **Sign-in.** If you are not signed in, it runs `kenaz login`, which also starts the Kenaz relay.
+3. **Apps.** It looks for every app Kenaz can serve and lists what it found:
+
+   | App | How Kenaz connects |
+   |---|---|
+   | Claude Code (CLI) | `kenaz setup claude` |
+   | Claude Desktop, Code tab | Covered by `kenaz setup claude`: local Code tab sessions run Claude Code and read the same `~/.claude/settings.json` (its `env`, `enabledPlugins` and `extraKnownMarketplaces`). SSH sessions read the remote machine's settings instead. |
+   | Codex CLI | `kenaz setup codex` |
+   | ChatGPT desktop app (Codex) and the Codex desktop app | Covered by `kenaz setup codex`: they run Codex with the same `~/.codex/config.toml`, plugins and marketplaces as the CLI. |
+
+4. **Setup.** It runs `kenaz setup claude` and `kenaz setup codex` for the apps it found (Claude Desktop counts for Claude, and the ChatGPT or Codex desktop app for Codex). Each one shows its diff and asks `Apply? [y/N]`. If `claude` or `codex` is not on `PATH`, setup uses the copy Claude Desktop, ChatGPT or the Codex app ships (macOS).
+5. **Summary.** It ends with `kenaz setup doctor` and `kenaz status`.
+
+`--yes` accepts every change without asking (use it in scripts). `--env`, `--bundle DIR`, `--no-bundle` and `--no-browser` are passed on to setup and login.
+
 ## Installing from a release archive
 
-A release archive is self-contained: `bin/kenaz`, the `plugin/` package with its local marketplace, the OpenCode adapter in `opencode/`, and `bundle.json`, which lists every file's SHA-256. Run setup with the archive's own executable, by its absolute path:
+A release archive is self-contained: `bin/kenaz`, the `plugin/` package with its local marketplace, the OpenCode adapter in `opencode/`, and `bundle.json`, which lists every file's SHA-256. `kenaz init` (above) does everything below for you; to set up one app at a time, run setup with the archive's own executable, by its absolute path:
 
 ```
 "<archive>/bin/kenaz" setup claude|codex
 ```
 
+Setup needs the Kenaz relay's port. If the relay is not running, setup starts it (you no longer need to run `kenaz login` first).
+
 When `kenaz` runs from an archive (or with `--bundle <dir>`), setup first verifies every file against `bundle.json` and refuses a modified, incomplete or mixed-version archive. It then registers the archive so that nothing depends on `PATH`, npm or the network:
 
-- **Claude Code and Codex:** setup writes a per-user copy of the plugin under the Kenaz state directory, with the MCP server and hook commands pointing at the archive's `kenaz` by absolute path, and registers it with `claude plugin marketplace add` / `plugin install` or `codex plugin marketplace add` / `plugin add`. The archive itself is never modified. If a different `kenaz` marketplace is already registered, setup stops and asks you to remove it, so the plugin is never loaded twice.
+- **Claude Code and Codex:** setup writes a per-user copy of the plugin under the Kenaz state directory, with the MCP server and hook commands pointing at the archive's `kenaz` by absolute path, and registers it with `claude plugin marketplace add` / `plugin install` or `codex plugin marketplace add` / `plugin add` (Codex has no `plugin install`). The archive itself is never modified.
 - **OpenCode:** `mcp.kenaz` runs the archive's `kenaz` and the adapter entry points at its `opencode/` directory.
 
-Paths with spaces work. Re-running setup changes nothing; running it from a newer archive re-registers that one. `kenaz setup --undo <host>` removes the registration and restores your configuration, and `kenaz setup doctor` checks it. `--no-bundle` uses `kenaz` from `PATH` instead.
+**Which plugin is used.** If you already registered the `kenaz` marketplace from GitHub (`claude plugin marketplace add kameas-ai/kenaz-plugin`, or the same with `codex`), setup uses it instead of registering the archive's copy, and you don't need `--no-bundle`. If its plugin is not installed yet, setup installs it (`claude plugin install kenaz@kenaz` or `codex plugin add kenaz@kenaz`), and `--undo` uninstalls only what setup installed; the marketplace stays yours. If you installed the plugin and turned it off, setup leaves it off (and installed on `--undo`) and tells you how to turn it on. The GitHub plugin starts `kenaz` from `PATH`, so setup warns when `kenaz` is not on `PATH` (`kenaz init` fixes that). Two flags override this:
+
+- `--bundle <dir>` registers that archive's plugin and replaces the GitHub marketplace. `--undo` removes it and prints the command that adds the GitHub marketplace back.
+- `--no-bundle` never registers an archive and uses `kenaz` from `PATH`.
+
+Any other `kenaz` marketplace that setup did not register (a different repository or a local directory) is refused, and setup asks you to remove it, so the plugin is never loaded twice.
+
+Paths with spaces work. Re-running setup changes nothing; running it from a newer archive re-registers that one. `kenaz setup --undo <host>` removes the registration and restores your configuration, and `kenaz setup doctor` checks it.
+
+### Where Kenaz keeps its files
+
+| | Configuration (`config.toml`) | State (relay, queue, memory, credentials files) |
+|---|---|---|
+| macOS | `~/Library/Application Support/kameas/kenaz` | `~/Library/Application Support/kameas/kenaz/state` |
+| Linux | `$XDG_CONFIG_HOME/kameas/kenaz` | `$XDG_STATE_HOME/kameas/kenaz` |
+| Windows | `%AppData%\kameas\kenaz` | `%LocalAppData%\kameas\kenaz\state` |
+
+`KENAZ_HOME` overrides both. On Windows the state stays on this machine (`%LocalAppData%` never roams with a roaming profile). Releases up to 0.4.x kept it in `%AppData%\kameas\kenaz\state`; the first `kenaz` command of a newer release moves it there. If two `kenaz` processes start at once, both end up on the new location. If another `kenaz` process (such as a running relay) still has files open in the old location, `kenaz` keeps using it and tries again next time. Run `kenaz setup claude` and `kenaz setup codex` once after the move if you installed from an archive, so the hosts point at the plugin copy's new location.
 
 ## OpenCode (preview)
 

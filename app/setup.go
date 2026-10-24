@@ -16,15 +16,30 @@ import (
 // (early access), setup says so on stderr; the local
 // setup result and exit code are unchanged.
 func runSetup(env Env, args []string) int {
+	return runSetupWith(env, args, setup.Hooks{})
+}
+
+// runSetupWith is runSetup with setup seams (kenaz init shares its input
+// reader). Setup starts the relay itself when it is not running,
+// the same way login does.
+func runSetupWith(env Env, args []string, hk setup.Hooks) int {
 	daemonDir := ""
-	code := setup.CommandWith(env.Ctx, args, env.Stdout, env.Stderr, func(e string) (string, error) {
+	var res resolved
+	hk.Resolve = func(e string) (string, error) {
 		r, err := env.resolve(e)
 		if err != nil {
 			return "", err
 		}
-		daemonDir = r.StateDir
+		daemonDir, res = r.StateDir, r
 		return r.StateDir, nil
-	})
+	}
+	hk.StartRelay = func(string) error {
+		if err := env.cred.usable(); err != nil {
+			return err
+		}
+		return res.spawner(env)()
+	}
+	code := setup.CommandHooks(env.Ctx, args, env.Stdout, env.Stderr, hk)
 	if daemonDir != "" {
 		if c := connectDaemon(env.Ctx, daemonDir); c != nil {
 			if st, err := c.Status(env.Ctx); err == nil && st.Enroll == string(enroll.StateEarlyAccess) {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
+	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 )
 
 // Error codes returned in ToolError.Code.
@@ -172,7 +173,7 @@ func MapError(err error) *ToolError {
 		return &ToolError{Code: CodeUnofficialBuild, Message: fleetapi.ErrUnofficialBuild.Error()}
 	}
 	if errors.Is(err, fleetapi.ErrNotSignedIn) {
-		return &ToolError{Code: CodeNotSignedIn, Message: "You are not signed in to Kameas Fleet.", Remedy: "Run /kenaz:login."}
+		return &ToolError{Code: CodeNotSignedIn, Message: "You are not signed in to Kameas Fleet.", Remedy: mcp.SignInRemedy()}
 	}
 	if cat, ok := fleetapi.OrgPaused(err); ok {
 		return orgPaused(cat)
@@ -183,7 +184,7 @@ func MapError(err error) *ToolError {
 		case "org_scope_requires_enterprise":
 			return tierRequired("enterprise")
 		case "user_not_provisioned":
-			return &ToolError{Code: CodeNotSignedIn, Message: "Your account is not provisioned in this Kameas Fleet organization yet.", Remedy: "Ask your administrator to add you, then run /kenaz:login."}
+			return &ToolError{Code: CodeNotSignedIn, Message: "Your account is not provisioned in this Kameas Fleet organization yet.", Remedy: "Ask your administrator to add you, then sign in again. " + mcp.SignInRemedy()}
 		case "lockdown", "emergency_lockdown":
 			return &ToolError{Code: CodeLockdown, Message: "Your organization has paused sharing from Kameas Fleet (emergency lockdown)."}
 		case "tier_required", "capability_required":
@@ -191,7 +192,7 @@ func MapError(err error) *ToolError {
 		}
 		switch ae.Status {
 		case http.StatusUnauthorized:
-			return &ToolError{Code: CodeNotSignedIn, Message: "Your Kameas Fleet session has expired.", Remedy: "Run /kenaz:login."}
+			return &ToolError{Code: CodeNotSignedIn, Message: "Your Kameas Fleet session has expired.", Remedy: mcp.SignInRemedy()}
 		case http.StatusForbidden:
 			return &ToolError{Code: CodeRoleRequired, Need: "admin", Message: "Kameas Fleet refused this for your role.", Remedy: "Ask an organization admin."}
 		}

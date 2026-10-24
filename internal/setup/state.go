@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // State records exactly what setup changed, so --undo can restore it.
@@ -38,6 +39,18 @@ type FileState struct {
 	// Bundle is the plugin registration setup made from a release bundle
 	// (Claude Code, Codex), undone with the host CLI.
 	Bundle *BundleReg `json:"bundle,omitempty"`
+	// Adopted records that setup used the public GitHub marketplace the
+	// user had already registered, instead of a bundle (Claude Code, Codex).
+	Adopted *Adopted `json:"adopted,omitempty"`
+}
+
+// Adopted is an adopted GitHub marketplace registration.
+type Adopted struct {
+	Source string `json:"source"`
+	// InstalledPlugin is true when setup installed (enabled) kenaz@kenaz
+	// from it, so --undo uninstalls the plugin. The marketplace itself is
+	// the user's and is never removed.
+	InstalledPlugin bool `json:"installed_plugin,omitempty"`
 }
 
 // KeyState is one owned key: its value before setup first touched it and
@@ -63,7 +76,38 @@ func loadState(dir string) (*State, error) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, err
 	}
+	for _, fs := range []*FileState{s.Claude, s.Codex, s.OpenCode} {
+		if fs == nil {
+			continue
+		}
+		fs.Snapshot = rebase(dir, fs.Snapshot)
+		if fs.Bundle != nil {
+			if r := rebase(dir, fs.Bundle.Rendered); r != fs.Bundle.Rendered {
+				fs.Bundle.formerRendered, fs.Bundle.Rendered = fs.Bundle.Rendered, r
+			}
+		}
+	}
 	return &s, nil
+}
+
+// rebase maps a path setup recorded under an earlier location of the state
+// directory (it moved, e.g. the Windows state migration) onto dir: a path
+// that no longer exists and has a "setup" component becomes the same
+// tail under dir when that exists. Anything else is returned unchanged.
+func rebase(dir, p string) string {
+	if p == "" || fileExists(p) {
+		return p
+	}
+	sep := string(filepath.Separator)
+	i := strings.LastIndex(p, sep+"setup"+sep)
+	if i < 0 {
+		return p
+	}
+	cand := filepath.Join(dir, p[i+1:])
+	if cand != p && fileExists(cand) {
+		return cand
+	}
+	return p
 }
 
 func saveState(dir string, s *State) error {

@@ -1,6 +1,6 @@
 {
   "name": "kenaz",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Kenaz, a Kameas AI product. Connects your Claude Code and Codex sessions to your organization's Kameas Fleet. Claude and Claude Code are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz for Claude Code and Codex is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
   "author": {
     "name": "Kameas AI, Inc.",

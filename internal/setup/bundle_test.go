@@ -15,7 +15,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/bundle"
 )
 
-const testBundleVersion = "0.4.1"
+const testBundleVersion = "0.5.0"
 
 func copyTree(t *testing.T, src, dst string) {
 	t.Helper()
@@ -312,7 +312,7 @@ func TestBundleClaudeCodexApplyIdempotentUndo(t *testing.T) {
 
 func TestBundleRefusesForeignMarketplace(t *testing.T) {
 	e, f, _ := bundleEnv(t, false)
-	in := []byte(`{"extraKnownMarketplaces": {"kenaz": {"source": {"source": "github", "repo": "kameas-ai/kenaz-plugin"}}}, "enabledPlugins": {"kenaz@kenaz": true}}`)
+	in := []byte(`{"extraKnownMarketplaces": {"kenaz": {"source": {"source": "github", "repo": "example/other-kenaz"}}}, "enabledPlugins": {"kenaz@kenaz": true}}`)
 	os.MkdirAll(e.opts.ClaudeDir, 0o700)
 	os.WriteFile(e.opts.path(harnessClaude), in, 0o600)
 	err := Apply(e.opts, harnessClaude)

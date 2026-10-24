@@ -1,0 +1,134 @@
+{
+  "manifest_version": "0.3",
+  "name": "kenaz",
+  "display_name": "Kenaz",
+  "version": "@VERSION@",
+  "description": "Kenaz, a Kameas AI product. Connects your Claude Code and Codex sessions to your organization's Kameas Fleet. Claude and Claude Code are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz for Claude Code and Codex is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
+  "author": {
+    "name": "Kameas AI, Inc.",
+    "url": "https://kameas.ai"
+  },
+  "homepage": "https://kameas.ai",
+  "server": {
+    "type": "binary",
+    "entry_point": "server/@EXE@",
+    "mcp_config": {
+      "command": "${__dirname}/server/@EXE@",
+      "args": [
+        "mcp"
+      ],
+      "env": {
+        "KENAZ_ENV": "${user_config.fleet_env}",
+        "KENAZ_ORG_HINT": "${user_config.org_hint}",
+        "KENAZ_MCP_HOST": "claude-desktop"
+      }
+    }
+  },
+  "tools": [
+    {
+      "description": "Check a write approval",
+      "name": "approval_status"
+    },
+    {
+      "description": "Share a team note with the whole organization",
+      "name": "context_promote"
+    },
+    {
+      "description": "Read team context",
+      "name": "context_pull"
+    },
+    {
+      "description": "Search team context",
+      "name": "context_search"
+    },
+    {
+      "description": "Share a note with your team",
+      "name": "context_share"
+    },
+    {
+      "description": "Kameas Fleet status",
+      "name": "fleet_status"
+    },
+    {
+      "description": "Export memories",
+      "name": "memory_export"
+    },
+    {
+      "description": "Delete a memory",
+      "name": "memory_forget"
+    },
+    {
+      "description": "Delete all memories",
+      "name": "memory_forget_all"
+    },
+    {
+      "description": "Read memories",
+      "name": "memory_get"
+    },
+    {
+      "description": "List recent memories",
+      "name": "memory_recent"
+    },
+    {
+      "description": "Save a memory",
+      "name": "memory_save"
+    },
+    {
+      "description": "Search memories",
+      "name": "memory_search"
+    },
+    {
+      "description": "Memory sync settings",
+      "name": "memory_sync_settings"
+    },
+    {
+      "description": "Memory sync status",
+      "name": "memory_sync_status"
+    },
+    {
+      "description": "Edit a memory",
+      "name": "memory_update"
+    },
+    {
+      "description": "Install a shared skill",
+      "name": "skills_install"
+    },
+    {
+      "description": "Publish a skill",
+      "name": "skills_publish"
+    },
+    {
+      "description": "Search shared skills",
+      "name": "skills_search"
+    },
+    {
+      "description": "Uninstall a shared skill",
+      "name": "skills_uninstall"
+    },
+    {
+      "description": "List your teams and members",
+      "name": "team_members"
+    }
+  ],
+  "compatibility": {
+    "platforms": [
+      "@PLATFORM@"
+    ]
+  },
+  "user_config": {
+    "fleet_env": {
+      "type": "string",
+      "title": "Kameas Fleet environment",
+      "description": "Which Kameas Fleet environment to sign in to: prod, stage or dev.",
+      "required": false,
+      "default": "prod"
+    },
+    "org_hint": {
+      "type": "string",
+      "title": "Organization hint",
+      "description": "Optional organization hint shown at sign-in.",
+      "required": false,
+      "default": ""
+    }
+  }
+}

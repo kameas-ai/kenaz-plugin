@@ -538,7 +538,7 @@ func installFailure(detail string) string {
 func friendly(err error) error {
 	switch {
 	case errors.Is(err, fleetapi.ErrNotSignedIn):
-		return errors.New("you are not signed in to Kameas Fleet; run `kenaz login`")
+		return errors.New("you are not signed in to Kameas Fleet. " + mcp.SignInRemedy())
 	case errors.Is(err, fleetapi.ErrUnofficialBuild):
 		return fleetapi.ErrUnofficialBuild
 	}
