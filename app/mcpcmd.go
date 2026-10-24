@@ -14,13 +14,14 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/logx"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
+	approvaltools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/approvals"
 	contexttools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/context"
 	skillstools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/skills"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/status"
 )
 
 // mcpGroups is the static tool registry.
-var mcpGroups = []mcp.Group{status.Group, contexttools.Group, skillstools.Group}
+var mcpGroups = []mcp.Group{status.Group, contexttools.Group, skillstools.Group, approvaltools.Group}
 
 // daemonLink keeps the MCP process registered with the daemon and
 // reconnects (spawning if needed) when the daemon goes away.
@@ -120,7 +121,7 @@ func runMCP(env Env, args []string) int {
 	}()
 
 	groups := append(append([]mcp.Group(nil), mcpGroups...), memoryGroup(env))
-	srv := mcp.NewServer(Version, mcp.Deps{Provider: env.Provider, Env: r.Env, Status: link, StateDir: r.StateDir}, groups...)
+	srv := mcp.NewServer(Version, mcp.Deps{Provider: env.Provider, Env: r.Env, Status: link, StateDir: r.StateDir, Approvals: approvalsClient(link.client)}, groups...)
 	serve := env.ServeMCP
 	if serve == nil {
 		serve = mcp.ServeStdio

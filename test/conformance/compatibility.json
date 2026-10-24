@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "status": "unverified",
+  "note": "Exact host releases and artifact digests are recorded from installed, qualified hosts at implementation start and retested at release. Every UNVERIFIED value blocks a pass; do not replace one without the observed evidence.",
+  "recorded_at": "UNVERIFIED",
+  "plugin_candidate": {
+    "version": "UNVERIFIED",
+    "source_commit": "UNVERIFIED",
+    "artifacts": [
+      {
+        "os": "macos-14-arm64",
+        "name": "UNVERIFIED",
+        "sha256": "UNVERIFIED"
+      },
+      {
+        "os": "ubuntu-24.04-amd64",
+        "name": "UNVERIFIED",
+        "sha256": "UNVERIFIED"
+      },
+      {
+        "os": "windows-11-amd64",
+        "name": "UNVERIFIED",
+        "sha256": "UNVERIFIED"
+      }
+    ]
+  },
+  "hosts": [
+    {
+      "id": "claude-code-cli",
+      "name": "Claude Code CLI",
+      "channel": "stable",
+      "version": "UNVERIFIED",
+      "artifacts": [
+        {
+          "os": "macos-14-arm64",
+          "source": "UNVERIFIED",
+          "sha256": "UNVERIFIED"
+        },
+        {
+          "os": "ubuntu-24.04-amd64",
+          "source": "UNVERIFIED",
+          "sha256": "UNVERIFIED"
+        },
+        {
+          "os": "windows-11-amd64",
+          "source": "UNVERIFIED",
+          "sha256": "UNVERIFIED"
+        }
+      ]
+    },
+    {
+      "id": "codex-cli",
+      "name": "Codex CLI",
+      "channel": "stable",
+      "version": "UNVERIFIED",
+      "artifacts": [
+        {
+          "os": "macos-14-arm64",
+          "source": "UNVERIFIED",
+          "sha256": "UNVERIFIED"
+        },
+        {
+          "os": "ubuntu-24.04-amd64",
+          "source": "UNVERIFIED",
+          "sha256": "UNVERIFIED"
+        },
+        {
+          "os": "windows-11-amd64",
+          "source": "UNVERIFIED",
+          "sha256": "UNVERIFIED"
+        }
+      ]
+    }
+  ],
+  "os_targets": [
+    {
+      "id": "macos-14-arm64",
+      "name": "macOS 14+",
+      "build": "UNVERIFIED"
+    },
+    {
+      "id": "ubuntu-24.04-amd64",
+      "name": "Ubuntu 24.04",
+      "build": "UNVERIFIED"
+    },
+    {
+      "id": "windows-11-amd64",
+      "name": "Windows 11",
+      "build": "UNVERIFIED"
+    }
+  ]
+}

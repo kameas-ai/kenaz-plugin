@@ -105,7 +105,11 @@ func Check(ctx context.Context, p fleetapi.Provider, st StatusSource, op Op) (Se
 					return s, &ToolError{Code: CodeLockdown, Message: "Your organization has paused sharing from Kameas Fleet (emergency lockdown).", Remedy: "Ask your Kameas Fleet administrator; reading shared context still works."}
 				}
 				if heldForApproval(ds) {
-					return s, &ToolError{Code: CodeBlockingApproval, Message: "A required approval is pending, so Kameas Fleet is not uploading anything.", Remedy: "Open the Kameas Fleet dashboard to review it (run /kenaz:status for details)."}
+					remedy := "Open the Kameas Fleet dashboard to review it (run /kenaz:status for details)."
+					if ds.DashboardURL != "" {
+						remedy = "Open " + ds.DashboardURL + " to review it (run /kenaz:status for details)."
+					}
+					return s, &ToolError{Code: CodeBlockingApproval, Message: "A required approval is pending, so Kameas Fleet is not uploading anything.", Remedy: remedy}
 				}
 			}
 		}

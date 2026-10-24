@@ -84,7 +84,12 @@ const DefaultIdle = 30 * time.Minute
 var defaultProvider = map[canon.ClientKind]string{
 	canon.ClaudeCode: "anthropic",
 	canon.Codex:      "openai",
+	// OpenCode is multi-provider: the provider comes from each model call.
+	canon.OpenCode: "",
 }
+
+// maxSeen bounds the per-session dedup set (OpenCode call ids).
+const maxSeen = 1024
 
 // State is the persisted per-session state (JSON-safe; no native ids).
 type State struct {
@@ -103,6 +108,9 @@ type State struct {
 	// Fallback holds Codex turn-span usage until close; it is used only if
 	// no sse_event usage arrived for the session.
 	Fallback []Out `json:"fallback,omitempty"`
+	// Seen holds keyed hashes of the call ids already counted for this
+	// session (canon.Event.DedupKey), oldest first, at most maxSeen.
+	Seen []string `json:"seen,omitempty"`
 }
 
 // Aggregator is safe for concurrent use.
@@ -154,6 +162,14 @@ func (a *Aggregator) Ingest(events []canon.Event) []Out {
 			continue
 		}
 		h := a.Hash(e.Client, e.SessionID)
+		if e.Kind == canon.KindSessionEnd {
+			// An end signal closes a live session and never opens one.
+			if st := a.live[h]; st != nil && e.Time.After(st.Last) {
+				st.Last = e.Time
+			}
+			out = append(out, a.close(h)...)
+			continue
+		}
 		if _, ok := a.live[h]; !ok {
 			if _, tomb := a.ended[h]; !tomb {
 				a.local[canon.LocalSessionHash(e.SessionID)] = h
@@ -190,6 +206,12 @@ func (a *Aggregator) ingestOne(h string, e canon.Event) []Out {
 		provider = st.Provider
 	}
 
+	if e.DedupKey != "" && st != nil && (e.Kind == canon.KindModelCall || e.Kind == canon.KindToolCall) {
+		if !st.markSeen(a.dedupHash(h, e.DedupKey)) {
+			return out // a retried export of a call already counted
+		}
+	}
+
 	switch e.Kind {
 	case canon.KindModelCall:
 		mc := a.modelCall(h, provider, e)
@@ -220,6 +242,28 @@ func (a *Aggregator) ingestOne(h string, e canon.Event) []Out {
 			StatusCode: e.StatusCode, Timeout: e.Timeout})
 	}
 	return out
+}
+
+// dedupHash keys a producer call id to the session, so the persisted
+// dedup set holds no native ids.
+func (a *Aggregator) dedupHash(h, key string) string {
+	m := hmac.New(sha256.New, a.cfg.Key)
+	m.Write([]byte("dedup:" + h + ":" + key))
+	return hex.EncodeToString(m.Sum(nil))[:16]
+}
+
+// markSeen records k and reports whether it was new.
+func (st *State) markSeen(k string) bool {
+	for _, s := range st.Seen {
+		if s == k {
+			return false
+		}
+	}
+	st.Seen = append(st.Seen, k)
+	if len(st.Seen) > maxSeen {
+		st.Seen = append([]string(nil), st.Seen[len(st.Seen)-maxSeen:]...)
+	}
+	return true
 }
 
 func (a *Aggregator) modelCall(h, provider string, e canon.Event) Out {

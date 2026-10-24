@@ -14,6 +14,8 @@ type State struct {
 	Version int        `json:"version"`
 	Claude  *FileState `json:"claude,omitempty"`
 	Codex   *FileState `json:"codex,omitempty"`
+	// OpenCode is keyed "opencode" in setup-state.json.
+	OpenCode *FileState `json:"opencode,omitempty"`
 }
 
 // FileState is one harness file's setup record.
@@ -30,6 +32,12 @@ type FileState struct {
 	// or the Codex [otel] table.
 	CreatedContainer bool                `json:"created_container"`
 	Keys             map[string]KeyState `json:"keys"`
+	// Containers lists the top-level OpenCode entries ("mcp", "plugin")
+	// that setup created and may remove again when they end up empty.
+	Containers []string `json:"containers,omitempty"`
+	// Bundle is the plugin registration setup made from a release bundle
+	// (Claude Code, Codex), undone with the host CLI.
+	Bundle *BundleReg `json:"bundle,omitempty"`
 }
 
 // KeyState is one owned key: its value before setup first touched it and
@@ -76,16 +84,22 @@ func saveState(dir string, s *State) error {
 }
 
 func (s *State) get(h harness) *FileState {
-	if h == harnessClaude {
+	switch h {
+	case harnessClaude:
 		return s.Claude
+	case harnessOpenCode:
+		return s.OpenCode
 	}
 	return s.Codex
 }
 
 func (s *State) put(h harness, fs *FileState) {
-	if h == harnessClaude {
+	switch h {
+	case harnessClaude:
 		s.Claude = fs
-	} else {
+	case harnessOpenCode:
+		s.OpenCode = fs
+	default:
 		s.Codex = fs
 	}
 }
@@ -95,6 +109,11 @@ func (fs *FileState) clone() *FileState {
 		return nil
 	}
 	c := *fs
+	c.Containers = append([]string(nil), fs.Containers...)
+	if fs.Bundle != nil {
+		b := *fs.Bundle
+		c.Bundle = &b
+	}
 	c.Keys = make(map[string]KeyState, len(fs.Keys))
 	for k, v := range fs.Keys {
 		c.Keys[k] = v

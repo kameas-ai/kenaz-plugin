@@ -49,3 +49,27 @@ func TestErrorCategory(t *testing.T) {
 		}
 	}
 }
+
+func TestToolNameOpenCode(t *testing.T) {
+	cases := []struct {
+		raw  string
+		mcp  bool
+		want string
+	}{
+		{"bash", false, "Bash"},
+		{"read", false, "Read"},
+		{"webfetch", false, "WebFetch"},
+		{"todowrite", false, "TodoWrite"},
+		{"apply_patch", false, "apply_patch"},
+		{"list", false, "other"},
+		{"Bash", false, "other"}, // OpenCode ids are lower case; anything else is not a built-in
+		{"github_create_issue", true, "mcp"},
+		{"mcp", false, "other"},
+	}
+	for _, c := range cases {
+		got := ToolName(canon.OpenCode, c.raw, c.mcp)
+		if got != c.want || !ToolNames[got] {
+			t.Errorf("ToolName(opencode, %q,%v) = %q, want %q", c.raw, c.mcp, got, c.want)
+		}
+	}
+}

@@ -58,3 +58,22 @@ func TestModelCallsBulletKeepsEditionIDs(t *testing.T) {
 		}
 	}
 }
+
+// TestMemorySyncNoticePinned ties the Memory Sync Notice to its reviewed
+// wording, and checks it states what the lane sends and how to delete it.
+// It must stay a separate edition from the Agent Telemetry Notice.
+func TestMemorySyncNoticePinned(t *testing.T) {
+	e := MemorySync()
+	sum := sha256.Sum256([]byte(e.Text))
+	if got := hex.EncodeToString(sum[:]); got != "46f552ef5d363a792363aebc5594d1ae0c3bc82b0ee79606a6bdc95e420e1a50" {
+		t.Errorf("%s: text changed (sha256 %s); decide wording-only vs new edition, then re-pin", e.ID, got)
+	}
+	if e.ID != "memory-sync/v1" || strings.HasPrefix(e.ID, "agent-telemetry") {
+		t.Fatalf("edition id %q", e.ID)
+	}
+	for _, must := range []string{"text and title", "kenaz memory forget-all", "does not delete what was already synced", "separate from telemetry", "It is off until you turn it on"} {
+		if !strings.Contains(e.Text, must) {
+			t.Errorf("notice lacks %q", must)
+		}
+	}
+}

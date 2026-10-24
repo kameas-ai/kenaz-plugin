@@ -77,7 +77,7 @@ type Command struct {
 var commands = map[string]Command{
 	"login":    {"Sign in to Kameas Fleet", runLogin},
 	"logout":   {"Sign out and purge local queued data", runLogout},
-	"memory":   {"List, search or delete on-device memories (never sent to Kameas)", runMemory},
+	"memory":   {"Manage memories (on this device; optional sync to your Kameas Fleet account)", runMemory},
 	"status":   {"Show sign-in, telemetry and consent state (--json)", runStatus},
 	"optin":    {"Choose which usage data to share (shows the notice)", runOptin},
 	"doctor":   {"Diagnose installation and configuration", runDoctor},
@@ -89,6 +89,9 @@ var commands = map[string]Command{
 	"device":   {"Show or rename this device's display name", runDevice},
 	"licenses": {"Print license and notice texts", runLicenses},
 	"version":  {"Print version and build flavor", runVersion},
+
+	// Approving happens only on the approval page, never in the CLI.
+	"approvals": {"List write requests and open the approval page", runApprovals},
 }
 
 // Main runs the CLI with p and returns the process exit code. SIGINT and

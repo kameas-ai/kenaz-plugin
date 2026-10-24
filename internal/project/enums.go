@@ -21,11 +21,27 @@ var toolAliases = map[string]string{
 	"local_shell": "shell", // Codex
 }
 
+// openCodeAliases maps OpenCode's lower-case built-in tool ids onto the
+// enum. Only OpenCode records use it. Unlisted ids (list, patch, lsp, …)
+// are reported as "other".
+var openCodeAliases = map[string]string{
+	"bash": "Bash", "read": "Read", "edit": "Edit", "write": "Write", "glob": "Glob",
+	"grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Task",
+	"todowrite": "TodoWrite", "skill": "Skill", "apply_patch": "apply_patch",
+}
+
 // ToolName maps a raw harness tool name to the tool-name enum. MCP server and
 // tool names never leave: any MCP tool is "mcp".
 func ToolName(client canon.ClientKind, raw string, isMCP bool) string {
 	if isMCP {
 		return ToolMCP
+	}
+	if client == canon.OpenCode {
+		a, ok := openCodeAliases[raw]
+		if !ok {
+			return ToolOther
+		}
+		return a
 	}
 	if a, ok := toolAliases[raw]; ok {
 		raw = a

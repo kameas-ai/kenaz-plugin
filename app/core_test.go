@@ -239,9 +239,24 @@ func TestDaemonMCPEndToEnd(t *testing.T) {
 	if got["session"] != daemon.SessionSignedIn || got["enroll"] != "enrolled" || got["tier"] != "team" {
 		t.Fatalf("fleet_status = %v", got)
 	}
+	// fleet_status says whether reporting works
+	// (sign-in, consent, queue, receiver port) and per-host setup state.
+	rep, _ := got["reporting"].(map[string]any)
+	if rep == nil || rep["signed_in"] != true || rep["state"] == "" || rep["receiver_port"] == nil || rep["queued"] == nil {
+		t.Fatalf("fleet_status reporting = %v", got["reporting"])
+	}
+	if hosts, _ := got["hosts"].([]any); len(hosts) < 2 {
+		t.Fatalf("fleet_status hosts = %v", got["hosts"])
+	}
+	if got["dashboard_url"] != "https://dev.fleet.kameas.ai/" {
+		t.Fatalf("fleet_status dashboard_url = %v (env dev)", got["dashboard_url"])
+	}
 
-	if code, out, _ := h.run(t, "status"); code != 0 || !strings.Contains(out, "running on 127.0.0.1:") {
+	if code, out, _ := h.run(t, "status"); code != 0 || !strings.Contains(out, "running on 127.0.0.1:") || !strings.Contains(out, "reporting:") || !strings.Contains(out, "receiver 127.0.0.1:") || !strings.Contains(out, "setup claude-code:") {
 		t.Fatalf("status text: %s", out)
+	}
+	if code, out, _ := h.run(t, "doctor"); !strings.Contains(out, "reporting") || !strings.Contains(out, "setup codex") {
+		t.Fatalf("doctor exit=%d: %s", code, out)
 	}
 	if code, _, _ := h.run(t, "logout"); code != 0 {
 		t.Fatalf("logout exit=%d", code)

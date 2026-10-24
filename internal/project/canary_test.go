@@ -50,7 +50,9 @@ func newHarness(t *testing.T, schemaRev int) *harness {
 		Decider:    allowAll{},
 		Options:    func() project.Options { return project.Options{SchemaRev: schemaRev} },
 		Identity:   func() (project.Identity, bool) { return testIdentity, true },
-		Emit:       func(b []fleetapi.ProjectedBatch, _ time.Time) { h.batches = append(h.batches, b...) },
+		Emit: func(b []fleetapi.ProjectedBatch, _ time.Time, _ project.Identity) {
+			h.batches = append(h.batches, b...)
+		},
 	})
 	h.rx = otlprx.New(otlprx.Config{Sink: h.p, SessionEndToken: "tok"})
 	return h

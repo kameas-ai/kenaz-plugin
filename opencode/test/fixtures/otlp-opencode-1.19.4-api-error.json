@@ -1,0 +1,76 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "opencode"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "1.19.4"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "kenaz-opencode"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1792767669381000000",
+              "observedTimeUnixNano": "1792767669381000000",
+              "eventName": "opencode.session.start",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "ses_e96b84b7bffep7oQukPvSsAYSJ"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1792767745415000000",
+              "observedTimeUnixNano": "1792767745415000000",
+              "eventName": "opencode.api_error",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "ses_e96b84b7bffep7oQukPvSsAYSJ"
+                  }
+                },
+                {
+                  "key": "status_code",
+                  "value": {
+                    "intValue": "400"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1792767700000000000",
+              "observedTimeUnixNano": "1792767700000000000",
+              "eventName": "opencode.session.end",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "ses_e96b84b7bffep7oQukPvSsAYSJ"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

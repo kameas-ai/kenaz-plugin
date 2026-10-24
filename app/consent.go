@@ -11,6 +11,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/consent"
 	"github.com/kameas-ai/kenaz-plugin/internal/device"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
+	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/internal/project"
 )
 
@@ -40,6 +41,7 @@ func newConsentManagerAt(env Env, r resolved) (*consent.Manager, error) {
 	}
 	m := consent.NewManager(consent.Options{
 		Provider:          env.Provider,
+		Env:               r.Env,
 		ProjectionVersion: projectionVersion,
 		Store:             consent.NewStore(filepath.Join(r.StateDir, "consent.json")),
 	})
@@ -55,7 +57,11 @@ func noticeVars(m *consent.Manager) consent.NoticeVars {
 	home, _ := os.UserHomeDir()
 	type h struct{ name, dir, bin string }
 	var names, versions []string
-	for _, x := range []h{{"Claude Code", ".claude", "claude"}, {"Codex", ".codex", "codex"}} {
+	hosts := []h{{"Claude Code", ".claude", "claude"}, {"Codex", ".codex", "codex"}}
+	if features.OpenCode {
+		hosts = append(hosts, h{"OpenCode", filepath.Join(".config", "opencode"), "opencode"})
+	}
+	for _, x := range hosts {
 		if _, err := os.Stat(filepath.Join(home, x.dir)); err != nil {
 			continue
 		}

@@ -3,7 +3,9 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -26,6 +28,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/fixtures"
 	"github.com/kameas-ai/kenaz-plugin/internal/fleetschema"
+	"github.com/kameas-ai/kenaz-plugin/internal/forward"
 	"github.com/kameas-ai/kenaz-plugin/internal/project"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
 )
@@ -45,10 +48,15 @@ type laneFleet struct {
 	approvalsErr error
 	postErr      error
 	attempts     int
+	// user overrides the signed-in user ("" = sub-1); signedOut signs out.
+	user      string
+	signedOut bool
+	// refused counts uploads the account binding refused (nothing sent).
+	refused int
 }
 
 func (f *laneFleet) Flavor() fleetapi.Flavor   { return fleetapi.FlavorOfficial }
-func (f *laneFleet) Auth() fleetapi.Auth       { return laneAuth{} }
+func (f *laneFleet) Auth() fleetapi.Auth       { return laneAuth{f: f} }
 func (f *laneFleet) Me() fleetapi.Me           { return laneMe{} }
 func (f *laneFleet) OptIns() fleetapi.OptIns   { return laneOptIns{f} }
 func (f *laneFleet) Pollers() fleetapi.Pollers { return lanePollers{f} }
@@ -61,10 +69,24 @@ func (f *laneFleet) batches() []fleetapi.ProjectedBatch {
 	return append([]fleetapi.ProjectedBatch(nil), f.posted...)
 }
 
-type laneAuth struct{ fleetapi.Auth }
+type laneAuth struct {
+	fleetapi.Auth
+	f *laneFleet
+}
 
-func (laneAuth) Session(context.Context) (fleetapi.Session, error) {
-	return fleetapi.Session{Env: fleetapi.EnvDev, UserID: "sub-1", OrgID: "org-1"}, nil
+func (a laneAuth) Session(context.Context) (fleetapi.Session, error) {
+	user := "sub-1"
+	if a.f != nil {
+		a.f.mu.Lock()
+		defer a.f.mu.Unlock()
+		if a.f.signedOut {
+			return fleetapi.Session{}, fleetapi.ErrNotSignedIn
+		}
+		if a.f.user != "" {
+			user = a.f.user
+		}
+	}
+	return fleetapi.Session{Env: fleetapi.EnvDev, UserID: user, OrgID: "org-1"}, nil
 }
 
 type laneMe struct{ fleetapi.Me }
@@ -124,9 +146,23 @@ func (lanePollers) AckConfigs(context.Context, string, []fleetapi.ConfigAck) err
 
 type lanePoster struct{ f *laneFleet }
 
-func (p lanePoster) Post(_ context.Context, b fleetapi.ProjectedBatch) (fleetapi.ExportResult, error) {
+// sub1Owner is the default signed-in account as a batch owner.
+var sub1Owner = fleetapi.ExpectedSession{Env: fleetapi.EnvDev, OrgID: "org-1", Subject: "sub-1"}
+
+// Post enforces the OTLPPoster account binding like the official adapter:
+// it sends with the session active at the call and refuses (sending
+// nothing) a batch whose ExpectedSession is missing or another account.
+func (p lanePoster) Post(ctx context.Context, b fleetapi.ProjectedBatch) (fleetapi.ExportResult, error) {
+	sess, err := laneAuth{f: p.f}.Session(ctx)
+	if err != nil {
+		return fleetapi.ExportResult{}, err
+	}
 	p.f.mu.Lock()
 	defer p.f.mu.Unlock()
+	if want, ok := fleetapi.ExpectedSessionFrom(ctx); !ok || !want.Matches(sess) {
+		p.f.refused++
+		return fleetapi.ExportResult{}, fleetapi.IdentityMismatch()
+	}
 	p.f.attempts++
 	if p.f.postErr != nil {
 		if fleetapi.EarlyAccessRequired(p.f.postErr) {
@@ -145,6 +181,11 @@ func newTestLane(t *testing.T, f *laneFleet) (*telemetryLane, http.Handler, func
 	return newTestLaneWith(t, f, nil)
 }
 
+// testRefreshEvery is the consent refresh interval of lanes built by
+// newTestLane*. A test may raise it so only kicks and the per-upload
+// session check can observe an account change.
+var testRefreshEvery = 20 * time.Millisecond
+
 // testNow is the lane clock in tests; lane goroutines read it concurrently.
 var testNow atomic.Value
 
@@ -152,15 +193,20 @@ var testNow atomic.Value
 // before the lane starts.
 func newTestLaneWith(t *testing.T, f *laneFleet, before func(*spool.Spool)) (*telemetryLane, http.Handler, func()) {
 	t.Helper()
+	return newTestLaneIn(t, f, t.TempDir(), &spool.Memory{}, before)
+}
+
+// newTestLaneIn is newTestLaneWith over an existing state directory and
+// key store, so a test can restart the lane (a new daemon process).
+func newTestLaneIn(t *testing.T, f *laneFleet, dir string, ks *spool.Memory, before func(*spool.Spool)) (*telemetryLane, http.Handler, func()) {
+	t.Helper()
 	oldRefresh, oldDrain, oldNow := consentRefreshEvery, drainEvery, laneNow
-	consentRefreshEvery, drainEvery = 20*time.Millisecond, 20*time.Millisecond
+	consentRefreshEvery, drainEvery = testRefreshEvery, 20*time.Millisecond
 	// Admission is observed before the fixture's events by default.
 	testNow.Store(fixtures.Base.Add(-time.Hour))
 	laneNow = func() time.Time { return testNow.Load().(time.Time) }
 	t.Cleanup(func() { consentRefreshEvery, drainEvery, laneNow = oldRefresh, oldDrain, oldNow })
 
-	dir := t.TempDir()
-	ks := &spool.Memory{}
 	key, err := spool.GetOrCreateKey(ks, "dev")
 	if err != nil {
 		t.Fatal(err)
@@ -324,7 +370,7 @@ func TestTelemetryLaneLockdownStopsQueuedBatches(t *testing.T) {
 	l.cm.SetLockdown(fleetapi.LockdownState{Locked: true, Reason: "incident"})
 	l.dec.invalidate()
 	b := fleetapi.ProjectedBatch{Signal: fleetapi.SignalLogs, ContentType: fleetapi.ContentTypeProtobuf, Body: []byte{}, Records: 1}
-	if l.send(context.Background(), queued{b, time.Now()}) {
+	if l.send(context.Background(), queued{b, time.Now(), sub1Owner}) {
 		t.Fatal("send reported success during lockdown")
 	}
 	l.drain(context.Background())
@@ -591,7 +637,7 @@ func TestTelemetryLaneNoSpoolWriteAfterRefusal(t *testing.T) {
 	_ = l.dec.HoldReason() // warm the snapshot cache: admitted
 	l.cm.ObserveUploadError(earlyAccessRefusal())
 	b := fleetapi.ProjectedBatch{Signal: fleetapi.SignalLogs, ContentType: fleetapi.ContentTypeProtobuf, Body: []byte{}, Records: 1}
-	l.spoolBatch(queued{b, fixtures.Base})
+	l.spoolBatch(queued{b, fixtures.Base, sub1Owner})
 	l.holdRecords([]project.Record{{Class: "x", Time: fixtures.Base}}, "paused")
 	if !l.sp.Empty() {
 		t.Fatal("data written to the spool after a refusal")
@@ -614,5 +660,105 @@ func TestTelemetryLaneRevokedOrgDrops(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if n := f.attemptCount(); n != 0 || !l.sp.Empty() {
 		t.Fatalf("after revocation: %d uploads, spool empty=%v", n, l.sp.Empty())
+	}
+}
+
+// The account switches while a batch waits for a rate token: the owner is
+// re-checked after the wait and the batch is dropped unsent; and if the
+// switch slips past that check, the poster refuses it (identity_mismatch).
+// Either way Sub-1's batch never goes out on Sub-2's session.
+func TestTelemetryLaneAccountSwitchDuringRateWait(t *testing.T) {
+	old := testRefreshEvery
+	testRefreshEvery = time.Hour // only the upload-time checks see the switch
+	t.Cleanup(func() { testRefreshEvery = old })
+	for _, recheck := range []bool{true, false} {
+		t.Run(fmt.Sprint("recheck=", recheck), func(t *testing.T) { laneSwitchDuringWait(t, recheck) })
+	}
+}
+
+func laneSwitchDuringWait(t *testing.T, recheck bool) {
+	{
+		f := &laneFleet{Provider: stub.New(), optedIn: true}
+		l, _, _ := newTestLane(t, f)
+		if !waitFor(t, func() bool { return l.dec.SignedIn() && admitted(l) }) {
+			t.Fatal("lane never admitted")
+		}
+		var mu sync.Mutex
+		now := time.Now()
+		fwd := &forward.Forwarder{Poster: l.fwd.Poster, PerMinute: 1,
+			Now: func() time.Time { mu.Lock(); defer mu.Unlock(); return now },
+			Sleep: func(_ context.Context, d time.Duration) error {
+				f.set(func(f *laneFleet) { f.user = "sub-2" }) // switch mid-wait
+				mu.Lock()
+				now = now.Add(d)
+				mu.Unlock()
+				return nil
+			}}
+		if recheck {
+			fwd.Current = l.ownerIs
+		} else {
+			// Model a switch that lands after the re-check: the poster's
+			// binding is the last line.
+			fwd.Current = func(context.Context, fleetapi.ExpectedSession) bool { return true }
+		}
+		l.fwd = fwd
+		b := fleetapi.ProjectedBatch{Signal: fleetapi.SignalLogs, ContentType: fleetapi.ContentTypeProtobuf, Body: []byte{}, Records: 1}
+		if !l.send(context.Background(), queued{b, time.Now(), sub1Owner}) {
+			t.Fatalf("recheck=%v: first send failed", recheck)
+		}
+		_ = l.send(context.Background(), queued{b, time.Now(), sub1Owner})
+		f.mu.Lock()
+		posted, refused := len(f.posted), f.refused
+		f.mu.Unlock()
+		if posted != 1 {
+			t.Fatalf("recheck=%v: posted %d batches, want only the one before the switch", recheck, posted)
+		}
+		if recheck && refused != 0 {
+			t.Fatalf("the owner was not re-checked after the wait: the poster saw the batch (refused=%d)", refused)
+		}
+		if !recheck && refused != 1 {
+			t.Fatalf("poster did not refuse the switched batch: refused=%d", refused)
+		}
+	}
+}
+
+// An untagged 'b' batch written by an earlier build has no owner: it may
+// belong to another account (earlier builds recorded no queue owner and a
+// login over an existing session did not purge the spool), so it is
+// dropped, never sent under whoever is signed in now. An owner-stamped
+// batch for the signed-in account still goes.
+func TestTelemetryLaneUntaggedBatchNeverSent(t *testing.T) {
+	f := &laneFleet{Provider: stub.New(), optedIn: true}
+	rec := func(tag byte, v any) []byte {
+		b, _ := json.Marshal(v)
+		out := make([]byte, 9, 9+len(b))
+		out[0] = tag
+		binary.BigEndian.PutUint64(out[1:], uint64(fixtures.Base.UnixNano()))
+		return append(out, b...)
+	}
+	batch := func(n int) fleetapi.ProjectedBatch {
+		return fleetapi.ProjectedBatch{Signal: fleetapi.SignalLogs, ContentType: fleetapi.ContentTypeProtobuf, Body: []byte{byte(n)}, Records: 1}
+	}
+	l, _, _ := newTestLane(t, f)
+	if !waitFor(t, func() bool { return admitted(l) }) {
+		t.Fatal("lane never admitted")
+	}
+	// Queued after admission (a restart keeps the stored admission): another
+	// account's batches from an earlier build, then one stamped for sub-1.
+	for i := 0; i < 3; i++ {
+		if err := l.sp.Append(telemetryLaneName, rec(tagBatch, batch(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.sp.Append(telemetryLaneName, rec(tagOwnedBatch, ownedBatch{Owner: sub1Owner, Batch: batch(9)})); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(t, func() bool { return l.sp.Empty() }) {
+		t.Fatal("spool not drained")
+	}
+	time.Sleep(100 * time.Millisecond)
+	got := f.batches()
+	if len(got) != 1 || len(got[0].Body) != 1 || got[0].Body[0] != 9 {
+		t.Fatalf("posted %d batches (want only the stamped one): %+v", len(got), got)
 	}
 }

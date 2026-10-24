@@ -13,6 +13,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 )
 
@@ -33,6 +34,10 @@ type Deps struct {
 	StateDir string
 	// Touch records tool activity with the daemon (optional).
 	Touch func()
+	// Approvals prepares human-authorized writes. Write tools
+	// prepare a request here instead of writing; nil means approvals are
+	// unavailable and write tools report approval_unavailable.
+	Approvals approvals.Preparer
 }
 
 // Group registers one tool group's tools.

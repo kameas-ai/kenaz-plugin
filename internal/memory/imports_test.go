@@ -10,6 +10,8 @@ import (
 
 const module = "github.com/kameas-ai/kenaz-plugin"
 
+const secretscanPkg = module + "/pkg/secretscan"
+
 // sendingPackages are the packages that talk to Kameas Fleet or queue data
 // for it. Memory must never depend on them, directly or transitively.
 var sendingPackages = []string{
@@ -58,15 +60,25 @@ func TestMemoryImportsNothingThatSends(t *testing.T) {
 			}
 		}
 	}
-	// The store package uses only the standard library and the SQLite
-	// driver.
+	// The store package uses only the standard library, the SQLite
+	// driver and the shared credential detector, which itself uses only
+	// the standard library.
 	bp, err := build.ImportDir(filepath.Join(root, "internal", "memory"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, imp := range bp.Imports {
-		if strings.Contains(imp, ".") && imp != "modernc.org/sqlite" {
+		if strings.Contains(imp, ".") && imp != "modernc.org/sqlite" && imp != secretscanPkg {
 			t.Errorf("internal/memory imports %s", imp)
+		}
+	}
+	ss, err := build.ImportDir(filepath.Join(root, "pkg", "secretscan"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, imp := range ss.Imports {
+		if strings.Contains(imp, ".") {
+			t.Errorf("pkg/secretscan imports %s", imp)
 		}
 	}
 }

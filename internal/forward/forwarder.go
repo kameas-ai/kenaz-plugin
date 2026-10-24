@@ -36,6 +36,10 @@ const (
 	// the early-access program. Drop it at once and keep nothing: nothing
 	// is collected or kept on the device until the organization is admitted.
 	Refused
+	// Stale: the batch's owning account is no longer the signed-in one
+	// (re-checked after the rate-limit wait, and enforced by the poster
+	// with identity_mismatch). Nothing was sent; drop it.
+	Stale
 )
 
 // Result is the outcome of one Send.
@@ -49,8 +53,12 @@ type Result struct {
 type Forwarder struct {
 	Poster    fleetapi.OTLPPoster
 	PerMinute int
-	Now       func() time.Time
-	Sleep     func(context.Context, time.Duration) error
+	// Current, when set, reports whether owner is still the signed-in
+	// account. Send calls it after the rate-limit wait, immediately before
+	// posting, because the wait can be long enough for an account switch.
+	Current func(ctx context.Context, owner fleetapi.ExpectedSession) bool
+	Now     func() time.Time
+	Sleep   func(context.Context, time.Duration) error
 
 	mu     sync.Mutex
 	tokens float64
@@ -109,14 +117,23 @@ func (f *Forwarder) wait(ctx context.Context) error {
 	}
 }
 
-// Send posts one batch and classifies the outcome.
-func (f *Forwarder) Send(ctx context.Context, b fleetapi.ProjectedBatch) Result {
+// Send posts one batch owned by owner (the account whose session stamped
+// it) and classifies the outcome. The owner is re-checked after the
+// rate-limit wait and attached to the Post with WithExpectedSession, so
+// the poster refuses it if another account's credentials would be used.
+func (f *Forwarder) Send(ctx context.Context, owner fleetapi.ExpectedSession, b fleetapi.ProjectedBatch) Result {
 	if err := f.wait(ctx); err != nil {
 		return Result{Disposition: Retry, Err: err}
 	}
-	res, err := f.Poster.Post(ctx, b)
+	if f.Current != nil && !f.Current(ctx, owner) {
+		return Result{Disposition: Stale}
+	}
+	res, err := f.Poster.Post(fleetapi.WithExpectedSession(ctx, owner), b)
 	if err == nil {
 		return Result{Disposition: Sent, Export: res}
+	}
+	if fleetapi.APICode(err) == fleetapi.CodeIdentityMismatch {
+		return Result{Disposition: Stale, Err: err}
 	}
 	if _, paused := fleetapi.OrgPaused(err); paused {
 		return Result{Disposition: Hold, Err: err}

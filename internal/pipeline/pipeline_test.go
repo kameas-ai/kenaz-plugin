@@ -32,7 +32,7 @@ func TestHoldThenDrain(t *testing.T) {
 		Identity: func() (project.Identity, bool) {
 			return project.Identity{UserID: "u", OrgID: "o", MachineID: "m"}, identityOK
 		},
-		Emit: func(b []fleetapi.ProjectedBatch, _ time.Time) { emitted = append(emitted, b...) },
+		Emit: func(b []fleetapi.ProjectedBatch, _ time.Time, _ project.Identity) { emitted = append(emitted, b...) },
 		Hold: func(r []project.Record, reason string) {
 			if reason != "lockdown" {
 				t.Errorf("reason %q", reason)

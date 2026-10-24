@@ -112,3 +112,28 @@ func TestSetValue(t *testing.T) {
 		t.Fatal("invalid key accepted")
 	}
 }
+
+// Hook commands get no .mcp.json env block; Claude Code exports the
+// plugin's fleet_env option as CLAUDE_PLUGIN_OPTION_FLEET_ENV, so hooks
+// resolve the same environment as the MCP server (the banner's
+// approval link opens the selected environment's dashboard).
+func TestResolveEnvPluginOption(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		vars map[string]string
+		want fleetapi.Env
+	}{
+		{"hook: only the exported option", map[string]string{"CLAUDE_PLUGIN_OPTION_FLEET_ENV": "stage"}, fleetapi.EnvStage},
+		{"KENAZ_ENV wins", map[string]string{"KENAZ_ENV": "dev", "CLAUDE_PLUGIN_OPTION_FLEET_ENV": "stage"}, fleetapi.EnvDev},
+		{"placeholder KENAZ_ENV skipped", map[string]string{"KENAZ_ENV": "${user_config.fleet_env}", "CLAUDE_PLUGIN_OPTION_FLEET_ENV": "dev"}, fleetapi.EnvDev},
+		{"option wins over legacy", map[string]string{"FLEET_PLUGIN_ENV": "stage", "CLAUDE_PLUGIN_OPTION_FLEET_ENV": "dev"}, fleetapi.EnvDev},
+	} {
+		got, src, err := ResolveEnv("", envMap(c.vars), File{Values: map[string]string{"env": "prod"}})
+		if err != nil || got != c.want || src != SourceEnvVar {
+			t.Errorf("%s: %s %s %v", c.name, got, src, err)
+		}
+	}
+	if _, _, err := ResolveEnv("", envMap(map[string]string{"CLAUDE_PLUGIN_OPTION_FLEET_ENV": "qa"}), File{}); err == nil {
+		t.Error("an unknown option value must be an error, not a silent prod fallback")
+	}
+}

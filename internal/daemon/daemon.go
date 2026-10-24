@@ -12,14 +12,12 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
@@ -71,6 +69,9 @@ type Options struct {
 	// telemetry lane treats enrolled as an admitted response and
 	// early_access_required as a refusal).
 	EnrollObservers []func(enroll.State)
+	// KickObservers run on every Kick (for example after `kenaz login`),
+	// so lanes re-read the session at once instead of on their next tick.
+	KickObservers []func()
 }
 
 // Daemon is a running relay daemon.
@@ -167,6 +168,9 @@ func (d *Daemon) Kick() {
 	case d.kick <- struct{}{}:
 	default:
 	}
+	for _, o := range d.opt.KickObservers {
+		o()
+	}
 }
 
 // Info returns the running daemon's info (zero before Run binds).
@@ -180,19 +184,6 @@ func (d *Daemon) isRemoved() bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.removed
-}
-
-// listen binds the first available preferred port on loopback.
-func listen(ports []int) (net.Listener, error) {
-	var errs []error
-	for _, p := range ports {
-		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
-		if err == nil {
-			return ln, nil
-		}
-		errs = append(errs, err)
-	}
-	return nil, fmt.Errorf("no loopback port available: %w", errors.Join(errs...))
 }
 
 // Run holds the singleton lock, binds, writes daemon.json, starts the

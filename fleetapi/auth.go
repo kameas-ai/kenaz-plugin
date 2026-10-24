@@ -38,6 +38,12 @@ type LoginRequest struct {
 	// Timeout bounds the wait for the loopback callback. Zero means the
 	// implementation default (10 minutes).
 	Timeout time.Duration
+	// CompleteURL is used by IdentityVerifier only (Login ignores it).
+	// After a successful callback, the loopback listener must answer the
+	// browser with a 303 redirect to exactly this URL, and must never log,
+	// print or return it elsewhere: it carries a one-time token that binds
+	// the approval enrollment ceremony to the browser that signed in.
+	CompleteURL string
 }
 
 // Session describes the active sign-in. It contains no secrets.
@@ -76,4 +82,34 @@ type FileCredentialStore interface {
 // existing implementations of this package keep compiling.
 type TokenSource interface {
 	AccessToken(ctx context.Context) (token string, expiry time.Time, err error)
+}
+
+// IdentityVerifier is optionally implemented by an Auth (callers check
+// with a type assertion). It runs a fresh, interactive browser sign-in for
+// req.Env with its own PKCE flow and loopback redirect, exactly as Login
+// does, but returns only the verified subject: it must not replace,
+// refresh or read the active session, and must not store the new tokens.
+//
+// It must force interactive re-authentication (OIDC prompt=login and
+// max_age=0) so an existing identity-provider browser session cannot
+// complete it silently, must return the ID token's auth_time, and must
+// redirect the browser to req.CompleteURL after the callback. An
+// implementation that cannot do all three must not implement this
+// interface.
+//
+// The approval enrollment ceremony uses it as the bootstrap proof that the
+// person at the browser is the signed-in member. Nothing an agent supplies is accepted instead. An
+// Auth that does not implement it makes approval enrollment unavailable.
+type IdentityVerifier interface {
+	VerifyIdentity(ctx context.Context, req LoginRequest) (VerifiedIdentity, error)
+}
+
+// VerifiedIdentity is the subject a fresh browser sign-in proved. It
+// contains no secrets.
+type VerifiedIdentity struct {
+	Env    Env
+	UserID string // Zitadel subject (same as Session.UserID)
+	OrgID  string // resourceowner (same as Session.OrgID)
+	// AuthTime is the identity provider's auth_time for this sign-in.
+	AuthTime time.Time
 }

@@ -60,11 +60,13 @@ type OrgState struct {
 	// AdmittedAt is when this device first saw Fleet admit the
 	// organization (zero while not admitted). Only data generated from
 	// then on is sent.
-	AdmittedAt time.Time  `json:"-"`
-	Holds      []Hold     `json:"holds"`
-	Pending    []Pending  `json:"pending"`
-	Spool      SpoolStats `json:"spool"`
-	Drops      Drops      `json:"drops"`
+	AdmittedAt time.Time `json:"-"`
+	// DashboardURL is the Fleet dashboard of the selected environment.
+	DashboardURL string     `json:"dashboard_url,omitempty"`
+	Holds        []Hold     `json:"holds"`
+	Pending      []Pending  `json:"pending"`
+	Spool        SpoolStats `json:"spool"`
+	Drops        Drops      `json:"drops"`
 }
 
 // Hold is one active upload hold.
@@ -79,6 +81,8 @@ type Pending struct {
 	Kind     string `json:"kind"`
 	Title    string `json:"title"`
 	Blocking bool   `json:"blocking"`
+	// URL opens the item in the selected environment's Fleet dashboard.
+	URL string `json:"url,omitempty"`
 }
 
 // SpoolStats is filled from the spool.

@@ -1,5 +1,5 @@
-// Package decode turns OTLP export requests from Claude Code and Codex into
-// canonical events. Source identification is
+// Package decode turns OTLP export requests from Claude Code, Codex and the
+// Kenaz OpenCode adapter into canonical events. Source identification is
 // per record by event-name prefix, falling back to the resource's
 // service.name. Records from anything else are dropped and counted.
 //
@@ -23,6 +23,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/decode/attr"
 	"github.com/kameas-ai/kenaz-plugin/internal/decode/claude"
 	"github.com/kameas-ai/kenaz-plugin/internal/decode/codex"
+	"github.com/kameas-ai/kenaz-plugin/internal/decode/opencode"
 )
 
 // Result is the outcome of decoding one export request.
@@ -74,6 +75,8 @@ func identify(eventName string, res attr.Set) canon.ClientKind {
 		return canon.ClaudeCode
 	case strings.HasPrefix(eventName, codex.EventPrefix):
 		return canon.Codex
+	case strings.HasPrefix(eventName, opencode.EventPrefix):
+		return canon.OpenCode
 	}
 	svc := res.String("service.name")
 	switch {
@@ -81,6 +84,8 @@ func identify(eventName string, res attr.Set) canon.ClientKind {
 		return canon.ClaudeCode
 	case codex.IsServiceName(svc):
 		return canon.Codex
+	case svc == opencode.ServiceName:
+		return canon.OpenCode
 	}
 	return ""
 }
@@ -111,7 +116,7 @@ func logEventName(lrEventName string, a attr.Set, body *commonv1.AnyValue) strin
 	}
 	if sv, ok := body.GetValue().(*commonv1.AnyValue_StringValue); ok {
 		s := sv.StringValue
-		if (strings.HasPrefix(s, claude.EventPrefix) || strings.HasPrefix(s, codex.EventPrefix)) && len(s) < 96 && !strings.ContainsAny(s, " \n\t") {
+		if (strings.HasPrefix(s, claude.EventPrefix) || strings.HasPrefix(s, codex.EventPrefix) || strings.HasPrefix(s, opencode.EventPrefix)) && len(s) < 96 && !strings.ContainsAny(s, " \n\t") {
 			return s
 		}
 	}
@@ -143,6 +148,8 @@ func (d Decoder) Logs(req *logsv1.LogsData) Result {
 					r.Events = append(r.Events, claude.LogRecord(a, name, t)...)
 				case canon.Codex:
 					r.Events = append(r.Events, codex.LogRecord(a, name, t)...)
+				case canon.OpenCode:
+					r.Events = append(r.Events, opencode.LogRecord(a, name, t)...)
 				}
 			}
 		}
@@ -152,7 +159,8 @@ func (d Decoder) Logs(req *logsv1.LogsData) Result {
 
 // Traces decodes an OTLP traces export. Harness spans are never
 // forwarded; they only feed session activity and, for Codex turn
-// spans, fallback usage.
+// spans, fallback usage. The OpenCode adapter sends no spans; any that
+// arrive are ignored.
 func (d Decoder) Traces(req *tracev1.TracesData) Result {
 	var r Result
 	for _, rs := range req.GetResourceSpans() {
@@ -164,6 +172,9 @@ func (d Decoder) Traces(req *tracev1.TracesData) Result {
 				kind := identify(name, attr.Of(resAttrs))
 				if kind == "" {
 					r.UnknownSource++
+					continue
+				}
+				if kind == canon.OpenCode {
 					continue
 				}
 				if a.ContentSeen() {

@@ -15,6 +15,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/canon"
 	"github.com/kameas-ai/kenaz-plugin/internal/decode"
+	"github.com/kameas-ai/kenaz-plugin/internal/fleetschema"
 	"github.com/kameas-ai/kenaz-plugin/internal/gate"
 	"github.com/kameas-ai/kenaz-plugin/internal/project"
 	"github.com/kameas-ai/kenaz-plugin/internal/session"
@@ -32,8 +33,9 @@ type Config struct {
 	// Identity returns the stamped identity; ok=false when not signed in.
 	Identity func() (project.Identity, bool)
 	// Emit receives final batches for the forwarder queue, with the
-	// earliest event time among the records they carry.
-	Emit func(batches []fleetapi.ProjectedBatch, earliest time.Time)
+	// earliest event time among the records they carry and the identity
+	// they were stamped with (their owning account).
+	Emit func(batches []fleetapi.ProjectedBatch, earliest time.Time, id project.Identity)
 	// Hold receives records to spool until the hold reason clears; the
 	// daemon re-submits them through Regate.
 	Hold func(recs []project.Record, reason string)
@@ -114,7 +116,25 @@ func (p *Pipeline) process(outs []session.Out) {
 	if len(outs) == 0 {
 		return
 	}
-	p.Regate(project.Project(outs, p.opts()))
+	opt := p.opts()
+	// A client kind Fleet does not accept yet is dropped here, before
+	// gating and queueing: Fleet would reject its resource group anyway.
+	kept := outs[:0:0]
+	dropped := 0
+	for _, o := range outs {
+		if fleetschema.ClientKindSupported(string(o.Client), opt.SchemaRev) {
+			kept = append(kept, o)
+		} else {
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		p.add("dropped_client_unsupported", dropped)
+	}
+	if len(kept) == 0 {
+		return
+	}
+	p.Regate(project.Project(kept, opt))
 }
 
 // Regate runs records through the gates and emits what may be sent. The
@@ -147,7 +167,7 @@ func (p *Pipeline) Regate(recs []project.Record) {
 		return
 	}
 	if p.cfg.Emit != nil {
-		p.cfg.Emit(batches, gate.Earliest(o.Send))
+		p.cfg.Emit(batches, gate.Earliest(o.Send), id)
 	}
 }
 

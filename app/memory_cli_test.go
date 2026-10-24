@@ -190,7 +190,7 @@ func TestMemoryDisclosureOnceFromCLI(t *testing.T) {
 	if strings.TrimSpace(errb) != want {
 		t.Fatalf("first use stderr %q", errb)
 	}
-	if !strings.Contains(want, "Kenaz memory is on: your AI tool can save notes to "+h.memoryDB()+" on this device. Kameas never receives them. Turn off: `kenaz memory disable`. Clear: `kenaz memory purge`.") {
+	if !strings.Contains(want, "Kenaz memory is on: your AI tool can save notes to "+h.memoryDB()+" on this device. They stay on this device unless you turn on memory sync (`kenaz memory sync enable`). Turn off: `kenaz memory disable`. Clear: `kenaz memory purge`.") {
 		t.Fatal("disclosure wording changed")
 	}
 	if _, _, errb := h.run(t, "memory", "list"); errb != "" {
@@ -261,5 +261,84 @@ func TestSetupActionClassifies(t *testing.T) {
 		if got := app.SetupAction(strings.Fields(args)); got != want {
 			t.Errorf("%q: %q, want %q", args, got, want)
 		}
+	}
+}
+
+// The CLI is truthful about sync on a build that cannot sync, and a
+// terminal answer never authorizes anything account-wide.
+func TestMemorySyncCLIUnofficial(t *testing.T) {
+	h := newHarness(t, stub.New())
+	if code, out, _ := h.run(t, "memory", "sync", "status"); code != 0 || !strings.Contains(out, "never syncs") {
+		t.Fatalf("status = %d %q", code, out)
+	}
+	if code, _, errs := h.run(t, "memory", "sync", "enable"); code == 0 || !strings.Contains(errs, "not available in this build") {
+		t.Fatalf("enable = %d %q", code, errs)
+	}
+	restore := app.SetMemoryStdin(true, strings.NewReader("y\ny\ny\n"))
+	defer restore()
+	if code, _, errs := h.run(t, "memory", "forget-all"); code == 0 || !strings.Contains(errs, "kenaz memory purge") {
+		t.Fatalf("forget-all signed out = %d %q", code, errs)
+	}
+	for _, sub := range []string{"approve", "adopt"} {
+		args := []string{"memory", "sync", sub}
+		if sub == "adopt" {
+			args = append(args, "mem-x")
+		}
+		if code, _, errs := h.run(t, args...); code == 0 || !strings.Contains(strings.ToLower(errs), "sign in") {
+			t.Fatalf("%s signed out = %d %q", sub, code, errs)
+		}
+	}
+}
+
+// update and export on the device notebook stay plain CLI commands.
+func TestMemoryCLIUpdateExport(t *testing.T) {
+	h := newHarness(t, stub.New())
+	s, err := memory.Open(h.memoryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := s.Save(context.Background(), memory.NewNote{ProjectKey: memory.GlobalProject, Title: "t", Body: "first", Source: memory.SourceCLI})
+	s.Close()
+	if code, out, errs := h.run(t, "memory", "update", id, "--body", "second", "--tags", "a, b"); code != 0 || !strings.Contains(out, "Updated memory") {
+		t.Fatalf("update = %d %q %q", code, out, errs)
+	}
+	code, out, _ := h.run(t, "memory", "export")
+	if code != 0 || !strings.Contains(out, `"body":"second"`) || !strings.Contains(out, `"tags":["a","b"]`) || !strings.Contains(out, `"profile":"device"`) {
+		t.Fatalf("export = %d %q", code, out)
+	}
+	if code, out, _ := h.run(t, "memory", "forget", id); code != 0 || !strings.Contains(out, "Deleted memory") {
+		t.Fatalf("forget = %d %q", code, out)
+	}
+}
+
+// purge --yes clears only the device notebook: an account's store can be
+// deleted only by an approved forget-all.
+func TestMemoryPurgeKeepsAccountStores(t *testing.T) {
+	h := newHarness(t, stub.New())
+	root := filepath.Dir(filepath.Dir(h.memoryDB()))
+	acct := memory.Profile{Env: "dev", OrgID: "o", UserID: "u"}
+	st, err := memory.OpenProfile(memory.ProfilePath(root, acct), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Save(context.Background(), memory.NewNote{ProjectKey: memory.GlobalProject, Title: "t", Body: "never synced", Source: memory.SourceCLI})
+	st.Close()
+	nb, _ := memory.Open(h.memoryDB())
+	nb.Save(context.Background(), memory.NewNote{ProjectKey: memory.GlobalProject, Title: "t", Body: "notebook", Source: memory.SourceCLI})
+	nb.Close()
+	code, out, _ := h.run(t, "memory", "purge", "--yes")
+	if code != 0 || !strings.Contains(out, "was kept") {
+		t.Fatalf("purge = %d %q", code, out)
+	}
+	if _, err := os.Stat(h.memoryDB()); !os.IsNotExist(err) {
+		t.Fatal("notebook not deleted")
+	}
+	st, err = memory.OpenProfile(memory.ProfilePath(root, acct), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if n, _ := st.Count(context.Background()); n != 1 {
+		t.Fatal("purge deleted an account's notes")
 	}
 }

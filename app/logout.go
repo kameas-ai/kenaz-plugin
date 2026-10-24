@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/consent"
 	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
@@ -35,6 +36,11 @@ func runLogout(env Env, args []string) int {
 		c.Shutdown(env.Ctx, true)
 	}
 	var errs []error
+	// Cancel and purge every write still waiting for approval, even when
+	// no daemon was running to do it.
+	if err := approvals.CancelAllOffline(approvalsDir(r.StateDir), approvalsStoreKey(env, r.Env, false), env.now()); err != nil {
+		errs = append(errs, fmt.Errorf("cancel pending approvals: %w", err))
+	}
 	if err := spool.PurgeDir(filepath.Join(r.StateDir, "spool")); err != nil {
 		errs = append(errs, fmt.Errorf("purge spool: %w", err))
 	}

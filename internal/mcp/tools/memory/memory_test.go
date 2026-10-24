@@ -227,20 +227,23 @@ func TestDescriptionsSayOnDevice(t *testing.T) {
 	n := 0
 	for _, tl := range res.Tools {
 		n++
-		if !strings.Contains(tl.Description, "only on this device") || !strings.Contains(tl.Description, "never sent to Kameas Fleet") {
-			t.Errorf("%s: description must say memory stays on this device", tl.Name)
+		if !strings.Contains(tl.Description, "stored on this device") || !strings.Contains(tl.Description, "only if you turned on memory sync (off by default)") ||
+			!strings.Contains(tl.Description, "never as telemetry") {
+			t.Errorf("%s: description must say where memory goes", tl.Name)
 		}
 		if strings.Contains(strings.ToLower(tl.Description), "private") {
 			t.Errorf("%s: must not describe memory as private", tl.Name)
 		}
 	}
-	if n != 5 {
+	if n != 10 {
 		t.Fatalf("%d tools", n)
 	}
 }
 
-// The tool group must not reach Kameas Fleet: it imports none of the
-// sending packages and never touches the provider in mcp.Deps.
+// The tool group never calls Kameas Fleet itself: it imports none of the
+// sending packages and never touches the provider in mcp.Deps. (Turning
+// sync on goes through the approval gate and an injected memory.Remote;
+// the relay's sync lane does the sending.)
 func TestToolGroupNeverReachesFleet(t *testing.T) {
 	bp, err := build.ImportDir(".", 0)
 	if err != nil {

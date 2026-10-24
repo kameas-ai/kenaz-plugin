@@ -1,0 +1,240 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "opencode"
+            }
+          },
+          {
+            "key": "service.version",
+            "value": {
+              "stringValue": "1.19.4"
+            }
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": {
+            "name": "kenaz-opencode"
+          },
+          "logRecords": [
+            {
+              "timeUnixNano": "1792767645783000000",
+              "observedTimeUnixNano": "1792767645783000000",
+              "eventName": "opencode.session.start",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "ses_e96b8a7a8ffeOSUxZPR2dkM75o"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1792767649366000000",
+              "observedTimeUnixNano": "1792767649366000000",
+              "eventName": "opencode.tool_result",
+              "attributes": [
+                {
+                  "key": "call.id",
+                  "value": {
+                    "stringValue": "call_CANARY1"
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "25"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "ses_e96b8a7a8ffeOSUxZPR2dkM75o"
+                  }
+                },
+                {
+                  "key": "success",
+                  "value": {
+                    "boolValue": true
+                  }
+                },
+                {
+                  "key": "tool_name",
+                  "value": {
+                    "stringValue": "read"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1792767649466000000",
+              "observedTimeUnixNano": "1792767649466000000",
+              "eventName": "opencode.model_call",
+              "attributes": [
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": "200"
+                  }
+                },
+                {
+                  "key": "cache_write_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "call.id",
+                  "value": {
+                    "stringValue": "msg_1694760df001YW0vEm1ruNDQ1c"
+                  }
+                },
+                {
+                  "key": "cost_usd",
+                  "value": {
+                    "doubleValue": 0.00345
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "1499"
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": "1000"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "mock-1"
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": "30"
+                  }
+                },
+                {
+                  "key": "provider",
+                  "value": {
+                    "stringValue": "mock"
+                  }
+                },
+                {
+                  "key": "reasoning_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "ses_e96b8a7a8ffeOSUxZPR2dkM75o"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1792767649710000000",
+              "observedTimeUnixNano": "1792767649710000000",
+              "eventName": "opencode.model_call",
+              "attributes": [
+                {
+                  "key": "cache_read_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "cache_write_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "call.id",
+                  "value": {
+                    "stringValue": "msg_1694766c300114A0BMf0v6PMZb"
+                  }
+                },
+                {
+                  "key": "cost_usd",
+                  "value": {
+                    "doubleValue": 0.00468
+                  }
+                },
+                {
+                  "key": "duration_ms",
+                  "value": {
+                    "intValue": "235"
+                  }
+                },
+                {
+                  "key": "input_tokens",
+                  "value": {
+                    "intValue": "1500"
+                  }
+                },
+                {
+                  "key": "model",
+                  "value": {
+                    "stringValue": "mock-1"
+                  }
+                },
+                {
+                  "key": "output_tokens",
+                  "value": {
+                    "intValue": "12"
+                  }
+                },
+                {
+                  "key": "provider",
+                  "value": {
+                    "stringValue": "mock"
+                  }
+                },
+                {
+                  "key": "reasoning_tokens",
+                  "value": {
+                    "intValue": "0"
+                  }
+                },
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "ses_e96b8a7a8ffeOSUxZPR2dkM75o"
+                  }
+                }
+              ]
+            },
+            {
+              "timeUnixNano": "1792767700000000000",
+              "observedTimeUnixNano": "1792767700000000000",
+              "eventName": "opencode.session.end",
+              "attributes": [
+                {
+                  "key": "session.id",
+                  "value": {
+                    "stringValue": "ses_e96b8a7a8ffeOSUxZPR2dkM75o"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

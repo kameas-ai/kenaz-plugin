@@ -7,7 +7,11 @@
 // ever sent.
 package fleetschema
 
-import "regexp"
+import (
+	"regexp"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/features"
+)
 
 // Log event kinds (kameas.event.kind) the projector emits.
 const (
@@ -64,6 +68,31 @@ const CostKnownKey = "cost_known"
 // Fleet accepts cost_known and the kameas.client.* resource attributes.
 // Below it, both are omitted.
 const SchemaRevCostKnown = 2
+
+// SchemaRevOpenCode is the telemetry_schema revision at which Fleet accepts
+// kameas.client.kind = "opencode". Fleet drops a resource group whose kind
+// it does not know, so the relay sends OpenCode records only from this
+// revision on and drops them on the device before that (counted as
+// dropped_client_unsupported). The revision number is this client's
+// proposal; Fleet must advertise it once its client-kind enum includes
+// opencode.
+const SchemaRevOpenCode = 3
+
+// ClientKindSupported reports whether Fleet at schema revision rev accepts
+// records produced by client kind. Claude Code and Codex records are
+// accepted at every revision (below SchemaRevCostKnown they are sent
+// without the client attributes).
+func ClientKindSupported(kind string, rev int) bool {
+	switch kind {
+	case "claude-code", "codex":
+		return true
+	case "opencode":
+		// Off in shipped builds: dropped on the device whatever schema
+		// Fleet advertises.
+		return features.OpenCode && rev >= SchemaRevOpenCode
+	}
+	return false
+}
 
 // GenAIChatAttrs is the subset of the gen_ai.chat span budget
 // (span_specs.go:244-290) the projector emits. gen_ai.response.id is

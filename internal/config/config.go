@@ -15,9 +15,14 @@ import (
 )
 
 // Environment variables that select the Fleet env. KENAZ_ENV is what
-// the plugin's .mcp.json sets; FLEET_PLUGIN_ENV is the original name. The
-// first non-empty, non-placeholder value wins.
-var EnvVars = []string{"KENAZ_ENV", "FLEET_PLUGIN_ENV"}
+// the plugin's .mcp.json sets from the plugin's fleet_env user option.
+// Hook commands get no .mcp.json env block: Claude Code exports plugin
+// user options to every plugin subprocess as CLAUDE_PLUGIN_OPTION_<KEY>,
+// so hooks (SessionStart banner, approval links, SessionEnd) read the same
+// fleet_env through it and agree with the MCP server on the environment.
+// FLEET_PLUGIN_ENV is the original name. The first non-empty,
+// non-placeholder value wins.
+var EnvVars = []string{"KENAZ_ENV", "CLAUDE_PLUGIN_OPTION_FLEET_ENV", "FLEET_PLUGIN_ENV"}
 
 // Source records where the resolved env came from (shown by doctor/status).
 type Source string

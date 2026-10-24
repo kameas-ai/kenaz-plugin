@@ -2,17 +2,21 @@ package setup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemonstate"
+	"github.com/kameas-ai/kenaz-plugin/internal/features"
 )
 
 // Check is one doctor finding.
@@ -65,6 +69,41 @@ func Doctor(ctx context.Context, o Options, run Runner) []Check {
 
 	cs = append(cs, doctorClaude(ctx, o, port, run)...)
 	cs = append(cs, doctorCodex(ctx, o, port, run)...)
+	if features.OpenCode {
+		cs = append(cs, doctorOpenCode(ctx, o, run)...)
+	}
+	cs = append(cs, doctorBundle(o)...)
+	return cs
+}
+
+// doctorBundle checks plugin registrations setup made from a release
+// bundle: the host still points at the rendered plugin and its executable
+// still exists.
+func doctorBundle(o Options) []Check {
+	state, err := loadState(o.StateDir)
+	if err != nil {
+		return nil
+	}
+	var cs []Check
+	for _, h := range []harness{harnessClaude, harnessCodex} {
+		fs := state.get(h)
+		if fs == nil || fs.Bundle == nil {
+			continue
+		}
+		src, enabled := o.registeredMarketplace(h)
+		exe := ""
+		if b, err := LoadBundle(fs.Bundle.Root); err == nil {
+			exe = b.Exe
+		}
+		switch {
+		case exe == "":
+			cs = append(cs, Check{h.label(), "fail", fmt.Sprintf("the bundle at %s is missing or no longer verifies; re-run setup from the installed bundle", fs.Bundle.Root)})
+		case src != fs.Bundle.Rendered || !enabled:
+			cs = append(cs, Check{h.label(), "warn", "the bundle plugin registration was changed outside setup; re-run setup"})
+		default:
+			cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin registered from bundle %s (launches %s)", fs.Bundle.Version, exe)})
+		}
+	}
 	return cs
 }
 
@@ -270,4 +309,100 @@ func codexListsKenaz(out string) bool {
 		}
 	}
 	return false
+}
+
+func doctorOpenCode(ctx context.Context, o Options, run Runner) []Check {
+	var cs []Check
+	add := func(status, format string, a ...any) {
+		cs = append(cs, Check{"OpenCode", status, fmt.Sprintf(format, a...)})
+	}
+	if v, ok := toolVersion(ctx, run, "opencode"); !ok {
+		add("info", "not installed (or not on PATH)")
+		return cs
+	} else if !atLeast(v, minOpenCode) {
+		add("warn", "version %d.%d.%d is older than the supported minimum %d.%d.%d", v[0], v[1], v[2], minOpenCode[0], minOpenCode[1], minOpenCode[2])
+	}
+
+	path := o.path(harnessOpenCode)
+	b, exists, err := readFile(path)
+	switch {
+	case err != nil:
+		add("fail", "%v", err)
+		return cs
+	case !exists:
+		add("warn", "%s does not exist; run `kenaz setup opencode`", path)
+		return cs
+	}
+	obj, err := parseObject(b)
+	if err != nil {
+		add("fail", "%s is not plain JSON", path)
+		return cs
+	}
+
+	mcp := &object{}
+	if raw, ok := obj.get("mcp"); ok {
+		if mcp, err = parseObject(raw); err != nil {
+			mcp = &object{}
+		}
+	}
+	if raw, ok := mcp.get(openCodeServerName); ok {
+		var e struct {
+			Command []string `json:"command"`
+			Enabled *bool    `json:"enabled"`
+		}
+		_ = json.Unmarshal(raw, &e)
+		switch {
+		case e.Enabled != nil && !*e.Enabled:
+			add("warn", "mcp.%s is disabled; context, skills and memory tools are unavailable", openCodeServerName)
+		case len(e.Command) == 0 || !fileExists(e.Command[0]):
+			add("fail", "mcp.%s does not launch an existing kenaz binary; re-run `kenaz setup opencode`", openCodeServerName)
+		default:
+			add("ok", "MCP server %s runs %s", openCodeServerName, e.Command[0])
+		}
+	} else {
+		add("warn", "the kenaz MCP server is not registered; run `kenaz setup opencode`")
+	}
+
+	var plugins []json.RawMessage
+	if raw, ok := obj.get("plugin"); ok {
+		_ = json.Unmarshal(raw, &plugins)
+	}
+	found := false
+	for _, p := range plugins {
+		spec := pluginSpec(p)
+		if isNpmAdapter(spec) {
+			found = true
+			add("info", "the Kenaz adapter is loaded from npm (%s)", spec)
+			continue
+		}
+		if checkAdapter(spec) != nil {
+			continue
+		}
+		found = true
+		var tuple []json.RawMessage
+		var opts struct {
+			StateDir string `json:"state_dir"`
+		}
+		if json.Unmarshal(p, &tuple) == nil && len(tuple) > 1 {
+			_ = json.Unmarshal(tuple[1], &opts)
+		}
+		if opts.StateDir != o.StateDir {
+			add("warn", "the Kenaz adapter reports to %q, but this environment's relay state is %q; re-run `kenaz setup opencode`", opts.StateDir, o.StateDir)
+		} else {
+			add("ok", "the Kenaz adapter is loaded from %s", spec)
+		}
+	}
+	if !found {
+		add("warn", "telemetry is not reported: the Kenaz adapter is not in \"plugin\"; run `kenaz setup opencode`")
+	}
+	if fileExists(filepath.Join(o.OpenCodeDir, "opencode.jsonc")) {
+		add("info", "opencode.jsonc is merged with opencode.json; setup only edits opencode.json")
+	}
+	add("info", "OpenCode support is new: the adapter is checked against OpenCode %d.%d.%d events; Fleet must accept the opencode client kind before OpenCode activity is sent", minOpenCode[0], minOpenCode[1], minOpenCode[2])
+	return cs
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }

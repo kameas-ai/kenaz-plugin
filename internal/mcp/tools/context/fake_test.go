@@ -12,6 +12,7 @@ import (
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi/stub"
+	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 )
@@ -42,6 +43,37 @@ type fakeFleet struct {
 	pulls    []fleetapi.PullRequest
 	pushes   []fleetapi.PushRequest
 	promotes []fleetapi.PromoteRequest
+	// approvals records prepared write requests (never executes them).
+	approvals *recorder
+}
+
+type recorder struct {
+	mu   sync.Mutex
+	reqs []approvals.Request
+}
+
+func (r *recorder) Prepare(_ context.Context, q approvals.Request) (string, approvals.Status, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reqs = append(r.reqs, q)
+	return "apr_aaaaaaaaaaaaaaaaaaaaaaaaaa", approvals.StatusPending, nil
+}
+func (r *recorder) Status(context.Context, string) (approvals.Status, []byte, error) {
+	return approvals.StatusPending, nil, nil
+}
+func (r *recorder) ApprovalURL(_ context.Context, id string) (string, error) {
+	return "http://localhost:4318/approvals/r/" + id, nil
+}
+func (r *recorder) last() approvals.Request {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reqs[len(r.reqs)-1]
+}
+
+type fakeAuth struct{ fleetapi.Auth }
+
+func (fakeAuth) Session(context.Context) (fleetapi.Session, error) {
+	return fleetapi.Session{Env: fleetapi.EnvDev, UserID: "sub-1", OrgID: "o1"}, nil
 }
 
 func newFake(tier, role string, teams ...fleetapi.TeamRef) *fakeFleet {
@@ -50,10 +82,24 @@ func newFake(tier, role string, teams ...fleetapi.TeamRef) *fakeFleet {
 		keys[k] = true
 	}
 	return &fakeFleet{
-		Provider: stub.New(),
-		me:       fleetapi.MeInfo{UserID: "u1", OrgID: "o1", Role: role, Tier: tier, Teams: teams},
-		caps:     fleetapi.Capabilities{Keys: keys},
+		Provider:  stub.New(),
+		me:        fleetapi.MeInfo{UserID: "u1", OrgID: "o1", Role: role, Tier: tier, Teams: teams},
+		caps:      fleetapi.Capabilities{Keys: keys},
+		approvals: &recorder{},
+		// Team notes promote looks up (title and team for the approval
+		// page).
+		nodes: []fleetapi.NodeContent{
+			{Node: fleetapi.ContextNode{ID: "n1", Title: "Runbook", TeamID: "team-plat", Classification: fleetapi.ClassificationTeamShared}, Body: "Restart the queue first."},
+			{Node: fleetapi.ContextNode{ID: "n", Title: "Notes", TeamID: "team-plat", Classification: fleetapi.ClassificationTeamShared}},
+		},
 	}
+}
+
+// writeCalls counts calls that change Fleet.
+func (f *fakeFleet) writeCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.pushes) + len(f.promotes)
 }
 
 func (f *fakeFleet) record(c string) { f.mu.Lock(); f.calls = append(f.calls, c); f.mu.Unlock() }
@@ -74,7 +120,7 @@ func (f *fakeFleet) Catalog() fleetapi.Catalog   { return f.Provider.Catalog() }
 func (f *fakeFleet) OTLP() fleetapi.OTLPPoster   { return f.Provider.OTLP() }
 func (f *fakeFleet) OptIns() fleetapi.OptIns     { return f.Provider.OptIns() }
 func (f *fakeFleet) Enroller() fleetapi.Enroller { return f.Provider.Enroller() }
-func (f *fakeFleet) Auth() fleetapi.Auth         { return f.Provider.Auth() }
+func (f *fakeFleet) Auth() fleetapi.Auth         { return fakeAuth{f.Provider.Auth()} }
 
 type fakeMe struct{ f *fakeFleet }
 
@@ -132,7 +178,11 @@ func session(t *testing.T, f fleetapi.Provider, st mcp.StatusSource, defaultTeam
 	t.Helper()
 	ctx := context.Background()
 	g := NewGroup(Options{DefaultTeam: func() string { return defaultTeam }, Now: func() time.Time { return fixedNow }, Rand: strings.NewReader(strings.Repeat("\x5a", 64))})
-	srv := mcp.NewServer("test", mcp.Deps{Provider: f, Env: fleetapi.EnvDev, Status: st}, g)
+	d := mcp.Deps{Provider: f, Env: fleetapi.EnvDev, Status: st}
+	if ff, ok := f.(*fakeFleet); ok {
+		d.Approvals = ff.approvals
+	}
+	srv := mcp.NewServer("test", d, g)
 	ct, stT := sdk.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, stT, nil); err != nil {
 		t.Fatal(err)

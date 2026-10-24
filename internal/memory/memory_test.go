@@ -114,7 +114,7 @@ func TestStoreCap(t *testing.T) {
 	// still fits and a larger one does not.
 	big := strings.Repeat("x", 4<<20)
 	for i := 0; i < 4; i++ {
-		if _, err := s.db.Exec(`INSERT INTO memories(id, created_at, updated_at, project_key, title, body, source) VALUES (?, 0, 0, 'p', 't', ?, 'cli')`, fmt.Sprint("big", i), big[:len(big)-100]); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO records(id, created_at, updated_at, project_key, title, content, content_hash, scope, source) VALUES (?, 0, 0, 'p', 't', ?, '', 'project', 'cli')`, fmt.Sprint("big", i), big[:len(big)-100]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -136,7 +136,7 @@ func TestNoteCountCap(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
 	if _, err := s.db.Exec(`WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM c WHERE i < ?)
-INSERT INTO memories(id, created_at, updated_at, project_key, title, body, source) SELECT 'id'||i, 0, 0, 'p', 't', 'b', 'cli' FROM c`, MaxNotes); err != nil {
+INSERT INTO records(id, created_at, updated_at, project_key, title, content, content_hash, scope, source) SELECT 'id'||i, 0, 0, 'p', 't', 'b', '', 'project', 'cli' FROM c`, MaxNotes); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Save(ctx, note("p", "one more", "b")); err != ErrFull {

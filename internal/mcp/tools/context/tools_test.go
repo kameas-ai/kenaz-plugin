@@ -3,6 +3,8 @@ package contexttools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 )
 
@@ -49,8 +52,8 @@ func TestWriteToolsRequireUserInteraction(t *testing.T) {
 	if !strings.Contains(string(raw), `"anthropic/requiresUserInteraction":true`) {
 		t.Fatalf("wire form: %s", raw)
 	}
-	// Codex: per-tool approval_mode is deferred; the
-	// user_confirmed argument is the interim guard and is tested below.
+	// The host prompt is not proof of confirmation: the write itself only
+	// happens after approval on the page (tested below).
 }
 
 // Search request building, ranking, snippet cap and the 16 KiB cap.
@@ -128,64 +131,84 @@ func TestShare(t *testing.T) {
 	args := map[string]any{"title": "Flaky e2e", "body": "Retry with -count=3.", "kind": "guidance"}
 
 	var out ShareOutput
-	call(t, cs, ToolShare, args, &out)
-	if out.Error == nil || out.Error.Code != CodeNotConfirmed || f.networkCalls() != 0 {
-		t.Fatalf("unconfirmed share must not upload: %+v calls=%d", out.Error, f.networkCalls())
-	}
-
-	args["user_confirmed"] = true
-	out = ShareOutput{}
 	if call(t, cs, ToolShare, args, &out); out.Error != nil {
 		t.Fatalf("share: %+v", out.Error)
 	}
-	if len(f.pushes) != 1 || f.pushes[0].TeamID != "team-plat" || f.pushes[0].Title != "Flaky e2e" || f.pushes[0].Body != "Retry with -count=3." {
+	if out.Status != "pending" || out.RequestID == "" || !strings.HasPrefix(out.ApproveURL, "http://localhost:") || f.networkCalls() != 0 {
+		t.Fatalf("share must only prepare: %+v calls=%d", out, f.networkCalls())
+	}
+	r := f.approvals.last()
+	if r.Operation != ShareOperation || r.UserID != "sub-1" || r.OrgID != "o1" || r.Env != "dev" || r.TargetIDs[0] != "team:Platform" {
+		t.Fatalf("request = %+v", r)
+	}
+
+	// The relay executes exactly the prepared node after approval.
+	res, err := ExecuteShare(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.pushes) != 1 || f.pushes[0].TeamID != "team-plat" || f.pushes[0].Title != "Flaky e2e" || f.pushes[0].Body != "Retry with -count=3." || f.pushes[0].LoadPolicy != "on_demand" {
 		t.Fatalf("push = %+v", f.pushes)
 	}
-	if out.ID != "srv-1" || out.Team != "Platform" || out.Classification != "team_shared" {
-		t.Fatalf("out = %+v", out)
+	if string(res) != `{"classification":"team_shared","id":"srv-1"}` {
+		t.Fatalf("result = %s", res)
+	}
+}
+
+// A model-supplied user_confirmed=true is not confirmation: the call still
+// only prepares a request, and nothing reaches Fleet.
+func TestModelSuppliedUserConfirmedIgnored(t *testing.T) {
+	f := newFake("enterprise", "org_admin", platform)
+	cs := session(t, f, nil, "")
+	var sh ShareOutput
+	call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "fact", "user_confirmed": true}, &sh)
+	var pr PromoteOutput
+	call(t, cs, ToolPromote, map[string]any{"node_id": "n1", "user_confirmed": true}, &pr)
+	if sh.Status != "pending" || pr.Status != "pending" || f.writeCalls() != 0 {
+		t.Fatalf("share=%+v promote=%+v writes=%d", sh, pr, f.writeCalls())
 	}
 }
 
 // Credentials are not scanned on the device. Kameas Fleet's context push
-// answers 422 lint_blocked for a note that looks like it holds one, and the tool says so plainly without
-// echoing the note.
+// answers 422 lint_blocked for a note that looks like it holds one; the
+// executor records only the machine code, never the note.
 func TestShareFleetCredentialRejection(t *testing.T) {
 	f := newFake("enterprise", "org_admin", platform)
 	f.opErr = &fleetapi.APIError{Status: http.StatusUnprocessableEntity, Code: "lint_blocked", Message: "content blocked by lint"}
 	cs := session(t, f, nil, "")
 	var out ShareOutput
-	call(t, cs, ToolShare, map[string]any{"title": "note", "body": "aws_access_key_id = AKIAIOSFODNN7EXAMPLE", "kind": "fact", "user_confirmed": true}, &out)
-	if out.Error == nil || out.Error.Code != CodeCredentialDetected || !strings.Contains(out.Error.Message, "Kameas Fleet blocked this because it looks like it contains a secret") {
-		t.Fatalf("error = %+v", out.Error)
-	}
-	if out.ID != "" {
-		t.Fatalf("rejected share reported an id: %+v", out)
-	}
-	raw, _ := json.Marshal(out)
-	if strings.Contains(string(raw), "AKIA") {
-		t.Fatalf("error echoes the note: %s", raw)
+	call(t, cs, ToolShare, map[string]any{"title": "note", "body": "aws_access_key_id = AKIAIOSFODNN7EXAMPLE", "kind": "fact"}, &out)
+	r := f.approvals.last()
+	_, err := ExecuteShare(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey)
+	if err == nil || !strings.Contains(err.Error(), CodeCredentialDetected) || strings.Contains(err.Error(), "AKIA") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
-// Other 400/422 refusals show only Fleet's machine reason code, never its text.
+// Other 400/422 refusals keep only Fleet's machine reason, never its text;
+// transport failures are an unknown outcome, not a refusal.
 func TestShareFleetRejectionMessage(t *testing.T) {
 	f := newFake("enterprise", "org_admin", platform)
-	f.opErr = &fleetapi.APIError{Status: http.StatusBadRequest, Code: "body_too_long", Message: "body exceeds the maximum length: SECRET-ECHO"}
 	cs := session(t, f, nil, "")
 	var out ShareOutput
-	call(t, cs, ToolShare, map[string]any{"title": "note", "body": "text", "kind": "fact", "user_confirmed": true}, &out)
-	if out.Error == nil || out.Error.Code != CodeFleetRejected || !strings.Contains(out.Error.Message, "(reason: body_too_long)") {
-		t.Fatalf("error = %+v", out.Error)
+	call(t, cs, ToolShare, map[string]any{"title": "note", "body": "text", "kind": "fact"}, &out)
+	r := f.approvals.last()
+	f.opErr = &fleetapi.APIError{Status: http.StatusBadRequest, Code: "body_too_long", Message: "body exceeds the maximum length: SECRET-ECHO"}
+	_, err := ExecuteShare(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey)
+	if err == nil || !strings.Contains(err.Error(), CodeFleetRejected) || strings.Contains(err.Error(), "SECRET-ECHO") {
+		t.Fatalf("error = %v", err)
 	}
-	if raw, _ := json.Marshal(out); strings.Contains(string(raw), "SECRET-ECHO") {
-		t.Fatalf("Fleet's free text reached the user: %s", raw)
+	f.opErr = io.ErrUnexpectedEOF
+	if _, err := ExecuteShare(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey); !errors.Is(err, approvals.ErrOutcomeUnknown) {
+		t.Fatalf("transport error = %v", err)
 	}
-	// A hostile Code never reaches the output either.
-	f.opErr = &fleetapi.APIError{Status: http.StatusUnprocessableEntity, Code: "x SECRET-ECHO", Message: "m"}
-	out = ShareOutput{}
-	call(t, cs, ToolShare, map[string]any{"title": "note", "body": "text", "kind": "fact", "user_confirmed": true}, &out)
-	if raw, _ := json.Marshal(out); strings.Contains(string(raw), "SECRET-ECHO") {
-		t.Fatalf("a non-code Code reached the user: %s", raw)
+	// Reconciliation finds the node by its client-generated id.
+	f.opErr = nil
+	var node NodeInput
+	json.Unmarshal(r.Payload, &node)
+	f.nodes = []fleetapi.NodeContent{{Node: fleetapi.ContextNode{ID: node.ID, Classification: "team_shared"}}}
+	if _, applied, err := ReconcileShare(f)(context.Background(), r.Payload, r.IdempotencyKey); !applied || err != nil {
+		t.Fatalf("reconcile: %v %v", applied, err)
 	}
 }
 
@@ -193,11 +216,55 @@ func TestPromote(t *testing.T) {
 	f := newFake("enterprise", "org_admin", platform)
 	cs := session(t, f, nil, "")
 	var out PromoteOutput
-	if call(t, cs, ToolPromote, map[string]any{"node_id": "n1", "user_confirmed": true}, &out); out.Error != nil {
-		t.Fatalf("promote: %+v", out.Error)
+	if call(t, cs, ToolPromote, map[string]any{"node_id": "n1"}, &out); out.Error != nil || out.Status != "pending" {
+		t.Fatalf("promote: %+v", out)
 	}
-	if f.promotes[0].NodeID != "n1" || f.promotes[0].To != fleetapi.ClassificationOrgShared || out.Classification != "org_shared" {
-		t.Fatalf("promote = %+v out=%+v", f.promotes, out)
+	if len(f.promotes) != 0 {
+		t.Fatal("promote ran before approval")
+	}
+	r := f.approvals.last()
+	if _, err := ExecutePromote(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey); err != nil {
+		t.Fatal(err)
+	}
+	if f.promotes[0].NodeID != "n1" || f.promotes[0].To != fleetapi.ClassificationOrgShared {
+		t.Fatalf("promote = %+v", f.promotes)
+	}
+	// The approval page names the note and its current team scope.
+	v, err := RenderPromote(func(string) string { return "Platform" })(r.Payload)
+	if err != nil || !strings.Contains(v.Summary, `"Runbook"`) || !strings.Contains(v.Summary, "Platform (team-plat)") || !strings.Contains(v.Impact, "whole organization") {
+		t.Fatalf("render: %+v %v", v, err)
+	}
+	if _, err := RenderPromote(nil)([]byte(`{"node_id":"n1","to":"org_shared"}`)); err == nil {
+		t.Fatal("rendered a promote without title or team")
+	}
+	// Reconciliation: applied once the node is organization-shared.
+	if _, applied, _ := ReconcilePromote(f)(context.Background(), r.Payload, ""); applied {
+		t.Fatal("reconciler claims a team note was promoted")
+	}
+	f.nodes[0].Node.Classification = fleetapi.ClassificationOrgShared
+	if _, applied, err := ReconcilePromote(f)(context.Background(), r.Payload, ""); !applied || err != nil {
+		t.Fatalf("reconcile: %v %v", applied, err)
+	}
+	f.nodes[0].Node.Classification = fleetapi.ClassificationTeamShared
+	// A note renamed after the request was prepared is not promoted.
+	f.nodes[0].Node.Title = "Renamed"
+	if _, err := ExecutePromote(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey); err == nil || !strings.Contains(err.Error(), "node_changed") {
+		t.Fatalf("changed note promoted: %v", err)
+	}
+	f.nodes[0].Node.Title = "Runbook"
+	// Nor is a note whose text changed, and the page shows the text.
+	if len(v.Details) != 1 || v.Details[0].Text != "Restart the queue first." {
+		t.Fatalf("details: %+v", v.Details)
+	}
+	f.nodes[0].Body = "Delete the queue first."
+	if _, err := ExecutePromote(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey); err == nil || !strings.Contains(err.Error(), "node_changed") {
+		t.Fatalf("edited note promoted: %v", err)
+	}
+	f.nodes[0].Body = "Restart the queue first."
+	// The executor rechecks role at execution time.
+	f.me.Role = "member"
+	if _, err := ExecutePromote(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey); err == nil || len(f.promotes) != 1 {
+		t.Fatalf("demoted admin promoted: %v", err)
 	}
 }
 
@@ -341,5 +408,36 @@ func TestTeamMembers(t *testing.T) {
 	raw, _ := json.Marshal(out)
 	if strings.Contains(string(raw), "@") {
 		t.Fatalf("email leaked: %s", raw)
+	}
+}
+
+// approvedCtx is the context the relay runs an executor in for the fake's
+// approved request.
+var approvedCtx = approvals.ContextWithIdentity(context.Background(), approvals.Identity{Env: "dev", OrgID: "o1", UserID: "sub-1"})
+
+func TestExecutorsRecheckAccount(t *testing.T) {
+	f := newFake("enterprise", "org_admin", platform)
+	cs := session(t, f, nil, "")
+	var out ShareOutput
+	call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "fact"}, &out)
+	r := f.approvals.last()
+	other := approvals.ContextWithIdentity(context.Background(), approvals.Identity{Env: "dev", OrgID: "o1", UserID: "sub-2"})
+	if _, err := ExecuteShare(f, nil)(other, r.Payload, r.IdempotencyKey); err == nil || !strings.Contains(err.Error(), "account_changed") {
+		t.Fatalf("share: %v", err)
+	}
+	pl, _ := json.Marshal(promotePayload{NodeID: "n1", To: "org_shared", TeamID: "team-plat", Title: "Runbook", Body: "Restart the queue first."})
+	if _, err := ExecutePromote(f, nil)(other, pl, "k"); err == nil {
+		t.Fatal("promote for another account")
+	}
+	if f.networkCalls() != 0 {
+		t.Fatal("wrote for another account")
+	}
+	// The page text comes from the payload, not from the tool's summary.
+	v, err := RenderShare(func(string) string { return "Platform" })(r.Payload)
+	if err != nil || !strings.Contains(v.Summary, `"t"`) || !strings.Contains(v.Summary, "Platform (team-plat)") {
+		t.Fatalf("render: %+v %v", v, err)
+	}
+	if _, err := RenderShare(nil)([]byte(`{"id":"x","team_id":"t","classification":"org_shared","load_policy":"always","kind":"fact"}`)); err == nil {
+		t.Fatal("rendered a payload the executor would refuse")
 	}
 }

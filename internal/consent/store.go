@@ -23,6 +23,9 @@ type Store struct {
 type storeFile struct {
 	Accepted map[string]string    `json:"accepted_notice_version"` // user id → version
 	Admitted map[string]time.Time `json:"admitted_at,omitempty"`   // org id → first admitted response seen
+	// QueueOwner is OwnerKey of the account whose telemetry the device
+	// queue (spool) may hold. Absent in files written by earlier builds.
+	QueueOwner string `json:"queue_owner,omitempty"`
 }
 
 // NewStore returns a Store backed by path (created on first write).
@@ -101,6 +104,35 @@ func (s *Store) SetAdmitted(orgID string, t time.Time) error {
 	} else {
 		f.Admitted[orgID] = t
 	}
+	return s.write(f)
+}
+
+// QueueOwner returns the recorded queue owner key, or "".
+func (s *Store) QueueOwner() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, _ := s.read()
+	return f.QueueOwner
+}
+
+// SetQueueOwner records the account whose telemetry may be queued.
+func (s *Store) SetQueueOwner(key string) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f, err := s.read()
+	if err != nil {
+		return err
+	}
+	if f.QueueOwner == key {
+		return nil
+	}
+	f.QueueOwner = key
 	return s.write(f)
 }
 

@@ -55,7 +55,11 @@ func WriteText(w io.Writer, s OrgState) {
 		if p.Blocking {
 			b = " [blocking]"
 		}
-		fmt.Fprintf(w, "Pending in Fleet: %s%s. Review it in Kameas Fleet.\n", p.Title, b)
+		if p.URL != "" {
+			fmt.Fprintf(w, "Pending in Fleet: %s%s. Review it in Kameas Fleet: %s\n", p.Title, b, p.URL)
+		} else {
+			fmt.Fprintf(w, "Pending in Fleet: %s%s. Review it in Kameas Fleet.\n", p.Title, b)
+		}
 	}
 	if s.Spool.Bytes > 0 {
 		fmt.Fprintf(w, "Queued on this device: %d bytes (oldest %ds)\n", s.Spool.Bytes, s.Spool.OldestAgeSec)
@@ -121,7 +125,11 @@ func SessionStartContext(s OrgState) string {
 		return ""
 	}
 	if len(s.Pending) > 0 {
-		lines = append(lines, "Ask the user to review these items in Kameas Fleet. Do not summarize or accept these items yourself.")
+		if s.DashboardURL != "" {
+			lines = append(lines, "Ask the user to review these items in Kameas Fleet ("+s.DashboardURL+"). Do not summarize or accept these items yourself.")
+		} else {
+			lines = append(lines, "Ask the user to review these items in Kameas Fleet. Do not summarize or accept these items yourself.")
+		}
 	}
 	lines = append(lines, "This does not affect your work in this session.")
 	out := "Kameas Fleet status: " + strings.Join(lines, " ")

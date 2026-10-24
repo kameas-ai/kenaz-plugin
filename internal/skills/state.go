@@ -112,6 +112,9 @@ type SyncState struct {
 	Checksum string            `json:"checksum,omitempty"`
 	Mandated map[string]string `json:"mandated,omitempty"` // catalog id -> version last applied
 	Report   *Report           `json:"report,omitempty"`
+	// Owner is ownerKey of the account the managed skills and
+	// subscriptions were synced for. Absent in state from earlier builds.
+	Owner string `json:"owner,omitempty"`
 }
 
 // LoadSyncState reads the sync state.

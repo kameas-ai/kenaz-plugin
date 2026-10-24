@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -174,3 +175,55 @@ func SpawnSelf(stateDir string, env fleetapi.Env) SpawnFunc {
 
 // IsNotRunning reports whether err means no daemon is reachable.
 func IsNotRunning(err error) bool { return errors.Is(err, ErrNotRunning) }
+
+// APIError is a non-2xx control-API reply. Code is the JSON error code the
+// endpoint returned ({"code": ...}), if any.
+type APIError struct {
+	Method, Path string
+	Status       int
+	Code         string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("daemon %s %s: http %d %s", e.Method, e.Path, e.Status, e.Code)
+}
+
+// APICode returns the endpoint's error code.
+func (e *APIError) APICode() string { return e.Code }
+
+// DoJSON calls a nonce-authenticated control endpoint with in as the JSON
+// body (nil: none) and decodes the JSON reply into out (nil: ignored).
+func (c *Client) DoJSON(ctx context.Context, method, path string, in, out any) error {
+	var body []byte
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = b
+	}
+	req, err := http.NewRequestWithContext(ctx, method, fmt.Sprintf("http://127.0.0.1:%d%s", c.Info.Port, path), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Info.Nonce)
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		var e struct {
+			Code string `json:"code"`
+		}
+		json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&e)
+		return &APIError{Method: method, Path: path, Status: resp.StatusCode, Code: e.Code}
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}

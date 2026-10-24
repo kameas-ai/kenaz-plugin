@@ -1,0 +1,144 @@
+{
+  "note": "OpenCode conformance cells for a later release. OpenCode is not part of the first (basic) release and ships disabled (build tag kenaz_opencode); these are not validated or run. To restore them, add the host back to RequiredHosts and merge these entries into matrix.json and compatibility.json.",
+  "matrix_host": [
+    {
+      "id": "opencode",
+      "name": "OpenCode"
+    }
+  ],
+  "lock_host": [
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "channel": "V2",
+      "version": "UNVERIFIED",
+      "artifacts": [
+        {
+          "os": "macos-14-arm64",
+          "source": "UNVERIFIED",
+          "sha256": "UNVERIFIED"
+        },
+        {
+          "os": "ubuntu-24.04-amd64",
+          "source": "UNVERIFIED",
+          "sha256": "UNVERIFIED"
+        },
+        {
+          "os": "windows-11-amd64",
+          "source": "UNVERIFIED",
+          "sha256": "UNVERIFIED"
+        }
+      ]
+    }
+  ],
+  "cells": [
+    {
+      "id": "otel-export/opencode/macos-14-arm64",
+      "feature": "otel-export",
+      "host": "opencode",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/otel-export.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "otel-export/opencode/ubuntu-24.04-amd64",
+      "feature": "otel-export",
+      "host": "opencode",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/otel-export.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "otel-export/opencode/windows-11-amd64",
+      "feature": "otel-export",
+      "host": "opencode",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/otel-export.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "context/opencode/macos-14-arm64",
+      "feature": "context",
+      "host": "opencode",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/context.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "context/opencode/ubuntu-24.04-amd64",
+      "feature": "context",
+      "host": "opencode",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/context.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "context/opencode/windows-11-amd64",
+      "feature": "context",
+      "host": "opencode",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/context.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "private-memory/opencode/macos-14-arm64",
+      "feature": "private-memory",
+      "host": "opencode",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/private-memory.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "private-memory/opencode/ubuntu-24.04-amd64",
+      "feature": "private-memory",
+      "host": "opencode",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/private-memory.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "private-memory/opencode/windows-11-amd64",
+      "feature": "private-memory",
+      "host": "opencode",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/private-memory.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "skills/opencode/macos-14-arm64",
+      "feature": "skills",
+      "host": "opencode",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/skills.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "skills/opencode/ubuntu-24.04-amd64",
+      "feature": "skills",
+      "host": "opencode",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/skills.opencode.sh",
+      "component_journey": null
+    },
+    {
+      "id": "skills/opencode/windows-11-amd64",
+      "feature": "skills",
+      "host": "opencode",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/skills.opencode.sh",
+      "component_journey": null
+    }
+  ]
+}

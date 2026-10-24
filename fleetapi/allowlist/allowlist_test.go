@@ -33,3 +33,38 @@ func TestTelemetryClosedSet(t *testing.T) {
 		t.Fatalf("log attrs = %v", al.LogAttributes)
 	}
 }
+
+// TestMemoryClosedSet pins every key the memory lane can send. Changing
+// one changes what is sent: it needs review and a memory-sync notice
+// update.
+func TestMemoryClosedSet(t *testing.T) {
+	m := Memory()
+	for name, c := range map[string][2]string{
+		"push":     {strings.Join(m.PushRequest, ","), "base_cursor,device_id,items"},
+		"item":     {strings.Join(m.PushItem, ","), "content,content_hash,created_at,fields,files_modified,files_read,hlc,id,kind,last_accessed,op,recall_own,retrieval_weight,source,source_turn,tool_name,turn_id"},
+		"fields":   {strings.Join(m.Fields, ","), "pinned,scope_kind,title"},
+		"register": {strings.Join(m.FieldValue, ","), "hlc,v"},
+		"settings": {strings.Join(m.SettingsUpdate, ","), "consent_version,enabled,scopes"},
+		"forget":   {strings.Join(m.Forget, ","), "ids"},
+		"all":      {strings.Join(m.ForgetAll, ","), "confirm"},
+		"pull":     {strings.Join(m.PullQuery, ","), "cursor,device_id,limit"},
+	} {
+		if c[0] != c[1] {
+			t.Errorf("%s = %s, want %s", name, c[0], c[1])
+		}
+	}
+	ok := []byte(`{"device_id":"d","base_cursor":"","items":[{"op":"upsert","id":"mem-1","content":"x","fields":{"title":{"v":"t","hlc":"h"}}}]}`)
+	if err := m.CheckPushBody(ok); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		`{"device_id":"d","user_id":"u","items":[]}`,
+		`{"items":[{"op":"upsert","id":"x","email":"a@b"}]}`,
+		`{"items":[{"op":"upsert","id":"x","fields":{"tags":{"v":[],"hlc":"h"}}}]}`,
+		`{"items":[{"op":"upsert","id":"x","fields":{"title":{"v":"t","hlc":"h","who":"me"}}}]}`,
+	} {
+		if m.CheckPushBody([]byte(bad)) == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}

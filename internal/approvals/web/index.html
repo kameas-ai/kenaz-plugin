@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="kenaz-csrf" content="{{.CSRF}}">
+<title>Kenaz approvals</title>
+<link rel="stylesheet" href="/approvals/static/style.css">
+</head>
+<body>
+<main>
+  <h1>Kenaz approvals</h1>
+  <p class="lede">Writes your agent prepares wait here until you approve them with your security key or this device's unlock. Nothing is written before that.</p>
+
+  <section id="request" hidden>
+    <h2 id="r-op"></h2>
+    <dl>
+      <dt>Status</dt><dd id="r-status"></dd>
+      <dt>Account</dt><dd id="r-account"></dd>
+      <dt>Destination</dt><dd id="r-targets"></dd>
+      <dt>Expires</dt><dd id="r-expires"></dd>
+    </dl>
+    <h3>What will happen</h3>
+    <p id="r-summary" class="summary"></p>
+    <p id="r-impact" class="impact" hidden></p>
+    <ol id="r-details" class="details" hidden></ol>
+    <h3>Exact content</h3>
+    <pre id="r-payload"></pre>
+    <p class="hash">SHA-256 <code id="r-hash"></code></p>
+    <div class="actions" id="r-actions">
+      <button id="approve" type="button">Approve with security key or device unlock</button>
+      <button id="deny" type="button" class="secondary">Cancel</button>
+    </div>
+    <p id="r-result" class="result" hidden></p>
+  </section>
+
+  <section id="enroll" hidden>
+    <h2>Set up approvals</h2>
+    <p id="e-state"></p>
+    <p>Approvals need a security key or this device's unlock (Touch ID, Windows Hello, a PIN-protected key). Kenaz never approves anything without it.</p>
+    <p id="e-signin" hidden>Confirm your Fleet account: <a id="e-signin-link" target="_blank" rel="noopener noreferrer">continue sign-in</a>. Come back to this tab when you are done.</p>
+    <div class="actions">
+      <button id="e-start" type="button">Set up an authenticator</button>
+      <button id="e-add" type="button" class="secondary" hidden>Add another authenticator</button>
+      <button id="e-recover" type="button" class="secondary" hidden>Replace lost authenticators</button>
+    </div>
+  </section>
+
+  <p id="message" class="message" role="status"></p>
+</main>
+<script src="/approvals/static/app.js"></script>
+</body>
+</html>

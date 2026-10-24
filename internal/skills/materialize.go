@@ -13,12 +13,15 @@ import (
 	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/features"
 )
 
 // Harness names a skill root's consumer.
 const (
 	HarnessClaude = "claude"
 	HarnessCodex  = "codex"
+	// HarnessOpenCode shares the ~/.agents/skills root with Codex.
+	HarnessOpenCode = "opencode"
 )
 
 // DirPrefix prefixes every managed skill directory name.
@@ -32,8 +35,9 @@ type Root struct {
 
 // DetectRoots returns the user-scope roots for harnesses present under
 // home: ~/.claude/skills when ~/.claude exists, ~/.agents/skills
-// when ~/.codex or ~/.agents exists. force names harnesses to include
-// regardless (config skills.targets).
+// when ~/.codex, ~/.agents or OpenCode's ~/.config/opencode exists
+// (OpenCode discovers skills in ~/.agents/skills as well). force names
+// harnesses to include regardless (config skills.targets).
 func DetectRoots(home string, force ...string) []Root {
 	want := map[string]bool{}
 	for _, f := range force {
@@ -44,7 +48,7 @@ func DetectRoots(home string, force ...string) []Root {
 	if want[HarnessClaude] || exists(filepath.Join(home, ".claude")) {
 		roots = append(roots, Root{HarnessClaude, filepath.Join(home, ".claude", "skills")})
 	}
-	if want[HarnessCodex] || exists(filepath.Join(home, ".codex")) || exists(filepath.Join(home, ".agents")) {
+	if want[HarnessCodex] || want[HarnessOpenCode] || exists(filepath.Join(home, ".codex")) || exists(filepath.Join(home, ".agents")) || (features.OpenCode && exists(filepath.Join(home, ".config", "opencode"))) {
 		roots = append(roots, Root{HarnessCodex, filepath.Join(home, ".agents", "skills")})
 	}
 	return roots

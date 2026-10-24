@@ -1,0 +1,20 @@
+{
+  "mcp": {
+    "kenaz": {
+      "type": "local",
+      "command": [
+        "/ROOT/opt/kenaz/bin/kenaz",
+        "mcp"
+      ],
+      "enabled": true
+    }
+  },
+  "plugin": [
+    [
+      "/ROOT/opt/kenaz/opencode",
+      {
+        "state_dir": "/ROOT/state"
+      }
+    ]
+  ]
+}

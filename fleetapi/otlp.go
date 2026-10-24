@@ -40,5 +40,11 @@ type OTLPPoster interface {
 	// Post sends one batch. A retryable failure (network, 5xx, 429)
 	// returns an error that is not an *APIError with a 4xx status.
 	// An org-pause refusal is detectable with OrgPaused.
+	//
+	// ctx carries the account the batch was stamped for
+	// (WithExpectedSession). The implementation MUST pick the credentials
+	// for the request first and compare them with ExpectedSessionFrom(ctx);
+	// when ctx has none, or it does not match, it MUST refuse, sending
+	// nothing, with an *APIError whose Code is CodeIdentityMismatch.
 	Post(ctx context.Context, batch ProjectedBatch) (ExportResult, error)
 }

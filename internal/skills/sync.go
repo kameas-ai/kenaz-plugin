@@ -2,6 +2,8 @@ package skills
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"sort"
@@ -59,6 +61,23 @@ func (s *Syncer) Sync(ctx context.Context) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	sess, err := s.Provider.Auth().Session(ctx)
+	if err != nil {
+		return Report{}, err
+	}
+	owner := ownerKey(sess)
+	if st.Owner != "" && st.Owner != owner {
+		// Another account signed in: org content and the previous member's
+		// subscriptions do not carry over.
+		if err := s.dropAccount(); err != nil {
+			return Report{}, err
+		}
+		st = SyncState{}
+	}
+	// An empty Owner (first sync, or state from an earlier build) is
+	// adopted: earlier builds remove managed skills on logout, so what is
+	// installed belongs to the account still signed in.
+	st.Owner = owner
 	bundle, err := s.pull(ctx, st)
 	if err != nil {
 		return Report{}, err
@@ -255,4 +274,29 @@ func label(slug, id string) string {
 		return slug
 	}
 	return id
+}
+
+// ownerKey identifies the account skills were synced for (Fleet env,
+// organization, user) without storing the identifiers.
+func ownerKey(s fleetapi.Session) string {
+	h := sha256.Sum256([]byte("kenaz/skills-owner/v1\x00" + string(s.Env) + "\x00" + s.OrgID + "\x00" + s.UserID))
+	return hex.EncodeToString(h[:16])
+}
+
+// dropAccount removes every managed skill directory and resets the
+// subscriptions and sync state. The caller holds the skills lock.
+func (s *Syncer) dropAccount() error {
+	owned, err := s.Mat.Owned()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, o := range owned {
+		errs = append(errs, removeOwned(o.Dir))
+	}
+	errs = append(errs, s.Store.Reset())
+	if len(owned) > 0 {
+		errs = append(errs, s.Store.BumpGeneration())
+	}
+	return errors.Join(errs...)
 }

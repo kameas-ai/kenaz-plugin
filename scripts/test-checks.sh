@@ -13,6 +13,7 @@ fresh() {
   mkdir -p "$tmp/r/internal/mcp"
   cp -R "$here/internal/mcp/tools" "$tmp/r/internal/mcp/"
   mkdir -p "$tmp/r/cmd/kenaz"
+  cp -R "$here/opencode" "$tmp/r/"
 }
 
 expect_fail() {
@@ -51,6 +52,29 @@ expect_fail "mcp_servers in setup" no-policy
 fresh; mkdir -p "$tmp/r/internal/setup"
 printf 'package setup\nconst x = `"hooks"`\n' > "$tmp/r/internal/setup/s.go"
 expect_fail "hooks key in setup" no-policy
+
+fresh; mkdir -p "$tmp/r/internal/setup"
+printf 'package setup\nconst x = `"permission"`\n' > "$tmp/r/internal/setup/s.go"
+expect_fail "OpenCode permission key in setup" no-policy
+
+fresh; mkdir -p "$tmp/r/internal/setup"
+printf 'package setup\nconst x = `"tools"`\n' > "$tmp/r/internal/setup/s.go"
+expect_fail "OpenCode tools key in setup" no-policy
+
+fresh; mkdir -p "$tmp/r/internal/bundle"
+printf 'package bundle\nconst x = "permissionDecision"\n' > "$tmp/r/internal/bundle/b.go"
+expect_fail "permissionDecision in bundle renderer" no-policy
+
+fresh; printf '\nexport const h = { "tool.execute.before": async () => {} };\n' >> "$tmp/r/opencode/src/index.js"
+expect_fail "OpenCode adapter tool.execute.before" no-policy
+fresh; printf '\nexport const h = { "permission.ask": async () => {} };\n' >> "$tmp/r/opencode/src/map.js"
+expect_fail "OpenCode adapter permission.ask" no-policy
+fresh
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["dependencies"]={"left-pad":"1.0.0"}; json.dump(d,open(p,"w"))' "$tmp/r/opencode/package.json"
+expect_fail "OpenCode adapter runtime dependency" no-policy
+fresh
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["name"]="@kameas/kenaz-codex-opencode"; json.dump(d,open(p,"w"))' "$tmp/r/opencode/package.json"
+expect_fail "OpenCode adapter package name with a third-party mark" names
 
 fresh
 python3 - "$tmp/r/plugin/.claude-plugin/plugin.json" <<'EOF'

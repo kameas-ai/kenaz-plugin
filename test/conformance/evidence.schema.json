@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence.schema.json",
+  "title": "Baseline conformance evidence and release verdict",
+  "description": "Evidence: one record per matrix cell, written by `conformance run`. Verdict: written by `conformance verdict` and checked by `conformance check-verdict` before publication. The Go types in conformance.go are authoritative; Evidence.Validate and CheckVerdict enforce the rules this schema cannot express (a pass needs a locked host and candidate, a clean revision and no blocking reason; release needs every cell to pass on a locked lock).",
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sha256OrUnverified": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"const": "UNVERIFIED"}]},
+    "reason": {
+      "type": "object",
+      "required": ["gate", "reason"],
+      "additionalProperties": false,
+      "properties": {"gate": {"enum": ["E01", "E06", "component"]}, "reason": {"type": "string", "minLength": 1}}
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "cell", "revision", "revision_dirty", "lock_sha256", "candidate_sha256", "host_version", "os", "os_observed", "env", "command", "expected", "actual", "verdict", "started_at", "finished_at"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "cell": {"type": "string", "pattern": "^(otel-export|context|private-memory|skills)/(claude-code-cli|codex-cli|opencode)/(macos-14-arm64|ubuntu-24.04-amd64|windows-11-amd64)$"},
+        "revision": {"type": "string", "minLength": 1},
+        "revision_dirty": {"type": "boolean"},
+        "lock_sha256": {"$ref": "#/$defs/sha256"},
+        "candidate_sha256": {"$ref": "#/$defs/sha256OrUnverified"},
+        "host_version": {"type": "string"},
+        "host_version_observed": {"type": "string"},
+        "os": {"type": "string"},
+        "os_observed": {"type": "string"},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}},
+        "command": {"type": "string", "minLength": 1},
+        "expected": {"type": "string", "minLength": 1},
+        "actual": {"type": "string", "minLength": 1},
+        "component": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["command", "result", "tests_passed", "tests_failed"],
+          "properties": {
+            "command": {"type": "string"},
+            "result": {"enum": ["pass", "fail", "missing", "not_run"]},
+            "tests_passed": {"type": "integer", "minimum": 0},
+            "tests_failed": {"type": "integer", "minimum": 0},
+            "output_sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "verdict": {"enum": ["pass", "fail", "blocked"]},
+        "reasons": {"type": "array", "items": {"$ref": "#/$defs/reason"}},
+        "started_at": {"type": "string", "format": "date-time"},
+        "finished_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "revision", "lock_sha256", "lock_status", "candidate", "cells", "summary", "release_allowed", "verdict_sha256"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "revision": {"type": "string"},
+        "lock_sha256": {"$ref": "#/$defs/sha256"},
+        "lock_status": {"enum": ["unverified", "locked"]},
+        "candidate": {"type": "object"},
+        "cells": {
+          "type": "array",
+          "minItems": 36,
+          "maxItems": 36,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cell", "verdict", "evidence_sha256"],
+            "properties": {
+              "cell": {"type": "string"},
+              "verdict": {"enum": ["pass", "fail", "blocked", "missing"]},
+              "evidence_sha256": {"type": "string"}
+            }
+          }
+        },
+        "summary": {"type": "object"},
+        "release_allowed": {"type": "boolean"},
+        "verdict_sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of the compact JSON encoding of this object with verdict_sha256 set to the empty string."}
+      }
+    }
+  },
+  "oneOf": [{"$ref": "#/$defs/evidence"}, {"$ref": "#/$defs/verdict"}]
+}

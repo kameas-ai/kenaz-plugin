@@ -22,10 +22,13 @@ type ClientKind string
 const (
 	ClaudeCode ClientKind = "claude-code"
 	Codex      ClientKind = "codex"
+	// OpenCode is reported by the Kenaz OpenCode adapter, which translates
+	// OpenCode plugin events into OTLP for the local relay.
+	OpenCode ClientKind = "opencode"
 )
 
 // Valid reports whether k is a known client kind.
-func (k ClientKind) Valid() bool { return k == ClaudeCode || k == Codex }
+func (k ClientKind) Valid() bool { return k == ClaudeCode || k == Codex || k == OpenCode }
 
 // Kind discriminates Event.
 type Kind int
@@ -41,6 +44,10 @@ const (
 	KindAPIError
 	// KindCostDelta adds provider-reported cost to the session.
 	KindCostDelta
+	// KindSessionEnd closes a session the harness reported as ended
+	// (OpenCode's adapter; Claude Code and Codex use the SessionEnd hook).
+	// It never opens a session.
+	KindSessionEnd
 )
 
 // Event is one canonical event. Exactly the fields relevant to Kind are set.
@@ -73,6 +80,10 @@ type Event struct {
 	TurnID string
 	// FromTurnSpan marks usage taken from a Codex turn span (fallback).
 	FromTurnSpan bool
+	// DedupKey identifies one logical model or tool call across producer
+	// retries (OpenCode message/call ids). The aggregator keeps only a
+	// keyed hash of it, per session. Never sent.
+	DedupKey string
 
 	// Tool call (KindToolCall).
 	ToolName  string // raw name, mapped to an enum by the projector

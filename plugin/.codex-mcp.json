@@ -17,6 +17,15 @@
         },
         "memory_forget": {
           "approval_mode": "prompt"
+        },
+        "memory_update": {
+          "approval_mode": "prompt"
+        },
+        "memory_forget_all": {
+          "approval_mode": "prompt"
+        },
+        "memory_sync_settings": {
+          "approval_mode": "prompt"
         }
       }
     }

@@ -105,19 +105,21 @@ func TestAdmissionMomentRecordedAndPurges(t *testing.T) {
 	if err := m.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if lanePurges(lanes) != 1 {
+	// One purge claims the (ownerless) queue on first run, one is the
+	// first admitted response's.
+	if lanePurges(lanes) != 2 {
 		t.Fatalf("first admitted response must purge earlier data: %d", lanePurges(lanes))
 	}
 	if got := m.State().AdmittedAt; !got.Equal(t0) {
 		t.Fatalf("admitted at %v, want %v", got, t0)
 	}
 	now = t0.Add(time.Hour)
-	if err := m.Refresh(ctx); err != nil || lanePurges(lanes) != 1 || !m.State().AdmittedAt.Equal(t0) {
+	if err := m.Refresh(ctx); err != nil || lanePurges(lanes) != 2 || !m.State().AdmittedAt.Equal(t0) {
 		t.Fatalf("later admitted responses must not move the moment or purge: %v %d", err, lanePurges(lanes))
 	}
 	// Restart: the recorded moment stands; nothing is purged.
 	m2 := newM()
-	if err := m2.Refresh(ctx); err != nil || lanePurges(lanes) != 1 || !m2.State().AdmittedAt.Equal(t0) {
+	if err := m2.Refresh(ctx); err != nil || lanePurges(lanes) != 2 || !m2.State().AdmittedAt.Equal(t0) {
 		t.Fatalf("restart: %v purges=%d at=%v", err, lanePurges(lanes), m2.State().AdmittedAt)
 	}
 	// An upload refusal clears it; re-admission is a new moment.
@@ -200,7 +202,8 @@ func TestFutureAdmissionMomentReplaced(t *testing.T) {
 	if err := m.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := m.State().AdmittedAt; !got.Equal(now) || lanePurges(lanes) != 1 {
+	// The first-run claim of the ownerless queue purges too.
+	if got := m.State().AdmittedAt; !got.Equal(now) || lanePurges(lanes) != 2 {
 		t.Fatalf("admitted at %v (purges %d), want %v", got, lanePurges(lanes), now)
 	}
 }

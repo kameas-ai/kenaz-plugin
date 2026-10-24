@@ -2,11 +2,17 @@
 // search the Kameas Fleet catalog, install and uninstall shared
 // Agent Skills, and publish a local skill. Installs go through the same
 // materializer as the daemon's sync, under the same cross-process lock.
-// Publishing always needs an explicit user confirmation in the harness.
+// Publishing never uploads directly: skills_publish prepares a
+// human-authorized write (internal/approvals) that the user approves with
+// their authenticator on the local approval page; the relay daemon then
+// runs ExecutePublish with exactly the prepared payload.
 package skills
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +23,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 	sk "github.com/kameas-ai/kenaz-plugin/internal/skills"
 )
@@ -93,15 +100,34 @@ type PublishInput struct {
 	Visibility string `json:"visibility,omitempty" jsonschema:"private (default), team or org_public"`
 }
 
-// PublishOutput is skills_publish's result.
+// PublishOutput is skills_publish's result. Nothing is uploaded when the
+// tool returns: status is "pending" until the user approves on the page at
+// approve_url (or approval_unavailable when they cannot).
 type PublishOutput struct {
-	CatalogID  string `json:"catalog_id"`
+	RequestID  string `json:"request_id,omitempty"`
+	Status     string `json:"status"`
+	ApproveURL string `json:"approve_url,omitempty"`
 	Slug       string `json:"slug"`
 	Version    string `json:"version"`
 	Visibility string `json:"visibility"`
 	Files      int    `json:"files"`
 	Bytes      int    `json:"bytes"`
 	Message    string `json:"message"`
+}
+
+// PublishOperation is the approval operation name for skills_publish.
+const PublishOperation = "skills.publish"
+
+// PublishPayload is the exact, canonical body an approved publish sends.
+// It is built here, shown verbatim on the approval page and executed
+// verbatim by ExecutePublish.
+type PublishPayload struct {
+	Kind        string          `json:"kind"`
+	Slug        string          `json:"slug"`
+	Version     string          `json:"version"`
+	Description string          `json:"description"`
+	Visibility  string          `json:"visibility"`
+	Payload     json.RawMessage `json:"payload"`
 }
 
 func register(s *sdk.Server, d mcp.Deps) {
@@ -134,7 +160,7 @@ func register(s *sdk.Server, d mcp.Deps) {
 	})
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "skills_publish",
-		Description: "Publish a local Agent Skill directory (with SKILL.md) to your Kameas Fleet catalog. This uploads the skill's files. You will be asked to confirm. Visibility defaults to private (only you); team or org_public share it with colleagues and need a Team plan.",
+		Description: "Prepare publishing a local Agent Skill directory (with SKILL.md) to your Kameas Fleet catalog. Nothing is uploaded by this call: it returns request_id, status \"pending\" and approve_url. The user must open approve_url, review the exact files and approve with their security key or device unlock; give them the link. Visibility defaults to private (only you); team or org_public share it with colleagues and need a Team plan.",
 		Annotations: &sdk.ToolAnnotations{Title: "Publish a skill", DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 		Meta:        requiresInteraction,
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in PublishInput) (*sdk.CallToolResult, PublishOutput, error) {
@@ -306,9 +332,9 @@ func Uninstall(_ context.Context, d mcp.Deps, in UninstallInput) (UninstallOutpu
 	return UninstallOutput{Removed: n, Message: "Uninstalled. It will be gone in your next session."}, nil
 }
 
-// Publish implements skills_publish. The harness has already asked the
-// user to confirm (requiresUserInteraction); this validates, enforces the
-// tier rule for shared visibility, and uploads.
+// Publish implements skills_publish. It validates, enforces the tier rule
+// for shared visibility and prepares an approval request with the exact
+// payload. It never uploads.
 func Publish(ctx context.Context, d mcp.Deps, in PublishInput) (PublishOutput, error) {
 	if !filepath.IsAbs(in.Path) {
 		return PublishOutput{}, errors.New("path must be an absolute path to a skill directory")
@@ -337,18 +363,161 @@ func Publish(ctx context.Context, d mcp.Deps, in PublishInput) (PublishOutput, e
 			return PublishOutput{}, errors.New("sharing skills with your team needs a Team plan; publish as private instead")
 		}
 	}
-	e, err := d.Provider.Catalog().Publish(ctx, fleetapi.PublishRequest{
-		Kind: fleetapi.CatalogKindAgentSkill, Slug: s.Name, Version: in.Version,
-		Description: s.Description, Visibility: vis, Payload: payload,
-	})
+	sess, err := d.Provider.Auth().Session(ctx)
 	if err != nil {
 		return PublishOutput{}, friendly(err)
 	}
+	body, err := json.Marshal(PublishPayload{
+		Kind: fleetapi.CatalogKindAgentSkill, Slug: s.Name, Version: in.Version,
+		Description: s.Description, Visibility: string(vis), Payload: payload,
+	})
+	if err != nil {
+		return PublishOutput{}, err
+	}
+	sum := sha256.Sum256(body)
+	req := approvals.Request{
+		Operation: PublishOperation, Env: string(sess.Env), OrgID: sess.OrgID, UserID: sess.UserID,
+		TargetIDs:      []string{"catalog:" + s.Name + "@" + in.Version, "visibility:" + string(vis)},
+		Payload:        body,
+		IdempotencyKey: PublishOperation + ":" + hex.EncodeToString(sum[:]),
+		Summary:        fmt.Sprintf("Publish the skill %q version %s to your Kameas Fleet catalog as %s: %d files, %d bytes.", s.Name, in.Version, vis, len(s.Files), len(payload)),
+	}
+	switch vis {
+	case fleetapi.VisibilityTeam:
+		req.Impact = "Every member of your team will be able to see and install this skill."
+	case fleetapi.VisibilityOrgPublic:
+		req.Impact = "Everyone in your organization will be able to see and install this skill."
+	}
+	p, err := approvals.Submit(ctx, d.Approvals, req)
+	if err != nil {
+		return PublishOutput{}, err
+	}
 	return PublishOutput{
-		CatalogID: e.ID, Slug: s.Name, Version: in.Version, Visibility: string(vis),
-		Files: len(s.Files), Bytes: len(payload),
-		Message: fmt.Sprintf("Published %s %s as %s.", s.Name, in.Version, vis),
+		RequestID: p.RequestID, Status: string(p.Status), ApproveURL: p.ApproveURL,
+		Slug: s.Name, Version: in.Version, Visibility: string(vis),
+		Files: len(s.Files), Bytes: len(payload), Message: p.Message,
 	}, nil
+}
+
+// ExecutePublish returns the approval executor for PublishOperation. The
+// relay daemon runs it only after the user approved the exact payload. It
+// rechecks the tier rule and sends the stored request as is.
+func ExecutePublish(p fleetapi.Provider) approvals.Executor {
+	return func(ctx context.Context, payload []byte, _ string) ([]byte, error) {
+		var pp PublishPayload
+		if err := json.Unmarshal(payload, &pp); err != nil {
+			return nil, approvals.ErrorCode("invalid_payload")
+		}
+		vis := fleetapi.Visibility(pp.Visibility)
+		// Recheck the account right before writing: the session must still
+		// be the one the user approved for.
+		sess, err := p.Auth().Session(ctx)
+		if err != nil {
+			return nil, approvals.ErrorCode("not_signed_in")
+		}
+		if err := approvals.CheckSession(ctx, string(sess.Env), sess.OrgID, sess.UserID); err != nil {
+			return nil, err
+		}
+		if vis != fleetapi.VisibilityPrivate {
+			caps, err := p.Me().Capabilities(ctx)
+			if err != nil {
+				return nil, publishErr(err)
+			}
+			if !caps.Has(capTeamShare) {
+				return nil, approvals.ErrorCode("tier_required")
+			}
+		}
+		e, err := p.Catalog().Publish(ctx, fleetapi.PublishRequest{
+			Kind: pp.Kind, Slug: pp.Slug, Version: pp.Version, Description: pp.Description,
+			Visibility: vis, Payload: pp.Payload,
+		})
+		if err != nil {
+			return nil, publishErr(err)
+		}
+		return publishResult(e)
+	}
+}
+
+// RenderPublish describes a publish payload for the approval page. The
+// daemon derives the page text from the payload alone, so a caller cannot
+// show one thing and publish another.
+func RenderPublish(payload []byte) (approvals.Rendered, error) {
+	var pp PublishPayload
+	if err := json.Unmarshal(payload, &pp); err != nil {
+		return approvals.Rendered{}, err
+	}
+	if pp.Kind != fleetapi.CatalogKindAgentSkill {
+		return approvals.Rendered{}, errors.New("unsupported catalog kind")
+	}
+	s, err := sk.ParseAgentSkill(pp.Payload)
+	if err != nil {
+		return approvals.Rendered{}, err
+	}
+	if s.Name != pp.Slug {
+		return approvals.Rendered{}, errors.New("slug does not match the skill name")
+	}
+	vis := fleetapi.Visibility(pp.Visibility)
+	out := approvals.Rendered{
+		Summary: fmt.Sprintf("Publish the skill %q version %s to your Kameas Fleet catalog as %s: %d files, %d bytes.", pp.Slug, pp.Version, vis, len(s.Files), len(pp.Payload)),
+		Targets: []string{"catalog:" + pp.Slug + "@" + pp.Version, "visibility:" + string(vis)},
+	}
+	switch vis {
+	case fleetapi.VisibilityPrivate:
+	case fleetapi.VisibilityTeam:
+		out.Impact = "Every member of your team will be able to see and install this skill."
+	case fleetapi.VisibilityOrgPublic:
+		out.Impact = "Everyone in your organization will be able to see and install this skill."
+	default:
+		return approvals.Rendered{}, errors.New("invalid visibility")
+	}
+	return out, nil
+}
+
+// ReconcilePublish looks up whether an interrupted publish reached the
+// catalog (same slug and version), without writing.
+func ReconcilePublish(p fleetapi.Provider) approvals.Reconciler {
+	return func(ctx context.Context, payload []byte, _ string) ([]byte, bool, error) {
+		var pp PublishPayload
+		if err := json.Unmarshal(payload, &pp); err != nil {
+			return nil, false, err
+		}
+		entries, err := p.Catalog().List(ctx, fleetapi.CatalogQuery{Kind: pp.Kind, Query: pp.Slug, Visibility: fleetapi.Visibility(pp.Visibility)})
+		if err != nil {
+			return nil, false, err
+		}
+		for _, e := range entries {
+			if e.Slug == pp.Slug && e.Version == pp.Version {
+				res, err := publishResult(e)
+				return res, err == nil, err
+			}
+		}
+		return nil, false, nil
+	}
+}
+
+func publishResult(e fleetapi.CatalogEntry) ([]byte, error) {
+	return json.Marshal(map[string]string{"catalog_id": e.ID, "slug": e.Slug, "version": e.Version, "visibility": string(e.Visibility)})
+}
+
+// publishErr separates definite refusals (a coded error) from outcomes
+// that may or may not have reached the catalog.
+func publishErr(err error) error {
+	var ae *fleetapi.APIError
+	switch {
+	case errors.Is(err, fleetapi.ErrNotSignedIn):
+		return approvals.ErrorCode("not_signed_in")
+	case errors.Is(err, fleetapi.ErrUnofficialBuild):
+		return approvals.ErrorCode("unofficial_build")
+	case errors.As(err, &ae):
+		if _, ok := fleetapi.OrgPaused(err); ok {
+			return approvals.ErrorCode("org_paused")
+		}
+		if ae.Code != "" {
+			return approvals.ErrorCode(ae.Code)
+		}
+		return approvals.ErrorCode(fmt.Sprintf("http_%d", ae.Status))
+	}
+	return fmt.Errorf("%w: %v", approvals.ErrOutcomeUnknown, err)
 }
 
 func installFailure(detail string) string {

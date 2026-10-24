@@ -2,6 +2,8 @@ package consent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -90,6 +92,9 @@ const CapEmergencyLockdown = "emergency_lockdown"
 // Options configures a Manager.
 type Options struct {
 	Provider fleetapi.Provider
+	// Env is the resolved Fleet environment. It selects the dashboard that
+	// approval links open; when empty, the signed-in session's env is used.
+	Env fleetapi.Env
 	// Lanes may be nil (CLI use without a daemon).
 	Lanes Lanes
 	// ProjectionVersion is the projector's projection-table version. A change
@@ -180,6 +185,9 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := m.claimQueue(sess); err != nil {
+		return err
+	}
 
 	me, err := p.Me().Get(ctx)
 	if err != nil {
@@ -253,6 +261,99 @@ func (m *Manager) Refresh(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// OwnerKey identifies the account a device queue belongs to: Fleet env,
+// organization and user. It is a hash, so consent.json never gains an
+// identifier it did not already hold.
+func OwnerKey(s fleetapi.Session) string {
+	h := sha256.Sum256([]byte("kenaz/queue-owner/v1\x00" + string(s.Env) + "\x00" + s.OrgID + "\x00" + s.UserID))
+	return hex.EncodeToString(h[:16])
+}
+
+// claimQueue makes sure nothing queued for another account can be
+// sent under sess. When the signed-in account differs from the one this
+// manager last saw, or from the queue owner recorded on disk by an earlier
+// daemon run, every lane is stopped and purged before the new identity is
+// adopted. A purge failure leaves the manager signed out, so
+// everything keeps being dropped until a later refresh succeeds. CLI
+// managers (no lanes) never touch the queue or its owner.
+func (m *Manager) claimQueue(sess fleetapi.Session) error {
+	if m.o.Lanes == nil {
+		return nil
+	}
+	key := OwnerKey(sess)
+	m.mu.Lock()
+	prev, was := m.session, m.signedIn
+	m.mu.Unlock()
+	switched := was && OwnerKey(prev) != key
+	if !switched && m.o.Store != nil {
+		switch owner := m.o.Store.QueueOwner(); owner {
+		case key:
+		case "":
+			// First run (the queue is empty, so this costs nothing), or
+			// upgraded from a build that did not record the owner. What
+			// such a build queued, batches ('b') and held records ('r'),
+			// may belong to another account (a `kenaz login` over an
+			// existing session did not purge it), so it is purged before
+			// the current account is recorded as the owner.
+			if err := m.o.Lanes.PurgeAll(); err != nil {
+				return fmt.Errorf("consent: purge ownerless queue: %w", err)
+			}
+			return m.o.Store.SetQueueOwner(key)
+		default:
+			switched = true
+		}
+	}
+	if !switched {
+		return nil
+	}
+	m.mu.Lock()
+	m.signedIn = false
+	m.session = fleetapi.Session{}
+	m.optins = map[fleetapi.TelemetryClass]fleetapi.OptInState{}
+	m.approvals = nil
+	m.admittedOrg, m.admittedAt = "", time.Time{}
+	m.mu.Unlock()
+	m.o.Lanes.StopAll()
+	if err := m.o.Lanes.PurgeAll(); err != nil {
+		return fmt.Errorf("consent: purge queue after account change: %w", err)
+	}
+	if m.o.Store != nil {
+		if err := m.o.Store.SetQueueOwner(key); err != nil {
+			return fmt.Errorf("consent: record queue owner: %w", err)
+		}
+	}
+	return nil
+}
+
+// SessionCurrent reports whether the provider's active session is still
+// the account this manager last refreshed for. It reads only the local
+// session, so the lanes call it before every upload: `kenaz login` as
+// another account takes effect at once, not at the next Refresh. On a
+// sign-out the lanes are withdrawn; on an account change they are stopped
+// and purged (claimQueue) and false is returned until Refresh adopts the
+// new account. Any other error also returns false (nothing is sent).
+func (m *Manager) SessionCurrent(ctx context.Context) bool {
+	sess, err := m.o.Provider.Auth().Session(ctx)
+	if errors.Is(err, fleetapi.ErrNotSignedIn) {
+		m.withdraw("signed out")
+		return false
+	}
+	if err != nil {
+		return false
+	}
+	m.mu.Lock()
+	cur, signedIn := m.session, m.signedIn
+	m.mu.Unlock()
+	if !signedIn {
+		return false
+	}
+	if OwnerKey(sess) != OwnerKey(cur) {
+		_ = m.claimQueue(sess) // purges; a failure leaves it signed out
+		return false
+	}
+	return true
 }
 
 // ObserveEnrolled feeds a successful enroll (heartbeat) in: an admitted
@@ -638,6 +739,11 @@ func (m *Manager) State() OrgState {
 	for _, ci := range Classes {
 		st.Classes[string(ci.Class)] = ClassOff
 	}
+	env := m.o.Env
+	if env == "" {
+		env = m.session.Env
+	}
+	st.DashboardURL = DashboardURL(env, "")
 	if !m.signedIn {
 		return st
 	}
@@ -666,7 +772,7 @@ func (m *Manager) State() OrgState {
 	}
 	st.Holds = append(st.Holds, m.holdsLocked()...)
 	for _, a := range m.approvals {
-		st.Pending = append(st.Pending, Pending{ID: a.ID, Kind: a.Kind, Title: sanitize(a.Title, 120), Blocking: a.Blocking})
+		st.Pending = append(st.Pending, Pending{ID: a.ID, Kind: a.Kind, Title: sanitize(a.Title, 120), Blocking: a.Blocking, URL: ApprovalURL(env, a)})
 	}
 	return st
 }

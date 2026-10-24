@@ -73,3 +73,20 @@ func AgentTelemetry(floorBuilt bool, orgSize string) Edition {
 		return Edition{AgentTelemetryV1ID, AgentTelemetryV1}
 	}
 }
+
+// Memory Sync Notice. It is its own consent lane, separate from the Agent
+// Telemetry Notice: accepting one never accepts the other. The edition ID
+// is sent to Fleet as consent_version when the user turns memory sync on,
+// and a store enabled under an older edition sends nothing new until the
+// user re-confirms.
+//
+// The v1 text is the engineering draft that describes exactly what the
+// memory lane sends; it awaits Kameas's notice approval (E04) like every
+// file here.
+const MemorySyncV1ID = "memory-sync/v1"
+
+//go:embed memory-sync/v1.md
+var MemorySyncV1 string
+
+// MemorySync returns the current Memory Sync Notice edition.
+func MemorySync() Edition { return Edition{MemorySyncV1ID, MemorySyncV1} }

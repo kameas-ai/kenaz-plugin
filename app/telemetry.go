@@ -40,10 +40,14 @@ const telemetryLaneName = "telemetry"
 // and 'R' records, which could hold data Fleet refused for an organization
 // outside early access; those are discarded unsent.
 const (
-	// tagBatch: u64be(earliest event unix nanos) || JSON fleetapi.ProjectedBatch
+	// tagBatch: u64be(earliest event unix nanos) || JSON fleetapi.ProjectedBatch,
+	// written by earlier builds without an owner: dropped unsent.
 	tagBatch byte = 'b'
 	// tagHeld: JSON []project.Record held by a consent hold; re-gated on drain
 	tagHeld byte = 'r'
+	// tagOwnedBatch: u64be(earliest event unix nanos) || JSON ownedBatch,
+	// a batch with the account (ExpectedSession) that stamped it.
+	tagOwnedBatch byte = 'o'
 
 	tagLegacyBatch byte = 'B'
 	tagLegacyHeld  byte = 'R'
@@ -52,10 +56,20 @@ const (
 // laneNow is the lane's clock for the admission moment (tests override it).
 var laneNow = time.Now
 
-// queued is a batch with the earliest event time among its records.
+// queued is a batch with the earliest event time among its records and
+// the account whose session stamped it. The owner travels with the batch
+// through the queue and the spool, is re-checked after the forwarder's
+// rate-limit wait, and is attached to the Post as the ExpectedSession.
 type queued struct {
 	b        fleetapi.ProjectedBatch
 	earliest time.Time
+	owner    fleetapi.ExpectedSession
+}
+
+// ownedBatch is the spooled form of a queued batch.
+type ownedBatch struct {
+	Owner fleetapi.ExpectedSession `json:"owner"`
+	Batch fleetapi.ProjectedBatch  `json:"batch"`
 }
 
 // Telemetry lane timing. Variables so tests can shorten them.
@@ -75,6 +89,9 @@ func telemetryHook(env Env) DaemonHook {
 			return nil, err
 		}
 		opt.Lanes = append(opt.Lanes, l)
+		opt.Contributors = append(opt.Contributors, l)
+		// A kick (sent by `kenaz login`) re-reads the session at once.
+		opt.KickObservers = append(opt.KickObservers, l.requestRefresh)
 		return l.mount, nil
 	}
 }
@@ -91,8 +108,9 @@ type telemetryLane struct {
 	nodeID  string
 	version string
 
-	queue chan queued
-	wake  chan struct{}
+	queue   chan queued
+	wake    chan struct{}
+	refresh chan struct{} // re-read consent and session now
 
 	// spMu orders spool appends against purges: an append checks
 	// admission and writes under it, and a purge runs under it, so nothing
@@ -107,10 +125,18 @@ type telemetryLane struct {
 	lockdown atomic.Bool
 
 	uploaded, held, dropped atomic.Int64
+
+	// Delivery outcome for status: the last accepted upload and the last
+	// failure category (never a server message or payload).
+	outMu      sync.Mutex
+	lastUpload time.Time
+	lastErr    string
+	lastErrAt  time.Time
 }
 
 var _ daemon.Lane = (*telemetryLane)(nil)
 var _ consent.Lanes = (*telemetryLane)(nil)
+var _ daemon.StatusContributor = (*telemetryLane)(nil)
 
 func newTelemetryLane(env Env, opt *daemon.Options) (*telemetryLane, error) {
 	if opt.Spool == nil {
@@ -135,10 +161,13 @@ func newTelemetryLane(env Env, opt *daemon.Options) (*telemetryLane, error) {
 		version: opt.Version,
 		queue:   make(chan queued, 64),
 		wake:    make(chan struct{}, 1),
+		refresh: make(chan struct{}, 1),
 		fwd:     &forward.Forwarder{Poster: opt.Provider.OTLP(), PerMinute: 100},
 	}
+	l.fwd.Current = l.ownerIs
 	l.cm = consent.NewManager(consent.Options{
 		Provider:          opt.Provider,
+		Env:               opt.Env,
 		Lanes:             l,
 		ProjectionVersion: project.TableVersion,
 		Store:             consent.NewStore(filepath.Join(opt.StateDir, "consent.json")),
@@ -224,6 +253,7 @@ func (l *telemetryLane) identity() (project.Identity, bool) {
 		return project.Identity{}, false
 	}
 	return project.Identity{
+		Env:            sess.Env,
 		UserID:         sess.UserID,
 		OrgID:          sess.OrgID,
 		MachineID:      l.nodeID,
@@ -361,8 +391,40 @@ func (l *telemetryLane) runConsent(ctx context.Context) {
 			return
 		case <-t.C:
 		case <-hup:
+		case <-l.refresh:
 		}
 	}
+}
+
+// requestRefresh asks runConsent to refresh now (non-blocking).
+func (l *telemetryLane) requestRefresh() {
+	select {
+	case l.refresh <- struct{}{}:
+	default:
+	}
+}
+
+// ownerCurrent is checked immediately before every upload: the batch was
+// stamped for the account the consent manager last refreshed for, and that
+// must still be the signed-in account. On a mismatch the manager purges
+// the lane and a refresh adopts the new account.
+func (l *telemetryLane) ownerCurrent(ctx context.Context) bool {
+	if l.cm.SessionCurrent(ctx) {
+		return true
+	}
+	l.dec.invalidate()
+	l.requestRefresh()
+	return false
+}
+
+// ownerIs reports whether owner is the signed-in account right now (the
+// forwarder calls it after its rate-limit wait, just before posting).
+func (l *telemetryLane) ownerIs(ctx context.Context, owner fleetapi.ExpectedSession) bool {
+	if !l.ownerCurrent(ctx) {
+		return false
+	}
+	sess, ok := l.cm.Session()
+	return ok && owner.Matches(sess)
 }
 
 // ensureLockdownWatch starts the consent long-poll once the org has the
@@ -444,9 +506,10 @@ func (l *telemetryLane) sendable(earliest time.Time) bool {
 }
 
 // emit receives final batches from the pipeline; it never blocks.
-func (l *telemetryLane) emit(bs []fleetapi.ProjectedBatch, earliest time.Time) {
+func (l *telemetryLane) emit(bs []fleetapi.ProjectedBatch, earliest time.Time, id project.Identity) {
+	owner := fleetapi.ExpectedSession{Env: id.Env, OrgID: id.OrgID, Subject: id.UserID}
 	for _, b := range bs {
-		q := queued{b, earliest}
+		q := queued{b, earliest, owner}
 		select {
 		case l.queue <- q:
 		default:
@@ -467,11 +530,25 @@ func (l *telemetryLane) send(ctx context.Context, q queued) bool {
 		l.spoolBatch(q)
 		return false
 	}
-	res := l.fwd.Send(ctx, b)
+	if !l.ownerCurrent(ctx) {
+		// Stamped for an account that is no longer signed in (the lane
+		// was purged), or the session cannot be read: never upload it.
+		l.dropped.Add(int64(b.Records))
+		return true
+	}
+	res := l.fwd.Send(ctx, q.owner, b)
+	l.noteResult(ctx, res)
 	switch res.Disposition {
 	case forward.Sent:
 		l.uploaded.Add(int64(b.Records))
 		l.cm.UploadSucceeded()
+		return true
+	case forward.Stale:
+		// The account changed while the batch waited for a rate token:
+		// nothing was sent, and it is never sent as another account.
+		l.dropped.Add(int64(b.Records))
+		l.dec.invalidate()
+		l.requestRefresh()
 		return true
 	case forward.Quarantine:
 		l.dropped.Add(int64(b.Records))
@@ -509,13 +586,13 @@ func (l *telemetryLane) spoolBatch(q queued) {
 		l.dropped.Add(int64(b.Records))
 		return
 	}
-	payload, err := json.Marshal(b)
+	payload, err := json.Marshal(ownedBatch{Owner: q.owner, Batch: b})
 	if err != nil {
 		l.dropped.Add(int64(b.Records))
 		return
 	}
 	rec := make([]byte, 9, 9+len(payload))
-	rec[0] = tagBatch
+	rec[0] = tagOwnedBatch
 	binary.BigEndian.PutUint64(rec[1:], uint64(q.earliest.UnixNano()))
 	rec = append(rec, payload...)
 	if err := l.sp.Append(telemetryLaneName, rec); err != nil {
@@ -561,26 +638,35 @@ func (l *telemetryLane) drain(ctx context.Context) {
 			return nil
 		}
 		switch r.Payload[0] {
-		case tagLegacyBatch, tagLegacyHeld:
-			l.dropped.Add(1) // from an earlier build: never sent
+		case tagLegacyBatch, tagLegacyHeld, tagBatch:
+			// From an earlier build, with no owner stamp. Whose batch it is
+			// can't be known: earlier builds recorded no queue owner (the
+			// first claim adopts whoever is signed in) and a `kenaz login`
+			// over an existing session did not purge the spool, so it may
+			// belong to another account. Never sent.
+			l.dropped.Add(1)
 			return nil
-		case tagBatch:
+		case tagOwnedBatch:
 			if len(r.Payload) < 10 {
 				return nil
 			}
 			if _, ok := l.admittedSince(); !ok || l.uploadHeld() {
 				return errStopDrain // a refusal or hold arrived mid-drain
 			}
-			var b fleetapi.ProjectedBatch
-			if json.Unmarshal(r.Payload[9:], &b) != nil {
+			var ob ownedBatch
+			if json.Unmarshal(r.Payload[9:], &ob) != nil {
 				return nil
 			}
+			b, owner := ob.Batch, ob.Owner
 			earliest := time.Unix(0, int64(binary.BigEndian.Uint64(r.Payload[1:9])))
 			if !l.sendable(earliest) {
 				l.dropped.Add(int64(b.Records)) // generated before admission
 				return nil
 			}
-			if !l.sendDirect(ctx, b) {
+			if !l.ownerCurrent(ctx) {
+				return errStopDrain // purged, or the session is unreadable
+			}
+			if !l.sendDirect(ctx, owner, b) {
 				return errStopDrain // keep the segment; retry later
 			}
 		case tagHeld:
@@ -600,12 +686,20 @@ func (l *telemetryLane) drain(ctx context.Context) {
 
 // sendDirect is send without re-spooling (the record is still in the
 // segment being drained).
-func (l *telemetryLane) sendDirect(ctx context.Context, b fleetapi.ProjectedBatch) bool {
-	res := l.fwd.Send(ctx, b)
+func (l *telemetryLane) sendDirect(ctx context.Context, owner fleetapi.ExpectedSession, b fleetapi.ProjectedBatch) bool {
+	res := l.fwd.Send(ctx, owner, b)
+	l.noteResult(ctx, res)
 	switch res.Disposition {
 	case forward.Sent:
 		l.uploaded.Add(int64(b.Records))
 		l.cm.UploadSucceeded()
+		return true
+	case forward.Stale:
+		// Owned by an account that is not the signed-in one: never sent,
+		// dropped (an owner change purges the lane's spool anyway).
+		l.dropped.Add(int64(b.Records))
+		l.dec.invalidate()
+		l.requestRefresh()
 		return true
 	case forward.Quarantine:
 		l.dropped.Add(int64(b.Records))
@@ -678,4 +772,112 @@ func (d *consentDecider) TierAllows(c fleetschema.Class) bool {
 
 func (d *consentDecider) OptedIn(c fleetschema.Class) bool {
 	return d.state().Classes[string(c)] == consent.ClassOn
+}
+
+// noteResult records an upload outcome for status.
+func (l *telemetryLane) noteResult(ctx context.Context, res forward.Result) {
+	if res.Disposition == forward.Retry && ctx.Err() != nil {
+		return // shutting down: not a delivery failure
+	}
+	now := laneNow()
+	l.outMu.Lock()
+	defer l.outMu.Unlock()
+	if res.Disposition == forward.Sent {
+		l.lastUpload = now
+		return
+	}
+	l.lastErr, l.lastErrAt = uploadErrCategory(res), now
+}
+
+// uploadErrCategory maps a failed upload to a fixed category.
+func uploadErrCategory(res forward.Result) string {
+	switch res.Disposition {
+	case forward.Hold:
+		return daemon.ErrCatOrgPaused
+	case forward.Refused:
+		return daemon.ErrCatEarlyAccess
+	case forward.Quarantine:
+		return daemon.ErrCatRejected
+	}
+	var ae *fleetapi.APIError
+	if errors.As(res.Err, &ae) {
+		switch {
+		case ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden:
+			return daemon.ErrCatAuth
+		case ae.Status == http.StatusTooManyRequests:
+			return daemon.ErrCatRateLimited
+		case ae.Status >= 500:
+			return daemon.ErrCatServer
+		case ae.Status >= 400:
+			return daemon.ErrCatRejected
+		}
+	}
+	return daemon.ErrCatNetwork
+}
+
+// ContributeStatus adds the reporting summary, the pending approval titles
+// and the dashboard link to status and fleet_status. It reads local state
+// only.
+func (l *telemetryLane) ContributeStatus(s *daemon.Status) {
+	st := l.cm.State()
+	s.DashboardURL = st.DashboardURL
+	for _, p := range st.Pending {
+		s.PendingApprovals = append(s.PendingApprovals, p.Title)
+	}
+	r := &daemon.Reporting{
+		SignedIn:     s.Session == daemon.SessionSignedIn,
+		ReceiverPort: s.Daemon.Port,
+		Queued:       int64(l.sp.Stats().Records) + int64(len(l.queue)),
+		Consent:      daemon.ConsentNone,
+	}
+	l.outMu.Lock()
+	lastUpload, lastErr, lastErrAt := l.lastUpload, l.lastErr, l.lastErrAt
+	l.outMu.Unlock()
+	if !lastUpload.IsZero() {
+		t := lastUpload.UTC()
+		r.LastUploadAt = &t
+	}
+	if lastErr != "" {
+		t := lastErrAt.UTC()
+		r.LastError, r.LastErrorAt = lastErr, &t
+	}
+	switch {
+	case !st.SignedIn || !r.SignedIn:
+		r.Consent = daemon.ConsentUnknown
+	case st.NoticeReconfirm:
+		r.Consent = daemon.ConsentReconfirm
+	case st.AnyOn():
+		r.Consent = daemon.ConsentGiven
+	}
+	hold := ""
+	if len(st.Holds) > 0 {
+		hold = st.Holds[0].Reason
+	} else {
+		l.mu.Lock()
+		hold = l.hold
+		l.mu.Unlock()
+	}
+	switch {
+	case !r.SignedIn:
+		r.State = daemon.ReportingNotSignedIn
+	case !st.SignedIn:
+		// Signed in, but consent could not be read from Fleet yet
+		// (starting up, offline): nothing is sent until it is.
+		r.State = daemon.ReportingConsentUnknown
+	case st.EarlyAccess:
+		r.State = daemon.ReportingNotAdmitted
+	case r.Consent == daemon.ConsentReconfirm:
+		r.State = daemon.ReportingReconfirm
+	case r.Consent != daemon.ConsentGiven:
+		r.State = daemon.ReportingNoConsent
+	case hold != "":
+		r.State, r.HoldReason = daemon.ReportingHeld, hold
+	case lastErr != "" && !lastErrAt.Before(lastUpload):
+		r.State = daemon.ReportingFailing
+	case lastUpload.IsZero():
+		r.State = daemon.ReportingWaitingForFirst
+	default:
+		r.State = daemon.ReportingWorking
+	}
+	s.Reporting = r
 }

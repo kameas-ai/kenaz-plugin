@@ -4,9 +4,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
@@ -123,6 +125,7 @@ func runDoctor(env Env, args []string) int {
 		if c != nil {
 			if st, err := c.Status(env.Ctx); err == nil {
 				fmt.Fprintf(w, "[info] %-18s %s\n", "enrollment", st.Enroll)
+				doctorReporting(w, st)
 			}
 		}
 	case errors.Is(err, fleetapi.ErrUnofficialBuild):
@@ -134,9 +137,38 @@ func runDoctor(env Env, args []string) int {
 		fmt.Fprintf(w, "[info] %s\n", mp.statusLine(env.Ctx))
 	}
 	fmt.Fprintf(w, "[info] %-18s %s\n", "clock skew", "not checked yet")
-	fmt.Fprintf(w, "[info] %-18s %s\n", "harness setup", "see `kenaz setup`")
+	for _, h := range hostSetups(r.StateDir) {
+		fmt.Fprintf(w, "[info] %-18s %s (`kenaz setup` changes it)\n", "setup "+h.Host, h.State)
+	}
 	if failed {
 		return ExitError
 	}
 	return ExitOK
+}
+
+// doctorReporting turns the daemon's reporting summary into doctor lines.
+func doctorReporting(w io.Writer, st daemon.Status) {
+	r := st.Reporting
+	if r == nil {
+		return
+	}
+	tag := "[ ok ]"
+	switch r.State {
+	case daemon.ReportingWorking, daemon.ReportingWaitingForFirst:
+	case daemon.ReportingFailing:
+		tag = "[warn]"
+	default:
+		tag = "[info]"
+	}
+	line := reportingText[r.State]
+	if r.HoldReason != "" {
+		line += " (" + r.HoldReason + ")"
+	}
+	fmt.Fprintf(w, "%s %-18s %s; queued %d\n", tag, "reporting", line, r.Queued)
+	if r.LastUploadAt != nil {
+		fmt.Fprintf(w, "[info] %-18s %s\n", "last upload", r.LastUploadAt.Format(time.RFC3339))
+	}
+	if r.LastError != "" && r.LastErrorAt != nil {
+		fmt.Fprintf(w, "[info] %-18s %s at %s\n", "last upload error", r.LastError, r.LastErrorAt.Format(time.RFC3339))
+	}
 }

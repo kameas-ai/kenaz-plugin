@@ -13,3 +13,11 @@ func SetMemoryStdin(terminal bool, r io.Reader) func() {
 
 // SetupAction exposes setupAction.
 var SetupAction = setupAction
+
+// SetMemoryTerminalForTest makes the confirmation prompts think stdin is
+// (or is not) a terminal, and returns a restore func.
+func SetMemoryTerminalForTest(terminal bool) func() {
+	old := memoryStdinTerminal
+	memoryStdinTerminal = func() bool { return terminal }
+	return func() { memoryStdinTerminal = old }
+}

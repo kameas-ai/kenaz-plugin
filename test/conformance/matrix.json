@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "features": [
+    {
+      "id": "otel-export",
+      "description": "OTel export: session, model usage and tool outcomes received and acknowledged by Fleet; opt-out, retry/dedup and failure reporting"
+    },
+    {
+      "id": "context",
+      "description": "Context: team resolution, search, full read, explicit share, promotion, pagination/limits, forbidden cross-team access"
+    },
+    {
+      "id": "private-memory",
+      "description": "Private memory: save, recall, sync and forget, cross-host and two-device recall"
+    },
+    {
+      "id": "skills",
+      "description": "Skills: browse, install, host discovery and invocation, update, mandated materialization, publish, removal, collision/local edit"
+    }
+  ],
+  "hosts": [
+    {
+      "id": "claude-code-cli",
+      "name": "Claude Code CLI"
+    },
+    {
+      "id": "codex-cli",
+      "name": "Codex CLI"
+    }
+  ],
+  "os_targets": [
+    {
+      "id": "macos-14-arm64",
+      "name": "macOS 14+",
+      "goos": "darwin",
+      "goarch": "arm64"
+    },
+    {
+      "id": "ubuntu-24.04-amd64",
+      "name": "Ubuntu 24.04",
+      "goos": "linux",
+      "goarch": "amd64"
+    },
+    {
+      "id": "windows-11-amd64",
+      "name": "Windows 11",
+      "goos": "windows",
+      "goarch": "amd64"
+    }
+  ],
+  "cells": [
+    {
+      "id": "otel-export/claude-code-cli/macos-14-arm64",
+      "feature": "otel-export",
+      "host": "claude-code-cli",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/otel-export.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./app",
+        "run": "^TestConformanceOTelJourney$/^claude-code$"
+      }
+    },
+    {
+      "id": "otel-export/claude-code-cli/ubuntu-24.04-amd64",
+      "feature": "otel-export",
+      "host": "claude-code-cli",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/otel-export.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./app",
+        "run": "^TestConformanceOTelJourney$/^claude-code$"
+      }
+    },
+    {
+      "id": "otel-export/claude-code-cli/windows-11-amd64",
+      "feature": "otel-export",
+      "host": "claude-code-cli",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/otel-export.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./app",
+        "run": "^TestConformanceOTelJourney$/^claude-code$"
+      }
+    },
+    {
+      "id": "otel-export/codex-cli/macos-14-arm64",
+      "feature": "otel-export",
+      "host": "codex-cli",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/otel-export.codex-cli.sh",
+      "component_journey": {
+        "package": "./app",
+        "run": "^TestConformanceOTelJourney$/^codex$"
+      }
+    },
+    {
+      "id": "otel-export/codex-cli/ubuntu-24.04-amd64",
+      "feature": "otel-export",
+      "host": "codex-cli",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/otel-export.codex-cli.sh",
+      "component_journey": {
+        "package": "./app",
+        "run": "^TestConformanceOTelJourney$/^codex$"
+      }
+    },
+    {
+      "id": "otel-export/codex-cli/windows-11-amd64",
+      "feature": "otel-export",
+      "host": "codex-cli",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/otel-export.codex-cli.sh",
+      "component_journey": {
+        "package": "./app",
+        "run": "^TestConformanceOTelJourney$/^codex$"
+      }
+    },
+    {
+      "id": "context/claude-code-cli/macos-14-arm64",
+      "feature": "context",
+      "host": "claude-code-cli",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/context.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./internal/mcp/tools/context",
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+      }
+    },
+    {
+      "id": "context/claude-code-cli/ubuntu-24.04-amd64",
+      "feature": "context",
+      "host": "claude-code-cli",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/context.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./internal/mcp/tools/context",
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+      }
+    },
+    {
+      "id": "context/claude-code-cli/windows-11-amd64",
+      "feature": "context",
+      "host": "claude-code-cli",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/context.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./internal/mcp/tools/context",
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+      }
+    },
+    {
+      "id": "context/codex-cli/macos-14-arm64",
+      "feature": "context",
+      "host": "codex-cli",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/context.codex-cli.sh",
+      "component_journey": {
+        "package": "./internal/mcp/tools/context",
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+      }
+    },
+    {
+      "id": "context/codex-cli/ubuntu-24.04-amd64",
+      "feature": "context",
+      "host": "codex-cli",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/context.codex-cli.sh",
+      "component_journey": {
+        "package": "./internal/mcp/tools/context",
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+      }
+    },
+    {
+      "id": "context/codex-cli/windows-11-amd64",
+      "feature": "context",
+      "host": "codex-cli",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/context.codex-cli.sh",
+      "component_journey": {
+        "package": "./internal/mcp/tools/context",
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+      }
+    },
+    {
+      "id": "private-memory/claude-code-cli/macos-14-arm64",
+      "feature": "private-memory",
+      "host": "claude-code-cli",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/private-memory.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./internal/memory",
+        "run": "^TestSaveSearchGetForget$"
+      }
+    },
+    {
+      "id": "private-memory/claude-code-cli/ubuntu-24.04-amd64",
+      "feature": "private-memory",
+      "host": "claude-code-cli",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/private-memory.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./internal/memory",
+        "run": "^TestSaveSearchGetForget$"
+      }
+    },
+    {
+      "id": "private-memory/claude-code-cli/windows-11-amd64",
+      "feature": "private-memory",
+      "host": "claude-code-cli",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/private-memory.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./internal/memory",
+        "run": "^TestSaveSearchGetForget$"
+      }
+    },
+    {
+      "id": "private-memory/codex-cli/macos-14-arm64",
+      "feature": "private-memory",
+      "host": "codex-cli",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/private-memory.codex-cli.sh",
+      "component_journey": {
+        "package": "./internal/memory",
+        "run": "^TestSaveSearchGetForget$"
+      }
+    },
+    {
+      "id": "private-memory/codex-cli/ubuntu-24.04-amd64",
+      "feature": "private-memory",
+      "host": "codex-cli",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/private-memory.codex-cli.sh",
+      "component_journey": {
+        "package": "./internal/memory",
+        "run": "^TestSaveSearchGetForget$"
+      }
+    },
+    {
+      "id": "private-memory/codex-cli/windows-11-amd64",
+      "feature": "private-memory",
+      "host": "codex-cli",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/private-memory.codex-cli.sh",
+      "component_journey": {
+        "package": "./internal/memory",
+        "run": "^TestSaveSearchGetForget$"
+      }
+    },
+    {
+      "id": "skills/claude-code-cli/macos-14-arm64",
+      "feature": "skills",
+      "host": "claude-code-cli",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/skills.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./internal/skills",
+        "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
+      }
+    },
+    {
+      "id": "skills/claude-code-cli/ubuntu-24.04-amd64",
+      "feature": "skills",
+      "host": "claude-code-cli",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/skills.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./internal/skills",
+        "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
+      }
+    },
+    {
+      "id": "skills/claude-code-cli/windows-11-amd64",
+      "feature": "skills",
+      "host": "claude-code-cli",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/skills.claude-code-cli.sh",
+      "component_journey": {
+        "package": "./internal/skills",
+        "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
+      }
+    },
+    {
+      "id": "skills/codex-cli/macos-14-arm64",
+      "feature": "skills",
+      "host": "codex-cli",
+      "os": "macos-14-arm64",
+      "required": true,
+      "installed_journey": "journeys/skills.codex-cli.sh",
+      "component_journey": {
+        "package": "./internal/skills",
+        "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
+      }
+    },
+    {
+      "id": "skills/codex-cli/ubuntu-24.04-amd64",
+      "feature": "skills",
+      "host": "codex-cli",
+      "os": "ubuntu-24.04-amd64",
+      "required": true,
+      "installed_journey": "journeys/skills.codex-cli.sh",
+      "component_journey": {
+        "package": "./internal/skills",
+        "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
+      }
+    },
+    {
+      "id": "skills/codex-cli/windows-11-amd64",
+      "feature": "skills",
+      "host": "codex-cli",
+      "os": "windows-11-amd64",
+      "required": true,
+      "installed_journey": "journeys/skills.codex-cli.sh",
+      "component_journey": {
+        "package": "./internal/skills",
+        "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
+      }
+    }
+  ]
+}

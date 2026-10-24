@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Repository policy gates.
 
-    checks.py no-policy [ROOT]   the plugin and setup add no policy,
-                                 plus the Codex-only manifest overlay
+    checks.py no-policy [ROOT]   the plugin, the OpenCode adapter and setup
+                                 add no policy, plus the Codex-only
+                                 manifest overlay
     checks.py names [ROOT]       no harness vendor names in our own names
     checks.py legacy-name [ROOT] the former product name stays gone, except
                                  for the allowlisted wire constants below
@@ -42,6 +43,28 @@ SETUP_POLICY_TOKENS = [
     "[rules]",
     "mcp_servers",
     '"allowed_',
+    # OpenCode: setup registers the kenaz MCP server and the adapter, and
+    # never writes OpenCode's tool switches or permission rules.
+    '"tools"',
+    '"permission"',
+]
+
+# OpenCode server-plugin hooks that could change what OpenCode does (block
+# or rewrite tool calls, edit prompts, answer permission requests, add
+# tools). The adapter only observes events, so none may appear in it.
+OPENCODE_POLICY_TOKENS = [
+    "permission.ask",
+    "tool.execute.before",
+    "tool.execute.after",
+    "tool.definition",
+    "chat.message",
+    "chat.params",
+    "chat.headers",
+    "command.execute.before",
+    "shell.env",
+    "experimental.",
+    "auth:",
+    "tool:",
 ]
 
 BANNED_NAME = re.compile(r"claude|codex|anthropic|openai", re.IGNORECASE)
@@ -133,10 +156,29 @@ def check_codex_overlay(root, errs):
                 errs.append(f"plugin/.codex-mcp.json {name}.{tool}: no such tool in internal/mcp/tools")
 
 
+def check_opencode_adapter(root, errs):
+    """opencode/ is an observe-only OpenCode server plugin with no runtime
+    dependencies (it must load with npm registry access blocked)."""
+    adapter = root / "opencode"
+    if not adapter.is_dir():
+        return
+    for src in sorted((adapter / "src").rglob("*.[jt]s")):
+        text = src.read_text()
+        for tok in OPENCODE_POLICY_TOKENS:
+            if tok in text:
+                errs.append(f"{src.relative_to(root)}: the OpenCode adapter must not use {tok!r} (observe-only)")
+    pkg = load_json(adapter / "package.json", errs)
+    if pkg is not None:
+        for k in ("dependencies", "peerDependencies", "optionalDependencies", "bundledDependencies"):
+            if pkg.get(k):
+                errs.append(f"opencode/package.json: {k} not allowed (the adapter ships without runtime dependencies)")
+
+
 def check_no_policy(root):
     errs = []
     plugin = root / "plugin"
     check_codex_overlay(root, errs)
+    check_opencode_adapter(root, errs)
 
     hooks = load_json(plugin / "hooks" / "hooks.json", errs)
     if hooks is not None:
@@ -163,6 +205,14 @@ def check_no_policy(root):
         for tok in HOOK_POLICY_TOKENS:
             if tok in text:
                 errs.append(f"{src.relative_to(root)}: hook output must not contain {tok}")
+
+    # The bundle renderer rewrites only launch commands in the plugin copy;
+    # it must never introduce permission decisions or policy settings.
+    for src in go_sources(root / "internal" / "bundle"):
+        text = src.read_text()
+        for tok in HOOK_POLICY_TOKENS + ['"permissions"', '"permission"', "allowedMcpServers", "deniedMcpServers", "enabled_tools", "disabled_tools"]:
+            if tok in text:
+                errs.append(f"{src.relative_to(root)}: the bundle renderer must not write {tok}")
 
     for src in go_sources(root / "internal" / "setup"):
         text = src.read_text()

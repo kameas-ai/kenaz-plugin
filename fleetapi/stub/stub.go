@@ -28,6 +28,10 @@ func (provider) Context() fleetapi.Context   { return contextGraph{} }
 func (provider) Team() fleetapi.Team         { return team{} }
 func (provider) OTLP() fleetapi.OTLPPoster   { return otlp{} }
 
+// Memory implements fleetapi.MemoryProvider: memory sync is unavailable in
+// an unofficial build, and every call says so.
+func (provider) Memory() fleetapi.Memory { return memorySync{} }
+
 type auth struct{}
 
 func (auth) Login(context.Context, fleetapi.LoginRequest) (fleetapi.Session, error) {
@@ -38,6 +42,11 @@ func (auth) Session(context.Context) (fleetapi.Session, error) {
 	return fleetapi.Session{}, errUnofficial
 }
 func (auth) TokenStore() fleetapi.TokenStore { return tokenStore{} }
+func (auth) VerifyIdentity(context.Context, fleetapi.LoginRequest) (fleetapi.VerifiedIdentity, error) {
+	return fleetapi.VerifiedIdentity{}, errUnofficial
+}
+
+var _ fleetapi.IdentityVerifier = auth{}
 
 type tokenStore struct{}
 
@@ -123,4 +132,28 @@ type otlp struct{}
 
 func (otlp) Post(context.Context, fleetapi.ProjectedBatch) (fleetapi.ExportResult, error) {
 	return fleetapi.ExportResult{}, errUnofficial
+}
+
+type memorySync struct{}
+
+func (memorySync) Settings(context.Context) (fleetapi.MemorySettings, error) {
+	return fleetapi.MemorySettings{}, errUnofficial
+}
+func (memorySync) PutSettings(context.Context, fleetapi.MemorySettingsUpdate) (fleetapi.MemorySettings, error) {
+	return fleetapi.MemorySettings{}, errUnofficial
+}
+func (memorySync) Pull(context.Context, fleetapi.MemoryPullRequest) (fleetapi.MemoryPullResponse, error) {
+	return fleetapi.MemoryPullResponse{}, errUnofficial
+}
+func (memorySync) Push(context.Context, fleetapi.MemoryPushRequest) (fleetapi.MemoryPushResponse, error) {
+	return fleetapi.MemoryPushResponse{}, errUnofficial
+}
+func (memorySync) Forget(context.Context, fleetapi.MemoryForgetRequest) (fleetapi.MemoryForgetResponse, error) {
+	return fleetapi.MemoryForgetResponse{}, errUnofficial
+}
+func (memorySync) ForgetAll(context.Context, fleetapi.MemoryForgetAllRequest) (fleetapi.MemoryForgetAllResponse, error) {
+	return fleetapi.MemoryForgetAllResponse{}, errUnofficial
+}
+func (memorySync) Export(context.Context, func(fleetapi.MemoryRecord) error) (fleetapi.MemoryExportTrailer, error) {
+	return fleetapi.MemoryExportTrailer{}, errUnofficial
 }

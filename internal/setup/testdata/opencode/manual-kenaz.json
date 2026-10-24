@@ -1,0 +1,8 @@
+{
+  "mcp": {
+    "kenaz": {
+      "type": "local",
+      "command": ["/usr/local/bin/kenaz", "mcp"]
+    }
+  }
+}

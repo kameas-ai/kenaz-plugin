@@ -26,7 +26,11 @@ type KeyStore interface {
 
 func itemName(env string) string { return env + ":spool_key" }
 
-// Keychain stores keys in the OS keychain.
+// Keychain stores keys in the OS keychain. This keeps keys out of files
+// an agent could rewrite; it is not a boundary against processes running
+// as the same user (on macOS go-keyring creates items via
+// /usr/bin/security, readable by any process of the user without a
+// prompt).
 type Keychain struct{}
 
 func (Keychain) Get(env string) ([]byte, error) {

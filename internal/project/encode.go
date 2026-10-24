@@ -19,6 +19,9 @@ import (
 // Identity is stamped onto every resource by the relay.
 // It is never read from harness attributes.
 type Identity struct {
+	// Env is the session's environment. It is not encoded; it lets the
+	// emitted batch be bound to the account that stamped it.
+	Env       fleetapi.Env
 	UserID    string // token sub
 	OrgID     string // resourceowner claim
 	MachineID string // relay node id

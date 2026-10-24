@@ -6,6 +6,7 @@ import (
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
+	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/internal/setup"
 )
 
@@ -49,7 +50,7 @@ func runSetup(env Env, args []string) int {
 }
 
 // setupAction classifies a successful `kenaz setup` invocation: "apply"
-// for `setup claude|codex`, "undo" for `setup --undo claude|codex`, and ""
+// for `setup claude|codex|opencode`, "undo" for `setup --undo ...`, and ""
 // for dry runs, print-managed and doctor.
 func setupAction(args []string) string {
 	undo, harness := false, false
@@ -63,6 +64,8 @@ func setupAction(args []string) string {
 			return ""
 		case "claude", "codex":
 			harness = true
+		case "opencode":
+			harness = features.OpenCode
 		}
 	}
 	switch {

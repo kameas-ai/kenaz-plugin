@@ -39,7 +39,71 @@ type Status struct {
 	Lanes            []LaneStatus `json:"lanes"`
 	Spool            *spool.Stats `json:"spool,omitempty"`
 	PendingApprovals []string     `json:"pending_approvals"`
-	Notes            []string     `json:"notes,omitempty"`
+	// DashboardURL is the selected environment's Fleet dashboard, where
+	// pending approvals are reviewed.
+	DashboardURL string `json:"dashboard_url,omitempty"`
+	// Reporting says whether telemetry reporting to Fleet is working.
+	Reporting *Reporting `json:"reporting,omitempty"`
+	// Hosts is the per-host setup state (`kenaz setup`).
+	Hosts []HostSetup `json:"hosts,omitempty"`
+	Notes []string    `json:"notes,omitempty"`
+}
+
+// Reporting states, most blocking first.
+const (
+	ReportingRelayStopped    = "relay_not_running"
+	ReportingNotSignedIn     = "not_signed_in"
+	ReportingConsentUnknown  = "consent_unknown" // signed in; consent not read from Fleet yet
+	ReportingNotAdmitted     = "not_admitted"
+	ReportingNoConsent       = "no_consent"
+	ReportingReconfirm       = "consent_reconfirm_needed"
+	ReportingHeld            = "held"
+	ReportingFailing         = "failing"
+	ReportingWaitingForFirst = "ready_no_upload_yet"
+	ReportingWorking         = "working"
+)
+
+// Consent values in Reporting.Consent.
+const (
+	ConsentGiven     = "given"
+	ConsentNone      = "none"
+	ConsentReconfirm = "reconfirm"
+	ConsentUnknown   = "unknown"
+)
+
+// Upload error categories in Reporting.LastError. Categories only: never a
+// server message, payload or identifier.
+const (
+	ErrCatNetwork     = "network"
+	ErrCatAuth        = "auth"
+	ErrCatRateLimited = "rate_limited"
+	ErrCatServer      = "server"
+	ErrCatRejected    = "rejected"
+	ErrCatOrgPaused   = "org_paused"
+	ErrCatEarlyAccess = "early_access"
+)
+
+// Reporting summarizes telemetry delivery. Counts, times and categories
+// only; it never holds content, tokens or identifiers.
+type Reporting struct {
+	State    string `json:"state"`
+	SignedIn bool   `json:"signed_in"`
+	Consent  string `json:"consent"`
+	// HoldReason is set while State is held (approval, paused, lockdown).
+	HoldReason   string     `json:"hold_reason,omitempty"`
+	LastUploadAt *time.Time `json:"last_upload_at,omitempty"`
+	// Queued counts records waiting on this device (spool and memory).
+	Queued      int64      `json:"queued"`
+	LastError   string     `json:"last_error,omitempty"`
+	LastErrorAt *time.Time `json:"last_error_at,omitempty"`
+	// ReceiverPort is the loopback OTLP receiver port (0: not running).
+	ReceiverPort int `json:"receiver_port,omitempty"`
+}
+
+// HostSetup is one host's `kenaz setup` state.
+type HostSetup struct {
+	Host  string `json:"host"`
+	State string `json:"state"` // configured | modified | not_configured | unknown
 }
 
 // DaemonStatus describes the daemon process.
@@ -82,5 +146,8 @@ func LocalStatus(ctx context.Context, p fleetapi.Provider, env fleetapi.Env, not
 	if note != "" {
 		s.Notes = append(s.Notes, note)
 	}
+	// Without a relay nothing is received or uploaded, whatever the
+	// sign-in and consent state.
+	s.Reporting = &Reporting{State: ReportingRelayStopped, SignedIn: s.Session == SessionSignedIn, Consent: ConsentUnknown}
 	return s
 }

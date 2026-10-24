@@ -3,6 +3,9 @@ package contexttools
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -12,6 +15,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 )
@@ -119,14 +123,22 @@ type PullOutput struct {
 }
 
 type ShareArgs struct {
-	Title         string `json:"title" jsonschema:"short title, up to 200 characters"`
-	Body          string `json:"body" jsonschema:"the note text the user wrote or approved, up to 16 KiB"`
-	Kind          string `json:"kind" jsonschema:"one of guidance, procedure, fact, glossary_term, doc"`
-	Team          string `json:"team,omitempty" jsonschema:"team name or id; defaults to your configured or only team"`
-	UserConfirmed bool   `json:"user_confirmed,omitempty" jsonschema:"true only after the user has seen this exact title and body and said to share it"`
+	Title string `json:"title" jsonschema:"short title, up to 200 characters"`
+	Body  string `json:"body" jsonschema:"the note text the user wrote or approved, up to 16 KiB"`
+	Kind  string `json:"kind" jsonschema:"one of guidance, procedure, fact, glossary_term, doc"`
+	Team  string `json:"team,omitempty" jsonschema:"team name or id; defaults to your configured or only team"`
+	// UserConfirmed is accepted for compatibility and ignored: a model
+	// flag is not proof of human confirmation.
+	UserConfirmed bool `json:"user_confirmed,omitempty" jsonschema:"ignored; the user approves on the approval page"`
 }
 
+// ShareOutput is context_share's result. Nothing is uploaded when the tool
+// returns: status is "pending" until the user approves at approve_url.
 type ShareOutput struct {
+	RequestID      string     `json:"request_id,omitempty"`
+	Status         string     `json:"status,omitempty"`
+	ApproveURL     string     `json:"approve_url,omitempty"`
+	Message        string     `json:"message,omitempty"`
 	ID             string     `json:"id,omitempty"`
 	Title          string     `json:"title,omitempty"`
 	Team           string     `json:"team,omitempty"`
@@ -135,11 +147,18 @@ type ShareOutput struct {
 }
 
 type PromoteInput struct {
-	NodeID        string `json:"node_id" jsonschema:"id of a team-shared node"`
-	UserConfirmed bool   `json:"user_confirmed,omitempty" jsonschema:"true only after the user said to share this node with the whole organization"`
+	NodeID string `json:"node_id" jsonschema:"id of a team-shared node"`
+	// UserConfirmed is accepted for compatibility and ignored.
+	UserConfirmed bool `json:"user_confirmed,omitempty" jsonschema:"ignored; the user approves on the approval page"`
 }
 
+// PromoteOutput is context_promote's result; like ShareOutput it is
+// pending until approved.
 type PromoteOutput struct {
+	RequestID      string     `json:"request_id,omitempty"`
+	Status         string     `json:"status,omitempty"`
+	ApproveURL     string     `json:"approve_url,omitempty"`
+	Message        string     `json:"message,omitempty"`
 	ID             string     `json:"id,omitempty"`
 	Classification string     `json:"classification,omitempty"`
 	Warnings       []string   `json:"warnings,omitempty"`
@@ -207,15 +226,15 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:  ToolShare,
 		Title: "Share a note with your team",
-		Description: "UPLOADS the given title and body to Kameas Fleet as a note visible to every member of the chosen team. " +
-			"Only share text the user wrote or explicitly approved; never share file contents, code, transcripts or anything containing secrets. " +
-			"Show the user the exact title, body and team first, and set user_confirmed=true only after they say to share it. " +
-			"Your harness will also ask the user to approve this call.",
+		Description: "Prepares sharing the given title and body to Kameas Fleet as a note visible to every member of the chosen team. " +
+			"Only share text the user wrote or asked to share; never share file contents, code, transcripts or anything containing secrets. " +
+			"Nothing is uploaded by this call: it returns request_id, status \"pending\" and approve_url. Give the user approve_url; they review the exact note there " +
+			"and approve with their security key or device unlock.",
 		Annotations: &sdk.ToolAnnotations{Title: "Share a note with your team", DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 		Meta:        writes,
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in ShareArgs) (*sdk.CallToolResult, ShareOutput, error) {
 		touch()
-		out := runShare(ctx, d.Provider, st, o, in)
+		out := runShare(ctx, d.Provider, d.Approvals, st, o, in)
 		return errResult(out.Error), out, nil
 	})
 
@@ -223,13 +242,13 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 		Name:  ToolPromote,
 		Title: "Share a team note with the whole organization",
 		Description: "Widens an existing team-shared Kameas Fleet note so the WHOLE ORGANIZATION can see it. " +
-			"Organization owners and admins only, Enterprise plan. Set user_confirmed=true only after the user says to share it organization-wide. " +
-			"Your harness will also ask the user to approve this call.",
+			"Organization owners and admins only, Enterprise plan. Nothing changes by this call: it returns request_id, status \"pending\" and approve_url, " +
+			"where the user approves with their security key or device unlock.",
 		Annotations: &sdk.ToolAnnotations{Title: "Share a team note with the whole organization", DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 		Meta:        writes,
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in PromoteInput) (*sdk.CallToolResult, PromoteOutput, error) {
 		touch()
-		out := runPromote(ctx, d.Provider, st, in)
+		out := runPromote(ctx, d.Provider, d.Approvals, st, in)
 		return errResult(out.Error), out, nil
 	})
 
@@ -354,15 +373,19 @@ func runPull(ctx context.Context, p fleetapi.Provider, st StatusSource, o Option
 	return out
 }
 
-func runShare(ctx context.Context, p fleetapi.Provider, st StatusSource, o Options, in ShareArgs) ShareOutput {
+// Approval operation names for the context write tools.
+const (
+	ShareOperation   = "context.share"
+	PromoteOperation = "context.promote"
+)
+
+func runShare(ctx context.Context, p fleetapi.Provider, ap approvals.Preparer, st StatusSource, o Options, in ShareArgs) ShareOutput {
 	var out ShareOutput
-	if !in.UserConfirmed {
-		out.Error = &ToolError{Code: CodeNotConfirmed, Message: "Nothing was shared. Show the user the exact title, body and team, and call again with user_confirmed=true only if they say to share it."}
-		return out
-	}
+	// in.UserConfirmed is deliberately ignored: only the user's
+	// authenticator on the approval page authorizes the upload.
 	// Credentials are not scanned on the device: Kameas Fleet checks every
 	// shared note on arrival and rejects one that looks like it holds a
-	// credential. MapError surfaces that rejection.
+	// credential. The executor maps that rejection to a code.
 	sess, terr := Check(ctx, p, st, OpShare)
 	if terr != nil {
 		out.Error = terr
@@ -378,28 +401,28 @@ func runShare(ctx context.Context, p fleetapi.Provider, st StatusSource, o Optio
 		out.Error = invalid(err.Error())
 		return out
 	}
-	got, err := p.Context().Push(ctx, ToPushRequest(node))
+	payload, err := json.Marshal(node)
 	if err != nil {
-		out.Error = MapError(err)
+		out.Error = invalid(err.Error())
 		return out
 	}
-	out.ID, out.Title, out.Team = got.ID, got.Title, t.Name
-	out.Classification = string(got.Classification)
-	if out.ID == "" {
-		out.ID = node.ID
+	pend, terr := submit(ctx, p, ap, approvals.Request{
+		Operation: ShareOperation, TargetIDs: []string{"team:" + t.Name},
+		Payload: payload, IdempotencyKey: ShareOperation + ":" + node.ID,
+		Summary: fmt.Sprintf("Share a %s note titled %q with the team %q in Kameas Fleet.", node.Kind, node.Title, t.Name),
+		Impact:  "Every member of " + t.Name + " will be able to read this note.",
+	})
+	if terr != nil {
+		out.Error = terr
+		return out
 	}
-	if out.Classification == "" {
-		out.Classification = node.Classification
-	}
+	out.RequestID, out.Status, out.ApproveURL, out.Message = pend.RequestID, string(pend.Status), pend.ApproveURL, pend.Message
+	out.Title, out.Team = node.Title, t.Name
 	return out
 }
 
-func runPromote(ctx context.Context, p fleetapi.Provider, st StatusSource, in PromoteInput) PromoteOutput {
+func runPromote(ctx context.Context, p fleetapi.Provider, ap approvals.Preparer, st StatusSource, in PromoteInput) PromoteOutput {
 	var out PromoteOutput
-	if !in.UserConfirmed {
-		out.Error = &ToolError{Code: CodeNotConfirmed, Message: "Nothing was changed. Call again with user_confirmed=true only if the user says to share this note with the whole organization."}
-		return out
-	}
 	if _, terr := Check(ctx, p, st, OpPromote); terr != nil {
 		out.Error = terr
 		return out
@@ -409,13 +432,268 @@ func runPromote(ctx context.Context, p fleetapi.Provider, st StatusSource, in Pr
 		out.Error = invalid(err.Error())
 		return out
 	}
-	res, err := p.Context().Promote(ctx, req)
-	if err != nil {
-		out.Error = MapError(err)
+	// The approval page shows what is promoted (the note's title and the
+	// team it is shared with now), so look the node up first (a read).
+	nc, terr := lookupNode(ctx, p, req.NodeID)
+	if terr != nil {
+		out.Error = terr
 		return out
 	}
-	out.ID, out.Classification, out.Warnings = res.Node.ID, string(res.Node.Classification), res.Warnings
+	node := nc.Node
+	payload, err := json.Marshal(promotePayload{NodeID: req.NodeID, To: string(req.To), TeamID: node.TeamID, Title: node.Title, Body: nc.Body})
+	if err != nil {
+		out.Error = invalid(err.Error())
+		return out
+	}
+	pend, terr := submit(ctx, p, ap, approvals.Request{
+		Operation: PromoteOperation, TargetIDs: []string{"node:" + req.NodeID, "team:" + node.TeamID, "classification:" + string(req.To)},
+		Payload: payload, IdempotencyKey: PromoteOperation + ":" + req.NodeID + ":" + string(req.To),
+		Summary: fmt.Sprintf("Share the team note %q with your whole organization.", node.Title),
+		Impact:  "Everyone in your organization will be able to read this note.",
+	})
+	if terr != nil {
+		out.Error = terr
+		return out
+	}
+	out.RequestID, out.Status, out.ApproveURL, out.Message = pend.RequestID, string(pend.Status), pend.ApproveURL, pend.Message
+	out.ID = req.NodeID
 	return out
+}
+
+// submit fills in the signed-in identity and prepares r.
+func submit(ctx context.Context, p fleetapi.Provider, ap approvals.Preparer, r approvals.Request) (approvals.Pending, *ToolError) {
+	sess, err := p.Auth().Session(ctx)
+	if err != nil {
+		return approvals.Pending{}, MapError(err)
+	}
+	r.Env, r.OrgID, r.UserID = string(sess.Env), sess.OrgID, sess.UserID
+	pend, err := approvals.Submit(ctx, ap, r)
+	if err != nil {
+		return approvals.Pending{}, &ToolError{Code: CodeApprovalFailed, Message: "The write could not be prepared for approval; nothing was written."}
+	}
+	return pend, nil
+}
+
+// CodeApprovalFailed means the approval request could not be prepared.
+const CodeApprovalFailed = "approval_failed"
+
+type promotePayload struct {
+	NodeID string `json:"node_id"`
+	To     string `json:"to"`
+	TeamID string `json:"team_id,omitempty"`
+	// Title and Body are the note when the request was prepared, shown on
+	// the approval page (bound by the payload hash); the executor refuses
+	// if the note changed since.
+	Title string `json:"title,omitempty"`
+	Body  string `json:"body,omitempty"`
+}
+
+// lookupNode reads node id (title, team) from Fleet.
+func lookupNode(ctx context.Context, p fleetapi.Provider, id string) (fleetapi.NodeContent, *ToolError) {
+	nodes, err := p.Context().Pull(ctx, fleetapi.PullRequest{IDs: []string{id}})
+	if err != nil {
+		return fleetapi.NodeContent{}, MapError(err)
+	}
+	for _, n := range nodes {
+		if n.Node.ID == id {
+			if n.Node.TeamID == "" || n.Node.Classification != fleetapi.ClassificationTeamShared {
+				return fleetapi.NodeContent{}, invalid("only a team note can be shared with the whole organization")
+			}
+			return n, nil
+		}
+	}
+	return fleetapi.NodeContent{}, invalid("no team note with that id is readable")
+}
+
+// ExecuteShare returns the approval executor for ShareOperation. The relay
+// daemon runs it only after the user approved the exact node; it rechecks
+// tier, lockdown, pause and team membership, then pushes the stored node
+// as is.
+func ExecuteShare(p fleetapi.Provider, st StatusSource) approvals.Executor {
+	return func(ctx context.Context, payload []byte, _ string) ([]byte, error) {
+		var node NodeInput
+		if err := json.Unmarshal(payload, &node); err != nil || node.ID == "" {
+			return nil, approvals.ErrorCode("invalid_payload")
+		}
+		sess, terr := Check(ctx, p, st, OpShare)
+		if terr != nil {
+			return nil, approvals.ErrorCode(terr.Code)
+		}
+		if err := recheckSession(ctx, p); err != nil {
+			return nil, err
+		}
+		member := false
+		for _, t := range sess.Me.Teams {
+			member = member || t.ID == node.TeamID
+		}
+		if !member || node.Classification != string(fleetapi.ClassificationTeamShared) || node.LoadPolicy != "on_demand" {
+			return nil, approvals.ErrorCode("scope_changed")
+		}
+		got, err := p.Context().Push(ctx, ToPushRequest(node))
+		if err != nil {
+			return nil, writeErr(err)
+		}
+		id, cls := got.ID, string(got.Classification)
+		if id == "" {
+			id = node.ID
+		}
+		if cls == "" {
+			cls = node.Classification
+		}
+		return json.Marshal(map[string]string{"id": id, "classification": cls})
+	}
+}
+
+// ReconcileShare reports whether an interrupted share reached Fleet (the
+// client-generated node id exists), without writing.
+func ReconcileShare(p fleetapi.Provider) approvals.Reconciler {
+	return func(ctx context.Context, payload []byte, _ string) ([]byte, bool, error) {
+		var node NodeInput
+		if err := json.Unmarshal(payload, &node); err != nil {
+			return nil, false, err
+		}
+		nodes, err := p.Context().Pull(ctx, fleetapi.PullRequest{IDs: []string{node.ID}, TeamID: node.TeamID})
+		if err != nil {
+			return nil, false, err
+		}
+		for _, n := range nodes {
+			if n.Node.ID == node.ID {
+				res, err := json.Marshal(map[string]string{"id": n.Node.ID, "classification": string(n.Node.Classification)})
+				return res, err == nil, err
+			}
+		}
+		return nil, false, nil
+	}
+}
+
+// ExecutePromote returns the approval executor for PromoteOperation.
+func ExecutePromote(p fleetapi.Provider, st StatusSource) approvals.Executor {
+	return func(ctx context.Context, payload []byte, _ string) ([]byte, error) {
+		var pp promotePayload
+		if err := json.Unmarshal(payload, &pp); err != nil || pp.NodeID == "" {
+			return nil, approvals.ErrorCode("invalid_payload")
+		}
+		if _, terr := Check(ctx, p, st, OpPromote); terr != nil {
+			return nil, approvals.ErrorCode(terr.Code)
+		}
+		if err := recheckSession(ctx, p); err != nil {
+			return nil, err
+		}
+		// The note must still be the one the user saw: same title, same
+		// team.
+		nc, terr := lookupNode(ctx, p, pp.NodeID)
+		if terr != nil {
+			if terr.Code == CodeInvalidInput {
+				return nil, approvals.ErrorCode("node_changed")
+			}
+			return nil, approvals.ErrorCode(terr.Code)
+		}
+		if nc.Node.Title != pp.Title || nc.Node.TeamID != pp.TeamID || nc.Body != pp.Body {
+			return nil, approvals.ErrorCode("node_changed")
+		}
+		res, err := p.Context().Promote(ctx, fleetapi.PromoteRequest{NodeID: pp.NodeID, To: fleetapi.Classification(pp.To), TeamID: pp.TeamID})
+		if err != nil {
+			return nil, writeErr(err)
+		}
+		return json.Marshal(map[string]any{"id": res.Node.ID, "classification": string(res.Node.Classification), "warnings": len(res.Warnings)})
+	}
+}
+
+// recheckSession refuses unless the provider's session is still the
+// account the user approved for (checked right before writing).
+func recheckSession(ctx context.Context, p fleetapi.Provider) error {
+	sess, err := p.Auth().Session(ctx)
+	if err != nil {
+		return approvals.ErrorCode(CodeNotSignedIn)
+	}
+	return approvals.CheckSession(ctx, string(sess.Env), sess.OrgID, sess.UserID)
+}
+
+// RenderShare describes a share payload for the approval page from the
+// payload alone. teamName optionally resolves a team id to its display
+// name (the id is shown when it cannot).
+func RenderShare(teamName func(id string) string) approvals.Renderer {
+	return func(payload []byte) (approvals.Rendered, error) {
+		var n NodeInput
+		if err := json.Unmarshal(payload, &n); err != nil {
+			return approvals.Rendered{}, err
+		}
+		if n.ID == "" || n.TeamID == "" || n.Classification != string(fleetapi.ClassificationTeamShared) || n.LoadPolicy != "on_demand" || !validShareKind(n.Kind) {
+			return approvals.Rendered{}, errors.New("not a team share")
+		}
+		team := n.TeamID
+		if teamName != nil {
+			if name := teamName(n.TeamID); name != "" {
+				team = name + " (" + n.TeamID + ")"
+			}
+		}
+		return approvals.Rendered{
+			Summary: fmt.Sprintf("Share a %s note titled %q with the team %s in Kameas Fleet.", n.Kind, n.Title, team),
+			Impact:  "Every member of " + team + " will be able to read this note.",
+			Targets: []string{"team:" + n.TeamID, "node:" + n.ID},
+		}, nil
+	}
+}
+
+// RenderPromote describes a promote payload for the approval page: the
+// note's title, the team it is shared with now (teamName optionally
+// resolves the id to its display name) and the new organization-wide
+// scope.
+func RenderPromote(teamName func(id string) string) approvals.Renderer {
+	return func(payload []byte) (approvals.Rendered, error) {
+		var pp promotePayload
+		if err := json.Unmarshal(payload, &pp); err != nil {
+			return approvals.Rendered{}, err
+		}
+		if pp.NodeID == "" || pp.TeamID == "" || pp.Title == "" || pp.To != string(fleetapi.ClassificationOrgShared) {
+			return approvals.Rendered{}, errors.New("not an organization promote")
+		}
+		team := pp.TeamID
+		if teamName != nil {
+			if name := teamName(pp.TeamID); name != "" {
+				team = name + " (" + pp.TeamID + ")"
+			}
+		}
+		return approvals.Rendered{
+			Summary: fmt.Sprintf("Share the team note %q (now shared with the team %s) with your whole organization.", pp.Title, team),
+			Impact:  "Scope changes from team " + team + " to the whole organization: everyone in your organization will be able to read this note.",
+			Targets: []string{"node:" + pp.NodeID, "team:" + pp.TeamID, "classification:" + pp.To},
+			Details: []approvals.Detail{{Target: "node:" + pp.NodeID, Label: pp.Title, Text: pp.Body}},
+		}, nil
+	}
+}
+
+// ReconcilePromote reports whether an interrupted promote reached Fleet
+// (the node is organization-shared now), without writing. Not applied
+// means the relay retries the executor, which refuses if the note changed.
+func ReconcilePromote(p fleetapi.Provider) approvals.Reconciler {
+	return func(ctx context.Context, payload []byte, _ string) ([]byte, bool, error) {
+		var pp promotePayload
+		if err := json.Unmarshal(payload, &pp); err != nil {
+			return nil, false, err
+		}
+		nodes, err := p.Context().Pull(ctx, fleetapi.PullRequest{IDs: []string{pp.NodeID}})
+		if err != nil {
+			return nil, false, err
+		}
+		for _, n := range nodes {
+			if n.Node.ID == pp.NodeID && n.Node.Classification == fleetapi.ClassificationOrgShared {
+				res, err := json.Marshal(map[string]string{"id": n.Node.ID, "classification": string(n.Node.Classification)})
+				return res, err == nil, err
+			}
+		}
+		return nil, false, nil
+	}
+}
+
+// writeErr separates definite Fleet refusals (coded) from transport
+// failures whose outcome is unknown.
+func writeErr(err error) error {
+	var ae *fleetapi.APIError
+	if errors.Is(err, fleetapi.ErrNotSignedIn) || errors.Is(err, fleetapi.ErrUnofficialBuild) || errors.As(err, &ae) {
+		return approvals.ErrorCode(MapError(err).Code)
+	}
+	return fmt.Errorf("%w: %v", approvals.ErrOutcomeUnknown, err)
 }
 
 func runTeamMembers(ctx context.Context, p fleetapi.Provider, st StatusSource, o Options, in TeamMembersInput) TeamMembersOutput {

@@ -1,0 +1,25 @@
+{
+  "name": "@kameas/kenaz-opencode",
+  "version": "0.3.1",
+  "description": "Kenaz adapter for OpenCode: reports metadata-only session telemetry to the local Kenaz relay.",
+  "license": "Apache-2.0",
+  "author": "Kameas AI, Inc.",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./server": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18",
+    "opencode": ">=1.19.4"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

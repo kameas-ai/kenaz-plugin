@@ -1,0 +1,76 @@
+{"id":"evt_16947b48a001Ig8EuTbTGz4TZe","type":"session.created","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","info":{"id":"ses_e96b84b7bffep7oQukPvSsAYSJ","slug":"neon-cabin","version":"1.19.4","projectID":"global","directory":"/home/user/CANARYpathdir/project","path":"","title":"New session - 2026-10-23T15:01:09.381Z","permission":[{"permission":"question","pattern":"*","action":"deny"},{"permission":"plan_enter","pattern":"*","action":"deny"},{"permission":"plan_exit","pattern":"*","action":"deny"}],"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1792767669381,"updated":1792767669381}}}}
+{"id":"evt_16947b4f9001Mlttw1RjwwQoSU","type":"session.updated","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","info":{"id":"ses_e96b84b7bffep7oQukPvSsAYSJ","slug":"neon-cabin","projectID":"global","directory":"/home/user/CANARYpathdir/project","path":"","title":"New session - 2026-10-23T15:01:09.381Z","agent":"build","model":{"id":"mock-1","providerID":"mock","variant":"default"},"version":"1.19.4","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"permission":[{"permission":"question","pattern":"*","action":"deny"},{"permission":"plan_enter","pattern":"*","action":"deny"},{"permission":"plan_exit","pattern":"*","action":"deny"}],"time":{"created":1792767669381,"updated":1792767669493}}}}
+{"id":"evt_16947b503001768Z5eMnMbkw46","type":"message.updated","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","info":{"id":"msg_16947b4f400175wOg0h6L8XXyQ","role":"user","sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","time":{"created":1792767669493},"agent":"build","model":{"providerID":"mock","modelID":"mock-1"}}}}
+{"id":"evt_16947b507001CbxySSktGj1bue","type":"message.part.updated","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","part":{"type":"text","text":"\"hello CANARYprompt2\"","messageID":"msg_16947b4f400175wOg0h6L8XXyQ","sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","id":"prt_16947b501001Q7cyY9KQt7RKV3"},"time":1792767669511}}
+{"id":"evt_16947b512001xvfhSuT4zAhTAi","type":"session.updated","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","info":{"id":"ses_e96b84b7bffep7oQukPvSsAYSJ","slug":"neon-cabin","projectID":"global","directory":"/home/user/CANARYpathdir/project","path":"","title":"New session - 2026-10-23T15:01:09.381Z","agent":"build","model":{"id":"mock-1","providerID":"mock","variant":"default"},"version":"1.19.4","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"permission":[{"permission":"question","pattern":"*","action":"deny"},{"permission":"plan_enter","pattern":"*","action":"deny"},{"permission":"plan_exit","pattern":"*","action":"deny"}],"time":{"created":1792767669381,"updated":1792767669517}}}}
+{"id":"evt_16947b528001CVxnyG8cd8bWJ4","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"busy"}}}
+{"id":"evt_16947bcf4001Z7m5paBSZKK6kM","type":"message.updated","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","info":{"id":"msg_16947bcf4001NjOCC0j7deJvbl","parentID":"msg_16947b4f400175wOg0h6L8XXyQ","role":"assistant","mode":"build","agent":"build","path":{"cwd":"/home/user/CANARYpathdir/project","root":"/home/user/CANARYpathdir/project"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"mock-1","providerID":"mock","time":{"created":1792767671540},"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ"}}}
+{"id":"evt_16947bd77001586gXJcGqV8B6k","type":"session.updated","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","info":{"id":"ses_e96b84b7bffep7oQukPvSsAYSJ","slug":"neon-cabin","projectID":"global","directory":"/home/user/CANARYpathdir/project","path":"","title":"New session - 2026-10-23T15:01:09.381Z","agent":"build","model":{"id":"mock-1","providerID":"mock","variant":"default"},"version":"1.19.4","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"permission":[{"permission":"question","pattern":"*","action":"deny"},{"permission":"plan_enter","pattern":"*","action":"deny"},{"permission":"plan_exit","pattern":"*","action":"deny"}],"time":{"created":1792767669381,"updated":1792767671669}}}}
+{"id":"evt_16947bd7f001V1ObX3W94YvbMn","type":"session.diff","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","diff":[]}}
+{"id":"evt_16947bd83001QzYLUY1njVGsTr","type":"message.updated","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","info":{"role":"user","time":{"created":1792767669493},"agent":"build","model":{"providerID":"mock","modelID":"mock-1"},"id":"msg_16947b4f400175wOg0h6L8XXyQ","sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","summary":{"diffs":[]}}}}
+{"id":"evt_16947be63001mqzFdniKuw5QWI","type":"plugin.added","properties":{"id":"core/config-reference"}}
+{"id":"evt_16947be65001OoLn71DxKmQ2iC","type":"plugin.added","properties":{"id":"agent"}}
+{"id":"evt_16947be6600169YjlE4WpdYsCe","type":"plugin.added","properties":{"id":"command"}}
+{"id":"evt_16947be67001BxPxpgfLUwH97z","type":"plugin.added","properties":{"id":"skill"}}
+{"id":"evt_16947be6e00174pyh3b1cYcSwk","type":"plugin.added","properties":{"id":"models-dev"}}
+{"id":"evt_16947be70001GmuRrXFxd0Hadu","type":"plugin.added","properties":{"id":"config-agent"}}
+{"id":"evt_16947be730015GHlulU1KZ5TOW","type":"plugin.added","properties":{"id":"config-command"}}
+{"id":"evt_16947be76001DMDZA4N7hAHn53","type":"plugin.added","properties":{"id":"config-skill"}}
+{"id":"evt_16947be80001Tj27d0lpHNxmmF","type":"plugin.added","properties":{"id":"alibaba"}}
+{"id":"evt_16947be830012m4KpbmUsYLTd6","type":"plugin.added","properties":{"id":"amazon-bedrock"}}
+{"id":"evt_16947be84001INtkdbM47ZcwwG","type":"plugin.added","properties":{"id":"anthropic"}}
+{"id":"evt_16947be85001l78OpNOQkCYHRQ","type":"plugin.added","properties":{"id":"azure-cognitive-services"}}
+{"id":"evt_16947be95001yv1uYJ9LfB7OTH","type":"plugin.added","properties":{"id":"azure"}}
+{"id":"evt_16947be9a001EGBHRrW6K9STSx","type":"plugin.added","properties":{"id":"cerebras"}}
+{"id":"evt_16947be9b001WgbyirsFkJRPLQ","type":"plugin.added","properties":{"id":"cloudflare-ai-gateway"}}
+{"id":"evt_16947be9c001tDJEIiVBHEJRLa","type":"plugin.added","properties":{"id":"cloudflare-workers-ai"}}
+{"id":"evt_16947be9d001LWXWFqKT9cQueU","type":"plugin.added","properties":{"id":"cohere"}}
+{"id":"evt_16947be9e001vNTFUUtXA8OXrl","type":"plugin.added","properties":{"id":"deepinfra"}}
+{"id":"evt_16947be9e002p5wExEE1SiCTWw","type":"plugin.added","properties":{"id":"gateway"}}
+{"id":"evt_16947be9f001qjjXI1UWM5lHpV","type":"plugin.added","properties":{"id":"github-copilot"}}
+{"id":"evt_16947bea00016rwnH7XyYDLrb5","type":"plugin.added","properties":{"id":"gitlab"}}
+{"id":"evt_16947bea2001wm1uc6Y4V0r1JD","type":"plugin.added","properties":{"id":"google"}}
+{"id":"evt_16947bea2002DzyW4cKSzvngwj","type":"plugin.added","properties":{"id":"google-vertex-anthropic"}}
+{"id":"evt_16947bea3001YBiAaQZTq0zQvT","type":"plugin.added","properties":{"id":"google-vertex"}}
+{"id":"evt_16947bea4001ZWGkWpBilPLrR2","type":"plugin.added","properties":{"id":"groq"}}
+{"id":"evt_16947bea7001AoeNVyZ9F2w5qF","type":"plugin.added","properties":{"id":"kilo"}}
+{"id":"evt_16947bea7002RNLlYq9lqO3w1Q","type":"plugin.added","properties":{"id":"llmgateway"}}
+{"id":"evt_16947bea8001EtAFOMfbJmkOzy","type":"plugin.added","properties":{"id":"mistral"}}
+{"id":"evt_16947bea8002cq9n4jBlHZb2Jg","type":"plugin.added","properties":{"id":"nvidia"}}
+{"id":"evt_16947beac001RAZqOZRK0l8KwI","type":"plugin.added","properties":{"id":"opencode"}}
+{"id":"evt_16947bead001ieGPinBVBDJ3CX","type":"plugin.added","properties":{"id":"snowflake-cortex"}}
+{"id":"evt_16947beae001bpl1ng3r8Xy2kQ","type":"plugin.added","properties":{"id":"openai-compatible"}}
+{"id":"evt_16947beaf001474JObMQ0sSXpN","type":"plugin.added","properties":{"id":"openai"}}
+{"id":"evt_16947beb0001aFDoFd2AHFqcst","type":"plugin.added","properties":{"id":"openrouter"}}
+{"id":"evt_16947beb1001eE39q5wwKNduyb","type":"plugin.added","properties":{"id":"perplexity"}}
+{"id":"evt_16947beb2001INObGZ9WBDU4BD","type":"plugin.added","properties":{"id":"sap-ai-core"}}
+{"id":"evt_16947beb2002L5FM4Befe4cDlA","type":"plugin.added","properties":{"id":"togetherai"}}
+{"id":"evt_16947c0cd001RKsY3gDrk6Lyxf","type":"catalog.updated","properties":{}}
+{"id":"evt_16947c0d0001VdpCrUHVJRKzap","type":"plugin.added","properties":{"id":"vercel"}}
+{"id":"evt_16947c0d1001FneZUIYpRiB04w","type":"plugin.added","properties":{"id":"venice"}}
+{"id":"evt_16947c0d6001x2OhilJTksd9X2","type":"plugin.added","properties":{"id":"xai"}}
+{"id":"evt_16947c0d700127nUpGYyJ006ig","type":"plugin.added","properties":{"id":"zenmux"}}
+{"id":"evt_16947c0d70029n9ZI2q4CbG1pr","type":"plugin.added","properties":{"id":"dynamic-provider"}}
+{"id":"evt_16947c0db001kexosGQB3leL5b","type":"plugin.added","properties":{"id":"config-plugin"}}
+{"id":"evt_16947c0dc001nSwhCRrG34IKbn","type":"plugin.added","properties":{"id":"config-provider"}}
+{"id":"evt_16947c0dc002Y1EoNCcylUb0ZJ","type":"plugin.added","properties":{"id":"variant"}}
+{"id":"evt_16947c0e2001U8238icl5yVvdb","type":"reference.updated","properties":{}}
+{"id":"evt_16947c1b10019bzn1SH70o38yE","type":"integration.updated","properties":{}}
+{"id":"evt_16947c337001BqkA0xVn1AVgss","type":"catalog.updated","properties":{}}
+{"id":"evt_16947c5ac001C1GjwH7aBH4QU4","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"busy"}}}
+{"id":"evt_16947c5e4001xf3Y4CHh6gTD1i","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"retry","attempt":1,"message":"CANARYerr rate limited","next":1792767676218}}}
+{"id":"evt_16947cf3f001dmO2XAHX1DMHkG","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"busy"}}}
+{"id":"evt_16947cf64001dnJew3v68d7wBi","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"retry","attempt":2,"message":"CANARYerr rate limited","next":1792767680406}}}
+{"id":"evt_16947dfac001zNvHzvuL4VS6q2","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"busy"}}}
+{"id":"evt_16947dfc1001Jw0BuyDeDvfdl2","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"retry","attempt":3,"message":"CANARYerr rate limited","next":1792767689618}}}
+{"id":"evt_16948039c001R2EQL4kNP0LmuQ","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"busy"}}}
+{"id":"evt_1694803a700111Z2wNAoi9hspi","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"retry","attempt":4,"message":"CANARYerr rate limited","next":1792767708601}}}
+{"id":"evt_169484dbb001n7R1DhX9B9skm6","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"busy"}}}
+{"id":"evt_169484dc9001OBOj39Ewf5Bz5D","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"retry","attempt":5,"message":"CANARYerr rate limited","next":1792767745294}}}
+{"id":"evt_16948dd10001AP8L45OPTnWmhv","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"busy"}}}
+{"id":"evt_16948dd310016Ur8veNV8282Xa","type":"session.error","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","error":{"name":"APIError","data":{"message":"CANARYerr rate limited","statusCode":400,"isRetryable":false,"responseHeaders":{"connection":"keep-alive","content-type":"application/json","date":"Fri, 23 Oct 2026 15:02:25 GMT","keep-alive":"timeout=5","transfer-encoding":"chunked"},"responseBody":"{\"error\":{\"message\":\"CANARYerr rate limited\",\"type\":\"rate_limit\"}}","metadata":{"url":"http://127.0.0.1:47998/v1/chat/completions"}}}}}
+{"id":"evt_16948dd32001PRO8xYihlbqwev","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"idle"}}}
+{"id":"evt_16948dd320028TnUYZvTFiLj5c","type":"session.idle","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ"}}
+{"id":"evt_16948dd87001tznTDCT8QtdFsY","type":"message.updated","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","info":{"id":"msg_16947bcf4001NjOCC0j7deJvbl","parentID":"msg_16947b4f400175wOg0h6L8XXyQ","role":"assistant","mode":"build","agent":"build","path":{"cwd":"/home/user/CANARYpathdir/project","root":"/home/user/CANARYpathdir/project"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"mock-1","providerID":"mock","time":{"created":1792767671540,"completed":1792767745415},"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","error":{"name":"APIError","data":{"message":"CANARYerr rate limited","statusCode":400,"isRetryable":false,"responseHeaders":{"connection":"keep-alive","content-type":"application/json","date":"Fri, 23 Oct 2026 15:02:25 GMT","keep-alive":"timeout=5","transfer-encoding":"chunked"},"responseBody":"{\"error\":{\"message\":\"CANARYerr rate limited\",\"type\":\"rate_limit\"}}","metadata":{"url":"http://127.0.0.1:47998/v1/chat/completions"}}}}}}
+{"id":"evt_16948dd8e001M92b7YKxR6Ta5a","type":"session.status","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ","status":{"type":"idle"}}}
+{"id":"evt_16948dd8f001T74uXQI4IVDZ4g","type":"session.idle","properties":{"sessionID":"ses_e96b84b7bffep7oQukPvSsAYSJ"}}

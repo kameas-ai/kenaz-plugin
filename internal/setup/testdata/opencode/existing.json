@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "theme": "tokyonight",
+  "model": "ollama/qwen3",
+  "plugin": [
+    "opencode-otel-collector@1.2.0",
+    ["./plugins/local-audit.js", {"endpoint": "https://collector.corp.example:4318"}]
+  ],
+  "mcp": {
+    "github": {
+      "type": "remote",
+      "url": "https://mcp.example.com/github",
+      "enabled": true
+    },
+    "db": {
+      "type": "local",
+      "command": ["npx", "-y", "db-mcp"],
+      "environment": {"DB_URL": "postgres://localhost/dev"}
+    }
+  },
+  "tools": {
+    "github_*": false
+  },
+  "provider": {
+    "ollama": {"npm": "@ai-sdk/openai-compatible", "options": {"baseURL": "http://localhost:11434/v1"}}
+  }
+}

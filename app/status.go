@@ -36,6 +36,12 @@ func runStatus(env Env, args []string) int {
 	} else {
 		st = daemon.LocalStatus(env.Ctx, env.Provider, r.Env, "relay not running")
 	}
+	if st.Hosts == nil {
+		st.Hosts = hostSetups(r.StateDir)
+	}
+	if st.DashboardURL == "" {
+		st.DashboardURL = consent.DashboardBase(r.Env)
+	}
 	if st.DeviceName == "" {
 		if id, err := enroll.LoadOrCreateNodeID(r.StateDir, env.now()); err == nil {
 			s, _ := device.Load(r.StateDir)
@@ -87,8 +93,13 @@ func runStatus(env Env, args []string) int {
 	for _, l := range st.Lanes {
 		fmt.Fprintf(w, "  lane %-9s %s %s (uploaded %d, held %d, dropped %d)\n", l.Name+":", l.State, l.Reason, l.Uploaded, l.Held, l.Dropped)
 	}
+	writeReporting(w, "  ", st)
 	for _, a := range st.PendingApprovals {
-		fmt.Fprintf(w, "  pending:      %s (open the Kameas Fleet dashboard to review)\n", a)
+		if st.DashboardURL != "" {
+			fmt.Fprintf(w, "  pending:      %s (review it at %s)\n", a, st.DashboardURL)
+		} else {
+			fmt.Fprintf(w, "  pending:      %s (open the Kameas Fleet dashboard to review)\n", a)
+		}
 	}
 	for _, n := range st.Notes {
 		fmt.Fprintf(w, "  note:         %s\n", n)

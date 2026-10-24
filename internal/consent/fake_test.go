@@ -29,6 +29,8 @@ type fakeFleet struct {
 	approvalsErr error
 	puts         []fleetapi.OptInPut
 	lockWaits    chan fleetapi.LockdownState
+	// user / org override the signed-in session ("" = u1 / o1).
+	user, org string
 }
 
 func newFake(available ...fleetapi.TelemetryClass) *fakeFleet {
@@ -68,7 +70,14 @@ func (a fakeAuth) Session(context.Context) (fleetapi.Session, error) {
 	if !a.f.signedIn {
 		return fleetapi.Session{}, fleetapi.ErrNotSignedIn
 	}
-	return fleetapi.Session{Env: fleetapi.EnvProd, UserID: "u1", OrgID: "o1"}, nil
+	u, o := a.f.user, a.f.org
+	if u == "" {
+		u = "u1"
+	}
+	if o == "" {
+		o = "o1"
+	}
+	return fleetapi.Session{Env: fleetapi.EnvProd, UserID: u, OrgID: o}, nil
 }
 func (a fakeAuth) TokenStore() fleetapi.TokenStore { return stub.New().Auth().TokenStore() }
 

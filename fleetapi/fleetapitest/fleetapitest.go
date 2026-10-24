@@ -100,6 +100,9 @@ func everyCall(p fleetapi.Provider) map[string]error {
 	errs["Auth.Logout"] = p.Auth().Logout(ctx)
 	_, errs["Auth.Session"] = p.Auth().Session(ctx)
 	errs["TokenStore.Clear"] = p.Auth().TokenStore().Clear(ctx)
+	if v, ok := p.Auth().(fleetapi.IdentityVerifier); ok {
+		_, errs["Auth.VerifyIdentity"] = v.VerifyIdentity(ctx, fleetapi.LoginRequest{Env: fleetapi.EnvDev})
+	}
 	_, errs["Enroller.Enroll"] = p.Enroller().Enroll(ctx, SampleEnrollBody())
 	_, errs["Me.Get"] = p.Me().Get(ctx)
 	_, errs["Me.Capabilities"] = p.Me().Capabilities(ctx)
@@ -120,5 +123,43 @@ func everyCall(p fleetapi.Provider) map[string]error {
 	_, errs["Context.Promote"] = p.Context().Promote(ctx, fleetapi.PromoteRequest{})
 	_, errs["Team.Members"] = p.Team().Members(ctx, "")
 	_, errs["OTLP.Post"] = p.OTLP().Post(ctx, fleetapi.ProjectedBatch{Signal: fleetapi.SignalLogs})
+	m := fleetapi.MemoryOf(p)
+	_, errs["Memory.Settings"] = m.Settings(ctx)
+	_, errs["Memory.PutSettings"] = m.PutSettings(ctx, fleetapi.MemorySettingsUpdate{})
+	_, errs["Memory.Pull"] = m.Pull(ctx, fleetapi.MemoryPullRequest{})
+	_, errs["Memory.Push"] = m.Push(ctx, fleetapi.MemoryPushRequest{})
+	_, errs["Memory.Forget"] = m.Forget(ctx, fleetapi.MemoryForgetRequest{})
+	_, errs["Memory.ForgetAll"] = m.ForgetAll(ctx, fleetapi.MemoryForgetAllRequest{})
+	_, errs["Memory.Export"] = m.Export(ctx, func(fleetapi.MemoryRecord) error { return nil })
 	return errs
 }
+
+// IdentityVerifier is a fake fleetapi.IdentityVerifier for tests of the
+// approval enrollment ceremony. It calls OpenURL with URL (if set) and
+// returns Identity or Err. It never touches a session.
+type IdentityVerifier struct {
+	URL      string
+	Identity fleetapi.VerifiedIdentity
+	Err      error
+	Calls    int
+	// CompleteURL is the last request's completion URL (the browser
+	// redirect target after the callback).
+	CompleteURL string
+}
+
+// VerifyIdentity implements fleetapi.IdentityVerifier.
+func (f *IdentityVerifier) VerifyIdentity(ctx context.Context, req fleetapi.LoginRequest) (fleetapi.VerifiedIdentity, error) {
+	f.Calls++
+	f.CompleteURL = req.CompleteURL
+	if f.URL != "" && req.OpenURL != nil {
+		if err := req.OpenURL(f.URL); err != nil {
+			return fleetapi.VerifiedIdentity{}, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fleetapi.VerifiedIdentity{}, err
+	}
+	return f.Identity, f.Err
+}
+
+var _ fleetapi.IdentityVerifier = (*IdentityVerifier)(nil)

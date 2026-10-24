@@ -481,3 +481,76 @@ func TestMarkerRejectsSymlink(t *testing.T) {
 	}
 	_ = bytes.MinRead
 }
+
+// When another account signs in without a logout in between, the
+// previous account's managed skills and subscriptions are removed before
+// the new account's bundle is applied.
+func TestAccountSwitchDropsPreviousSkills(t *testing.T) {
+	e := newEnv(t)
+	p := skillPayload(t, "old-org", "", nil)
+	e.fake.setBundle("b1", "c1", fleetapi.MandatedItem{CatalogID: "cat-old", Kind: fleetapi.CatalogKindAgentSkill, Version: "1", Payload: p})
+	// The previous member's own subscription, still fetchable from the
+	// catalog with the next account's credentials.
+	sp := skillPayload(t, "sub", "", nil)
+	e.fake.items["cat-sub"] = fleetapi.CatalogItem{CatalogEntry: fleetapi.CatalogEntry{ID: "cat-sub", Slug: "sub", Kind: fleetapi.CatalogKindAgentSkill, Version: "1"}, Payload: sp}
+	if err := e.store.SaveSubscriptions(map[string]Subscription{"cat-sub": {CatalogID: "cat-sub", Kind: fleetapi.CatalogKindAgentSkill, Slug: "sub"}}); err != nil {
+		t.Fatal(err)
+	}
+	e.run(t)
+	for _, d := range []string{e.claudeDir("old-org"), e.claudeDir("sub")} {
+		if _, err := ReadMarker(d); err != nil {
+			t.Fatalf("setup: %s missing", d)
+		}
+	}
+	gen := e.store.Generation()
+
+	e.fake.mu.Lock()
+	e.fake.user = "u2"
+	e.fake.mu.Unlock()
+	e.fake.setBundle("b2", "c2")
+	e.run(t)
+	if _, err := ReadMarker(e.claudeDir("old-org")); err == nil {
+		t.Fatal("previous account's mandated skill survived the account switch")
+	}
+	if _, err := ReadMarker(e.claudeDir("sub")); err == nil {
+		t.Fatal("previous member's subscription was installed for the next account")
+	}
+	subs, err := e.store.Subscriptions()
+	if err != nil || len(subs) != 0 {
+		t.Fatalf("previous account's subscriptions survived: %v %v", subs, err)
+	}
+	if e.store.Generation() == gen {
+		t.Fatal("harness not told to reload skills")
+	}
+
+	// Same account again: nothing is dropped.
+	p2 := skillPayload(t, "new-org", "", nil)
+	e.fake.setBundle("b3", "c3", fleetapi.MandatedItem{CatalogID: "cat-new", Kind: fleetapi.CatalogKindAgentSkill, Version: "1", Payload: p2})
+	e.run(t)
+	e.run(t)
+	if _, err := ReadMarker(e.claudeDir("new-org")); err != nil {
+		t.Fatal("same-account sync dropped the account's skill")
+	}
+}
+
+// State from an earlier build has no owner: it is adopted, not dropped
+// (upgrade keeps installed skills).
+func TestSkillsOwnerAdoptedOnUpgrade(t *testing.T) {
+	e := newEnv(t)
+	p := skillPayload(t, "kept", "", nil)
+	e.fake.setBundle("b1", "c1", fleetapi.MandatedItem{CatalogID: "cat-kept", Kind: fleetapi.CatalogKindAgentSkill, Version: "1", Payload: p})
+	e.run(t)
+	st, _ := e.store.LoadSyncState()
+	st.Owner = "" // as written by the previous release
+	if err := e.store.SaveSyncState(st); err != nil {
+		t.Fatal(err)
+	}
+	gen := e.store.Generation()
+	e.run(t)
+	if _, err := ReadMarker(e.claudeDir("kept")); err != nil || e.store.Generation() != gen {
+		t.Fatal("upgrade from ownerless state dropped or rewrote skills")
+	}
+	if st, _ := e.store.LoadSyncState(); st.Owner == "" {
+		t.Fatal("owner not adopted")
+	}
+}

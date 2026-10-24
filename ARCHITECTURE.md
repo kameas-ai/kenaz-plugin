@@ -23,14 +23,16 @@ Both must pass `fleetapi/fleetapitest`. `fleetapi/allowlist` is the closed set o
 | `internal/credstore/` | core | owner-only credential files and the `STORE` marker that records keychain or files for a device with no OS keychain |
 | `internal/clock/`, `internal/logx/` | core | injectable clock; redacting slog and rotating `relay.log` |
 | `internal/mcp/` | core | stdio MCP server and registry |
-| `internal/mcp/tools/<group>/` | MCP tools: `status`, `skills`, `context`, `memory` | One subpackage per tool group. Declare tool names as `Name: "..."`, because the name lint scans that. |
-| `internal/otlprx/`, `internal/decode/{attr,claude,codex}/`, `internal/canon/`, `internal/session/`, `internal/project/`, `internal/gate/`, `internal/forward/`, `internal/pipeline/`, `internal/fleetschema/`, `internal/fixtures/` | telemetry | receiver → decode → aggregate → project → gate → encode (`pipeline` wires them; the daemon owns queueing/spool and drives `forward`). `gate.Decider` is implemented by `internal/consent`. `fixtures` are synthetic test exports. The device enforces the projector's closed allowlist; Kameas Fleet re-checks every record on arrival. |
+| `internal/approvals/` | approvals | Human-authorized writes: pending-write store (CAS state machine), WebAuthn enrollment and assertion verification (go-webauthn), the loopback approval page (`web/`, embedded) with Host/Origin/CSRF guards, and the nonce-authenticated control API (prepare/status/list only) |
+| `internal/mcp/tools/<group>/` | MCP tools: `status`, `skills`, `context`, `memory`, `approvals` (read-only `approval_status`) | One subpackage per tool group. Declare tool names as `Name: "..."`, because the name lint scans that. |
+| `internal/otlprx/`, `internal/decode/{attr,claude,codex,opencode}/`, `internal/canon/`, `internal/session/`, `internal/project/`, `internal/gate/`, `internal/forward/`, `internal/pipeline/`, `internal/fleetschema/`, `internal/fixtures/` | telemetry | receiver → decode → aggregate → project → gate → encode (`pipeline` wires them; the daemon owns queueing/spool and drives `forward`). `gate.Decider` is implemented by `internal/consent`. `fixtures` are synthetic test exports. The device enforces the projector's closed allowlist; Kameas Fleet re-checks every record on arrival. |
 | `internal/consent/` | consent | opt-ins, notice, holds for pending Fleet items, pause and lockdown |
 | `internal/skills/` | skills | materializer (`.kameas-managed` marker) |
-| `internal/setup/` | setup | Harness config writers (Claude `env` merge preserving order and all other keys; Codex format-preserving `[otel]` line editor), diff+confirm, backups, `--undo` (byte-identical when the file is unchanged since setup; otherwise reverts only the owned keys), `print-managed`, `setup doctor` checks. It never writes outside the owned keys. |
+| `internal/setup/` | setup | Harness config writers (Claude `env` merge preserving order and all other keys; Codex format-preserving `[otel]` line editor; OpenCode `plugin` entry and `mcp.kenaz` in `opencode.json`), diff+confirm, backups, `--undo` (byte-identical when the file is unchanged since setup; otherwise reverts only the owned keys), `print-managed`, `setup doctor` checks. It never writes outside the owned keys. |
 | `internal/memory/` | memory | On-device memory store: one SQLite file (pure Go, FTS5) per OS user at `$STATE_ROOT/memory/memory.db`, not per Fleet env. It imports nothing that talks to Kameas Fleet (test-enforced); the `memory_*` tools, `kenaz memory` and the SessionStart index read and write it locally. |
 | `internal/hook/` | plugin | SessionStart/SessionEnd. It must never emit permission decisions. |
 | `internal/daemonstate/` | core (read by setup and hooks) | Read-only view of `$STATE/daemon.json`, per-env state paths, and the proposed loopback control contract (`/healthz`, `/control/session-end`, `X-Kameas-Nonce`). `internal/daemon` is the only writer and adopts or amends the contract documented in the package. |
+| `opencode/` | OpenCode adapter | `@kameas/kenaz-opencode`: dependency-free OpenCode server plugin (plain ES modules, no build step). Observe-only: it maps OpenCode bus events to metadata records and posts OTLP/HTTP JSON to the relay. `make test-opencode` runs its tests (needs Node 18+; not part of `make check`). |
 | `plugin/`, `.claude-plugin/` | plugin | Versions in both manifests and the marketplace entry must match. The MCP server and hooks run the installed `kenaz` binary from PATH, never npx (test-enforced). |
 
 ## Extension points
@@ -56,6 +58,50 @@ Both must pass `fleetapi/fleetapitest`. `fleetapi/allowlist` is the closed set o
 - **Hooks:** they use the daemon client (HMAC challenge-response). Setup resolves `$STATE` through the config package so setup, hook and daemon agree on `daemon.json`.
 - **Release hooks:** official builds set `app.ExtraLicenses` and the provenance link-time variables. `version --json` and `licenses` are public CLI surfaces. `scripts/verify-release.sh` checks a binary against a public tag.
 
+## Release-archive installs
+
+`internal/setup/bundle.go` handles the self-contained archive (`bin/`,
+`plugin/`, `.claude-plugin/`, `opencode/`, `bundle.json` from the release
+packaging). Setup verifies every listed digest and that the plugin,
+marketplace and adapter carry the bundle's version, then renders a per-user
+plugin copy under `$STATE/setup/bundle/<version>_<os>_<arch>/` with absolute
+MCP and hook commands and registers it through the host CLI. The state
+record keeps the rendered path and digest; `--undo` runs the host's
+uninstall and marketplace removal before restoring the config file (byte
+for byte when setup's own write was untouched). The repository's `plugin/`
+keeps bare `kenaz` launch commands for PATH installs.
+
+## OpenCode adapter
+
+OpenCode does not load Claude Code plugin manifests and the relay does not
+rely on an OpenCode-native OTLP exporter. Instead:
+
+- `kenaz setup opencode` adds two owned entries to the user's global
+  `opencode.json`: a `plugin` entry `["<adapter dir>", {"state_dir": ...}]`
+  and `mcp.kenaz` (the `kenaz mcp` server by absolute path, so the status,
+  context, skills and memory tools are available). Nothing else is written.
+- The adapter (`opencode/src`) uses only the server-plugin `event` and
+  `dispose` hooks. `map.js` is the only module that knows OpenCode's event
+  shapes; it reads named fields of `session.created/deleted`,
+  `message.updated` (completed assistant messages: model, provider, tokens,
+  cost, API error status) and `message.part.updated` (finished tool parts:
+  tool id, status, timing). Subagent sessions report under their root
+  session.
+- `relay.js` reads `daemon.json` from `state_dir`, proves the listener is
+  the relay with the `/healthz` challenge-response, and posts to `/v1/logs`.
+  The queue is bounded and in memory; a 503 (signed out) drops the batch.
+- The relay decodes the records in `internal/decode/opencode` (named
+  attributes only), deduplicates retried model/tool calls by a keyed hash of
+  OpenCode's ids, and closes the session on `opencode.session.end`.
+- Fleet drops resource groups whose `kameas.client.kind` it does not know,
+  so OpenCode records are sent only when Fleet advertises
+  `telemetry_schema >= fleetschema.SchemaRevOpenCode`; before that the
+  pipeline drops them on the device (`dropped_client_unsupported`).
+
+`make check-no-policy` keeps the adapter observe-only (no permission, tool,
+chat or command hooks) and dependency-free, and keeps OpenCode tool and
+permission keys out of setup.
+
 ## One plugin, two manifests
 
 Codex picks the first manifest it finds in this order: root `plugin.json`
@@ -80,8 +126,11 @@ returns false for `Approve`). `prompt` asks on every call, and user policy
 can only tighten it (`AppToolApproval::restrict_to`). Caveat: with
 `approval_policy = never` and a full-access permission profile, Codex
 auto-approves even `prompt` (`codex-mcp` `mcp_permission_prompt_is_auto_approved`).
-That is the user's explicit choice, so the tools also keep their own
-`user_confirmed` guard.
+Host prompts are therefore never treated as proof of confirmation: the
+write tools only prepare a request, and the write runs after the user
+approves it on the relay's local WebAuthn page (`internal/approvals`; see
+"Approving writes" in the README). A model-supplied `user_confirmed` is
+ignored.
 
 The Codex `.codex-mcp.json` drops the Claude `${user_config.*}` env entries
 (Codex would pass them literally). The relay then uses `KENAZ_ENV`

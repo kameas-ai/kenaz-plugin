@@ -79,9 +79,10 @@ func runDaemon(env Env, args []string) int {
 	}
 	opt.Spool = sp
 	var mounts []func(*daemon.Daemon)
-	// The telemetry lane and the skills lane
-	// are always installed; daemonHooks lets tests add more.
-	hooks := append([]DaemonHook{telemetryHook(env), skillsDaemonHook}, daemonHooks...)
+	// The telemetry lane, the skills lane and the approvals lane are always
+	// installed; the memory sync lane when the build can sync (it idles until a
+	// user turns memory sync on). daemonHooks lets tests add more.
+	hooks := append([]DaemonHook{telemetryHook(env), skillsDaemonHook, hostSetupHook, approvalsDaemonHook(env), memorySyncHook(env)}, daemonHooks...)
 	for _, h := range hooks {
 		mount, err := h(&opt)
 		if err != nil {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi/stub"
+	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 	sk "github.com/kameas-ai/kenaz-plugin/internal/skills"
 )
@@ -25,6 +26,29 @@ type fake struct {
 
 func (f *fake) Catalog() fleetapi.Catalog { return cat{f} }
 func (f *fake) Me() fleetapi.Me           { return me{f} }
+func (f *fake) Auth() fleetapi.Auth       { return fakeAuth{f.Provider.Auth()} }
+
+type fakeAuth struct{ fleetapi.Auth }
+
+func (fakeAuth) Session(context.Context) (fleetapi.Session, error) {
+	return fleetapi.Session{Env: fleetapi.EnvDev, UserID: "u1", OrgID: "o1"}, nil
+}
+
+// recorder is a Preparer that records prepared requests and never writes.
+type recorder struct {
+	reqs []approvals.Request
+}
+
+func (r *recorder) Prepare(_ context.Context, q approvals.Request) (string, approvals.Status, error) {
+	r.reqs = append(r.reqs, q)
+	return "apr_aaaaaaaaaaaaaaaaaaaaaaaaaa", approvals.StatusPending, nil
+}
+func (r *recorder) Status(context.Context, string) (approvals.Status, []byte, error) {
+	return approvals.StatusPending, nil, nil
+}
+func (r *recorder) ApprovalURL(_ context.Context, id string) (string, error) {
+	return "http://localhost:4318/approvals/r/" + id, nil
+}
 
 type cat struct{ f *fake }
 
@@ -189,32 +213,110 @@ func TestUninstallMandatedRefused(t *testing.T) {
 
 func TestPublish(t *testing.T) {
 	f, d, _ := setup(t)
+	rec := &recorder{}
+	d.Approvals = rec
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: mine\ndescription: Mine.\n---\nx\n"), 0o644)
 	cs := connect(t, d)
 
+	// The tool prepares an approval request and uploads nothing.
 	out, isErr := call(t, cs, "skills_publish", map[string]any{"path": dir, "version": "1.0.0"})
-	if isErr || out["visibility"] != "private" {
+	if isErr || out["visibility"] != "private" || out["status"] != "pending" || out["request_id"] != "apr_aaaaaaaaaaaaaaaaaaaaaaaaaa" || !strings.HasPrefix(out["approve_url"].(string), "http://localhost:4318/approvals/r/") {
 		t.Fatalf("publish = %v", out)
 	}
-	if len(f.published) != 1 || f.published[0].Kind != fleetapi.CatalogKindAgentSkill || f.published[0].Visibility != fleetapi.VisibilityPrivate {
+	if len(f.published) != 0 {
+		t.Fatalf("publish uploaded before approval: %+v", f.published)
+	}
+	if len(rec.reqs) != 1 {
+		t.Fatalf("prepared %d", len(rec.reqs))
+	}
+	r := rec.reqs[0]
+	if r.Operation != PublishOperation || r.UserID != "u1" || r.OrgID != "o1" || r.Env != "dev" || r.IdempotencyKey == "" || !strings.Contains(r.Summary, `"mine"`) {
+		t.Fatalf("request = %+v", r)
+	}
+	// After approval the relay executes exactly the prepared payload.
+	res, err := ExecutePublish(f)(approvedCtx, r.Payload, r.IdempotencyKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.published) != 1 || f.published[0].Kind != fleetapi.CatalogKindAgentSkill || f.published[0].Visibility != fleetapi.VisibilityPrivate || f.published[0].Slug != "mine" {
 		t.Fatalf("published = %+v", f.published)
 	}
 	if _, err := sk.ParseAgentSkill(f.published[0].Payload); err != nil {
 		t.Fatalf("published payload invalid: %v", err)
 	}
+	if !strings.Contains(string(res), `"catalog_id":"new-1"`) {
+		t.Fatalf("result %s", res)
+	}
+	// The same content prepared again uses the same idempotency key.
+	call(t, cs, "skills_publish", map[string]any{"path": dir, "version": "1.0.0"})
+	if rec.reqs[1].IdempotencyKey != r.IdempotencyKey || string(rec.reqs[1].Payload) != string(r.Payload) {
+		t.Fatal("idempotency key is not stable")
+	}
 
-	// Team visibility needs catalog_team_share.
+	// Team visibility needs catalog_team_share, at prepare and at execution.
 	out, isErr = call(t, cs, "skills_publish", map[string]any{"path": dir, "version": "1.0.1", "visibility": "team"})
 	if !isErr || !strings.Contains(out["error"].(string), "Team plan") {
 		t.Fatalf("team publish without capability = %v", out)
 	}
 	f.caps[capTeamShare] = true
-	if _, isErr = call(t, cs, "skills_publish", map[string]any{"path": dir, "version": "1.0.1", "visibility": "team"}); isErr {
-		t.Fatal("team publish with capability failed")
+	if out, isErr = call(t, cs, "skills_publish", map[string]any{"path": dir, "version": "1.0.1", "visibility": "team"}); isErr || out["status"] != "pending" {
+		t.Fatalf("team publish with capability: %v", out)
+	}
+	team := rec.reqs[len(rec.reqs)-1]
+	if team.Impact == "" {
+		t.Fatal("team publish has no impact text")
+	}
+	delete(f.caps, capTeamShare)
+	if _, err := ExecutePublish(f)(approvedCtx, team.Payload, team.IdempotencyKey); err == nil || len(f.published) != 1 {
+		t.Fatalf("executor skipped the tier recheck: %v", err)
 	}
 
 	if out, isErr = call(t, cs, "skills_publish", map[string]any{"path": "relative/dir", "version": "1"}); !isErr {
 		t.Fatalf("relative path accepted: %v", out)
+	}
+
+	// Without an approval service nothing is written and the user is told why.
+	d.Approvals = nil
+	cs2 := connect(t, d)
+	out, isErr = call(t, cs2, "skills_publish", map[string]any{"path": dir, "version": "1.0.2"})
+	if isErr || out["status"] != "approval_unavailable" || len(f.published) != 1 {
+		t.Fatalf("no approvals: %v", out)
+	}
+}
+
+// approvedCtx is the context the relay runs an executor in for alice's
+// approved request.
+var approvedCtx = approvals.ContextWithIdentity(context.Background(), approvals.Identity{Env: "dev", OrgID: "o1", UserID: "u1"})
+
+// The executor rechecks, right before writing, that the session is still
+// the account that approved.
+func TestExecutePublishRechecksAccount(t *testing.T) {
+	f, _, _ := setup(t)
+	pl, _ := json.Marshal(PublishPayload{Kind: fleetapi.CatalogKindAgentSkill, Slug: "x", Version: "1", Visibility: "private", Payload: json.RawMessage(`{}`)})
+	other := approvals.ContextWithIdentity(context.Background(), approvals.Identity{Env: "dev", OrgID: "o1", UserID: "someone-else"})
+	for _, ctx := range []context.Context{other, context.Background()} {
+		if _, err := ExecutePublish(f)(ctx, pl, "k"); err == nil || !strings.Contains(err.Error(), "account_changed") {
+			t.Fatalf("got %v", err)
+		}
+	}
+	if len(f.published) != 0 {
+		t.Fatal("published for another account")
+	}
+}
+
+func TestReconcilePublish(t *testing.T) {
+	f, _, _ := setup(t)
+	pl, _ := json.Marshal(PublishPayload{Kind: fleetapi.CatalogKindAgentSkill, Slug: "team-review", Version: "2", Visibility: "team"})
+	res, applied, err := ReconcilePublish(f)(context.Background(), pl, "k")
+	if err != nil || !applied || !strings.Contains(string(res), "cat-1") {
+		t.Fatalf("found: %s %v %v", res, applied, err)
+	}
+	pl, _ = json.Marshal(PublishPayload{Kind: fleetapi.CatalogKindAgentSkill, Slug: "team-review", Version: "3", Visibility: "team"})
+	if _, applied, _ := ReconcilePublish(f)(context.Background(), pl, "k"); applied {
+		t.Fatal("missing version reported applied")
+	}
+	if len(f.published) != 0 {
+		t.Fatal("reconcile wrote")
 	}
 }

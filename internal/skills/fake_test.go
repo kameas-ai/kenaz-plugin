@@ -21,6 +21,7 @@ type fakeFleet struct {
 	items  map[string]fleetapi.CatalogItem
 	pulls  int
 	gone   map[string]bool
+	user   string // signed-in user ("" = u1)
 }
 
 func newFake() *fakeFleet {
@@ -28,6 +29,22 @@ func newFake() *fakeFleet {
 }
 
 func (f *fakeFleet) Pollers() fleetapi.Pollers { return fakePollers{f} }
+func (f *fakeFleet) Auth() fleetapi.Auth       { return fakeAuth{Auth: f.Provider.Auth(), f: f} }
+
+type fakeAuth struct {
+	fleetapi.Auth
+	f *fakeFleet
+}
+
+func (a fakeAuth) Session(context.Context) (fleetapi.Session, error) {
+	a.f.mu.Lock()
+	defer a.f.mu.Unlock()
+	u := a.f.user
+	if u == "" {
+		u = "u1"
+	}
+	return fleetapi.Session{Env: fleetapi.EnvDev, UserID: u, OrgID: "o1"}, nil
+}
 func (f *fakeFleet) Catalog() fleetapi.Catalog { return fakeCatalog{f} }
 
 type fakePollers struct{ f *fakeFleet }
