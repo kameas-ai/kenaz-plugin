@@ -81,6 +81,13 @@ Any other `kenaz` marketplace that setup did not register (a different repositor
 
 Paths with spaces work. Re-running setup changes nothing; running it from a newer archive re-registers that one. `kenaz setup --undo <host>` removes the registration and restores your configuration, and `kenaz setup doctor` checks it.
 
+**Upgrades.** When the archive sits in a directory that an upgrade removes, setup launches `kenaz` through a path that doesn't change between versions:
+
+- **Archive installer:** `install/current/bin/kenaz`.
+- **Homebrew** (`brew install kameas-ai/tap/kenaz`): `$(brew --prefix)/bin/kenaz`, the link that `brew upgrade` moves to each new version. The versioned `Caskroom/kenaz/<version>/` directory isn't used.
+
+After an upgrade, the hosts run the new `kenaz` with the previous version's plugin files. `kenaz setup doctor` reports this, and running `kenaz init` again refreshes them. Setups made by 0.5.x on Homebrew launched the versioned path, so `brew upgrade` broke them. `kenaz status`, `kenaz doctor` and `kenaz login` say when a registration points at a `kenaz` that no longer exists, and `kenaz init` fixes it.
+
 ### Where Kenaz keeps its files
 
 | | Configuration (`config.toml`) | State (relay, queue, memory, credentials files) |
@@ -138,7 +145,7 @@ Tools that write to Kameas Fleet (`skills_publish`, `context_share`, `context_pr
 
 ## Memory
 
-Memories are stored on this device. They are sent to Kameas only if you turn on memory sync for your Kameas Fleet account (off by default), and never as telemetry. When your AI tool uses a memory in a session, it becomes part of that session and is sent to your AI provider (Anthropic or OpenAI) like anything else in the conversation.
+Memories are stored on this device. They are sent to Kameas only if you turn on memory sync for your Kameas Fleet account (off by default), and never as telemetry. When your AI tool uses a memory in a session, it becomes part of that session and is sent to your AI tool's provider (for example Anthropic for Claude Code, or OpenAI for Codex) like anything else in the conversation.
 
 Kenaz memory gives Claude Code and Codex a small notebook on your device. The agent saves short notes with the `memory_save` tool (durable facts, decisions, conventions and fixes), finds them again with `memory_search`, `memory_get` and `memory_recent` (keyword search on this device; no embeddings), and can change or delete them with `memory_update`, `memory_forget` and `memory_forget_all`. At the start of each session, the agent gets a short index of the newest note titles for the current project (titles and ids only, never note bodies). Every result says where a change took effect: on this device, waiting for your approval, queued for or synced to your account, or refused.
 

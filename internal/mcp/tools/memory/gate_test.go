@@ -202,10 +202,33 @@ func TestSourceDetection(t *testing.T) {
 	for name, want := range map[string]string{
 		"opencode": memory.SourceOpenCode, "OpenCode": memory.SourceOpenCode, "codex-mcp-client": memory.SourceCodex,
 		"claude-code": memory.SourceClaudeCode, "": memory.SourceClaudeCode,
+		"claude-ai": memory.SourceClaudeDesktop, "Claude-AI": memory.SourceClaudeDesktop, "claude-desktop": memory.SourceClaudeDesktop,
 	} {
 		if got := sourceFrom(name, none); got != want {
 			t.Errorf("%q = %s, want %s", name, got, want)
 		}
+	}
+	// The Claude Desktop extension sets KENAZ_MCP_HOST=claude-desktop: a
+	// note saved there is labelled claude-desktop even when the client
+	// reports no (or another Claude) name, but an explicit Claude Code,
+	// Codex or OpenCode client keeps its own label.
+	desktop := func(k string) string {
+		if k == mcp.HostEnvVar {
+			return mcp.HostClaudeDesktop
+		}
+		return ""
+	}
+	for name, want := range map[string]string{
+		"": memory.SourceClaudeDesktop, "claude-ai": memory.SourceClaudeDesktop, "claude": memory.SourceClaudeDesktop,
+		"claude-code": memory.SourceClaudeCode, "codex-mcp-client": memory.SourceCodex, "opencode": memory.SourceOpenCode,
+	} {
+		if got := sourceFrom(name, desktop); got != want {
+			t.Errorf("KENAZ_MCP_HOST=claude-desktop, %q = %s, want %s", name, got, want)
+		}
+	}
+	// A note labelled claude-desktop is a valid note.
+	if err := (&memory.NewNote{ProjectKey: memory.GlobalProject, Title: "t", Body: "b", Source: memory.SourceClaudeDesktop}).Validate(); err != nil {
+		t.Fatalf("claude-desktop source rejected: %v", err)
 	}
 	if got := sourceFrom("", func(k string) string {
 		if k == "OPENCODE" {

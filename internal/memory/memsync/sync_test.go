@@ -449,6 +449,24 @@ func TestConsentReconfirm(t *testing.T) {
 	}
 }
 
+// Consent: a store enabled under an earlier edition that is still accepted
+// (a wording-only successor) keeps syncing without a re-prompt.
+func TestConsentEarlierEditionStands(t *testing.T) {
+	f := fleetapitest.NewMemoryFleet()
+	a := newDevice(t, f, alice)
+	a.enable() // recorded under consent (memory-sync/v1)
+	a.save("x", "y", true)
+	a.w.o.ConsentVersion = "memory-sync/v2"
+	a.w.o.AcceptedConsentVersions = []string{"memory-sync/v2", consent}
+	a.sync()
+	if f.Calls("push") != 1 {
+		t.Fatalf("push=%d: an accepted earlier edition must keep syncing", f.Calls("push"))
+	}
+	if s := a.status(); s.StatusCode == CodeConsentReconfirm {
+		t.Fatalf("status = %+v", s)
+	}
+}
+
 // Capability check: no memory_sync → not in tier, nothing sent.
 func TestNotInTier(t *testing.T) {
 	f := fleetapitest.NewMemoryFleet()

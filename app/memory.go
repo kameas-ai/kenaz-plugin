@@ -145,7 +145,7 @@ func memoryGroup(env Env) mcp.Group {
 		Disclose:       func() string { return mp.discloseOnce(env.now()) },
 		Active:         mp.active,
 		Remote:         memoryRemote(env.Provider),
-		ConsentVersion: notices.MemorySyncV1ID,
+		ConsentVersion: notices.MemorySync().ID,
 	})
 }
 

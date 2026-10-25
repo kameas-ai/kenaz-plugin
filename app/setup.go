@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/internal/setup"
@@ -90,5 +91,37 @@ func setupAction(args []string) string {
 		return "undo"
 	default:
 		return "apply"
+	}
+}
+
+// registrationCheckCommands start with a check of the plugin
+// registrations setup made (warnBrokenRegistrations). Not hook, mcp or
+// daemon (the hosts' hot path), not init or setup (they re-register), and
+// not version or licenses (scripted).
+var registrationCheckCommands = map[string]bool{
+	"status": true, "doctor": true, "login": true, "skills": true,
+	"memory": true, "approvals": true, "device": true, "optin": true,
+}
+
+// warnBrokenRegistrations is the startup self-check: when a Claude Code or
+// Codex plugin registration launches a kenaz that no longer exists (a
+// version `brew upgrade` removed, registered before 0.6.0), it says so on
+// stderr and names the fix, `kenaz init`. It reads the default
+// environment's setup state only and never writes.
+func (e Env) warnBrokenRegistrations() {
+	paths, err := e.paths()
+	if err != nil {
+		return
+	}
+	file, err := config.LoadFile(paths.ConfigFile())
+	if err != nil {
+		return
+	}
+	env, _, err := config.ResolveEnv("", e.getenv, file)
+	if err != nil {
+		return
+	}
+	for _, line := range setup.BrokenRegistrations(paths.State(env)) {
+		fmt.Fprintln(e.Stderr, "kenaz: "+line)
 	}
 }

@@ -76,17 +76,34 @@ func AgentTelemetry(floorBuilt bool, orgSize string) Edition {
 
 // Memory Sync Notice. It is its own consent lane, separate from the Agent
 // Telemetry Notice: accepting one never accepts the other. The edition ID
-// is sent to Fleet as consent_version when the user turns memory sync on,
-// and a store enabled under an older edition sends nothing new until the
-// user re-confirms.
+// is sent to Fleet as consent_version when the user turns memory sync on.
+// A store enabled under an edition that is not in MemorySyncAccepted sends
+// nothing new until the user re-confirms.
 //
-// The v1 text is the engineering draft that describes exactly what the
-// memory lane sends; it awaits Kameas's notice approval (E04) like every
-// file here.
-const MemorySyncV1ID = "memory-sync/v1"
+// v2 clarifies shipped behaviour: it names
+// Claude Desktop among the saving tools, says that forget-all also erases
+// never-synced notes on the account's other devices (project notes are
+// kept), and that a note used in a session goes to the AI tool's provider.
+// Nothing new is sent, so enablements recorded under v1 stand without
+// re-consent; v1 stays embedded for the record.
+const (
+	MemorySyncV1ID = "memory-sync/v1"
+	MemorySyncV2ID = "memory-sync/v2"
+)
 
-//go:embed memory-sync/v1.md
-var MemorySyncV1 string
+var (
+	//go:embed memory-sync/v1.md
+	MemorySyncV1 string
+	//go:embed memory-sync/v2.md
+	MemorySyncV2 string
+)
 
-// MemorySync returns the current Memory Sync Notice edition.
-func MemorySync() Edition { return Edition{MemorySyncV1ID, MemorySyncV1} }
+// MemorySync returns the current Memory Sync Notice edition: the one shown
+// and recorded when a user turns memory sync on.
+func MemorySync() Edition { return Edition{MemorySyncV2ID, MemorySyncV2} }
+
+// MemorySyncAccepted lists the editions whose enablements still stand: the
+// current edition and every earlier edition that changed only wording, not
+// what is sent. A store enabled under any of them keeps syncing without a
+// re-prompt.
+func MemorySyncAccepted() []string { return []string{MemorySyncV2ID, MemorySyncV1ID} }

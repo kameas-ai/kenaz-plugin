@@ -59,21 +59,39 @@ func TestModelCallsBulletKeepsEditionIDs(t *testing.T) {
 	}
 }
 
-// TestMemorySyncNoticePinned ties the Memory Sync Notice to its reviewed
-// wording, and checks it states what the lane sends and how to delete it.
-// It must stay a separate edition from the Agent Telemetry Notice.
+// TestMemorySyncNoticePinned ties each Memory Sync Notice edition to its
+// reviewed wording, and checks the current one states what the lane sends
+// and how to delete it. It must stay a separate edition from the Agent
+// Telemetry Notice.
 func TestMemorySyncNoticePinned(t *testing.T) {
+	pins := map[string]string{
+		MemorySyncV1ID: "46f552ef5d363a792363aebc5594d1ae0c3bc82b0ee79606a6bdc95e420e1a50",
+		MemorySyncV2ID: "fe7ca28271b5420b7cfc4ab142306728d2e9e16ac09695347dad21258cb19daa",
+	}
+	for id, text := range map[string]string{MemorySyncV1ID: MemorySyncV1, MemorySyncV2ID: MemorySyncV2} {
+		sum := sha256.Sum256([]byte(text))
+		if got := hex.EncodeToString(sum[:]); got != pins[id] {
+			t.Errorf("%s: text changed (sha256 %s); decide wording-only vs new edition, then re-pin", id, got)
+		}
+	}
 	e := MemorySync()
-	sum := sha256.Sum256([]byte(e.Text))
-	if got := hex.EncodeToString(sum[:]); got != "46f552ef5d363a792363aebc5594d1ae0c3bc82b0ee79606a6bdc95e420e1a50" {
-		t.Errorf("%s: text changed (sha256 %s); decide wording-only vs new edition, then re-pin", e.ID, got)
+	if e.ID != "memory-sync/v2" || e.Text != MemorySyncV2 || strings.HasPrefix(e.ID, "agent-telemetry") {
+		t.Fatalf("current edition %q", e.ID)
 	}
-	if e.ID != "memory-sync/v1" || strings.HasPrefix(e.ID, "agent-telemetry") {
-		t.Fatalf("edition id %q", e.ID)
-	}
-	for _, must := range []string{"text and title", "kenaz memory forget-all", "does not delete what was already synced", "separate from telemetry", "It is off until you turn it on"} {
+	for _, must := range []string{"text and title", "Claude Desktop", "kenaz memory forget-all", "does not delete what was already synced",
+		"including notes there that had not been synced yet", "separate from telemetry", "It is off until you turn it on", "sent to the tool's AI provider"} {
 		if !strings.Contains(e.Text, must) {
 			t.Errorf("notice lacks %q", must)
 		}
+	}
+}
+
+// v2 clarifies what v1 already described (nothing new is sent), so an
+// enablement recorded under v1 stands: both editions are accepted, the
+// current one first.
+func TestMemorySyncV1EnablementsStand(t *testing.T) {
+	acc := MemorySyncAccepted()
+	if len(acc) != 2 || acc[0] != MemorySync().ID || acc[1] != MemorySyncV1ID {
+		t.Fatalf("accepted editions = %v", acc)
 	}
 }

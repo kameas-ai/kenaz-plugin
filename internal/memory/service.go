@@ -393,8 +393,12 @@ func (s *Service) ForgetAll(ctx context.Context) (Outcome, error) {
 	}
 	return s.gate(ctx, OpForgetAll, p, opPayload{Profile: p}, nil,
 		"Delete every memory of this Kameas Fleet account, on this device and in Kameas Fleet",
-		fmt.Sprintf("Deletes %d memories on this device and erases this account's memory in Kameas Fleet.", n))
+		fmt.Sprintf("Deletes %d memories on this device and erases this account's memory in Kameas Fleet. %s", n, ForgetAllOtherDevices))
 }
+
+// ForgetAllOtherDevices is the forget-all disclosure: an erase reaches the
+// account's other devices, including notes there that were never synced.
+const ForgetAllOtherDevices = "This also erases your account's notes on your other devices when they next connect, including notes there that hadn't been synced yet. Notes that belong to a single project are kept."
 
 // EnableSync turns Fleet sync on for the active account. It always needs
 // an approval of the Memory Sync Notice edition it names.

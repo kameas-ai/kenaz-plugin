@@ -45,7 +45,11 @@ type Bundle struct {
 	Version  string
 	OS, Arch string
 	Exe      string // absolute path of the bundle's executable
-	OpenCode bool   // the bundle carries opencode/
+	// Launch is the path hosts launch: Exe, or a version-independent path
+	// to the same executable (StablePath) when the bundle sits in a
+	// versioned directory an upgrade removes. Render writes Launch.
+	Launch   string
+	OpenCode bool // the bundle carries opencode/
 
 	// verified holds the bytes LoadBundle hashed for every file Render
 	// copies (plugin/ and .claude-plugin/marketplace.json), so Render
@@ -235,6 +239,7 @@ func LoadBundle(root string) (*Bundle, error) {
 	}
 	b := &Bundle{Root: abs, Version: m.Version, OS: m.OS, Arch: m.Arch, Exe: filepath.Join(abs, filepath.FromSlash(m.Executable)), OpenCode: m.OpenCode,
 		verified: verified}
+	b.Launch = StablePath(b.Exe)
 	versions := map[string]string{}
 	for _, rel := range []string{"plugin/.claude-plugin/plugin.json", "plugin/.codex-plugin/plugin.json"} {
 		var pj struct{ Version string }
@@ -277,14 +282,27 @@ func LoadBundle(root string) (*Bundle, error) {
 const InstallStateFile = "install-state.json"
 
 // StablePath returns the path hosts should launch for the resolved
-// executable exe. When exe is <root>/versions/<id>/bin/<name> under an
-// install root (install-state.json present) whose current link resolves to
-// <root>/versions/<id>, it returns <root>/current/bin/<name>, so an upgrade
-// or rollback (switching current) reaches every host and pruning the old
-// version breaks none. Any other executable is returned unchanged.
+// executable exe, so that an upgrade which removes exe's versioned
+// directory breaks no host registration:
+//
+//   - Archive installer: when exe is <root>/versions/<id>/bin/<name> under
+//     an install root (install-state.json present) whose current link
+//     resolves to <root>/versions/<id>, it returns
+//     <root>/current/bin/<name>, so an upgrade or rollback (switching
+//     current) reaches every host and pruning the old version breaks none.
+//   - Homebrew cask (macOS): when exe is
+//     <prefix>/Caskroom/kenaz/<version>/<dir>/bin/<name> and
+//     <prefix>/bin/<name> is a symlink that resolves to exe, it returns
+//     <prefix>/bin/<name>. `brew upgrade` deletes <version>/ and relinks
+//     <prefix>/bin/<name> to the new version (see HomebrewCaskPrefix).
+//
+// Any other executable is returned unchanged.
 func StablePath(exe string) string {
 	if exe == "" {
 		return exe
+	}
+	if p, ok := homebrewLink(exe); ok {
+		return p
 	}
 	binDir := filepath.Dir(exe)
 	verDir := filepath.Dir(binDir)
@@ -308,6 +326,56 @@ func StablePath(exe string) string {
 	return filepath.Join(cur, "bin", filepath.Base(exe))
 }
 
+// HomebrewCasks reports whether this OS has Homebrew casks (macOS only:
+// the kenaz cask is macOS-only, and on Linux and Windows StablePath never
+// maps a Caskroom path). Tests may set it.
+var HomebrewCasks = runtime.GOOS == "darwin"
+
+// HomebrewCaskPrefix reports whether exe sits in a Homebrew cask's
+// versioned directory, <prefix>/Caskroom/kenaz/<version>/<dir>/bin/<name>,
+// and returns <prefix> (for example /opt/homebrew or /usr/local). It looks
+// at the path only.
+func HomebrewCaskPrefix(exe string) (string, bool) {
+	if !HomebrewCasks || exe == "" || !filepath.IsAbs(exe) {
+		return "", false
+	}
+	binDir := filepath.Dir(exe)
+	verDir := filepath.Dir(filepath.Dir(binDir))
+	token := filepath.Dir(verDir)
+	caskroom := filepath.Dir(token)
+	v := filepath.Base(verDir)
+	if filepath.Base(binDir) != "bin" || filepath.Base(token) != "kenaz" || filepath.Base(caskroom) != "Caskroom" ||
+		v == "" || strings.HasPrefix(v, ".") {
+		return "", false
+	}
+	return filepath.Dir(caskroom), true
+}
+
+// homebrewLink returns <prefix>/bin/<name> for a cask executable when that
+// link is a symlink resolving to exe itself. A <prefix>/bin/<name> that is
+// a plain file, is missing, or resolves to another kenaz (a non-cask
+// install in the same prefix) is not used.
+func homebrewLink(exe string) (string, bool) {
+	prefix, ok := HomebrewCaskPrefix(exe)
+	if !ok {
+		return "", false
+	}
+	link := filepath.Join(prefix, "bin", filepath.Base(exe))
+	fi, err := os.Lstat(link)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		return "", false
+	}
+	got, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		return "", false
+	}
+	want, err := filepath.EvalSymlinks(exe)
+	if err != nil || got != want {
+		return "", false
+	}
+	return link, true
+}
+
 // StableRoot is StablePath for a bundle root: <root>/versions/<id> under
 // an install root becomes <root>/current when current points at it.
 func StableRoot(root string) string {
@@ -326,12 +394,22 @@ func StableRoot(root string) string {
 }
 
 // DetectBundle returns the bundle root for an executable at
-// <root>/bin/kenaz when <root>/bundle.json exists, else "".
+// <root>/bin/kenaz when <root>/bundle.json exists, else "". When exe is a
+// link outside any bundle (Homebrew's <prefix>/bin/kenaz), the bundle its
+// target sits in is returned.
 func DetectBundle(exe string) string {
 	if exe == "" {
 		return ""
 	}
 	root := filepath.Dir(filepath.Dir(exe))
+	if _, err := os.Stat(filepath.Join(root, BundleFile)); err == nil {
+		return root
+	}
+	r, err := filepath.EvalSymlinks(exe)
+	if err != nil || r == exe {
+		return ""
+	}
+	root = filepath.Dir(filepath.Dir(r))
 	if _, err := os.Stat(filepath.Join(root, BundleFile)); err != nil {
 		return ""
 	}
@@ -348,11 +426,19 @@ func hookQuote(p string) (string, error) {
 	return `"` + p + `"`, nil
 }
 
+// launch is the executable path Render writes into launch commands.
+func (b *Bundle) launch() string {
+	if b.Launch != "" {
+		return b.Launch
+	}
+	return b.Exe
+}
+
 // Render writes the per-user copy of the bundle's plugin and local
-// marketplace into dir, with absolute launch commands. It returns a digest
-// of everything rendered.
+// marketplace into dir, with absolute launch commands (b.Launch). It
+// returns a digest of everything rendered.
 func Render(b *Bundle, dir string, write bool) (string, error) {
-	quoted, err := hookQuote(b.Exe)
+	quoted, err := hookQuote(b.launch())
 	if err != nil {
 		return "", err
 	}
@@ -365,7 +451,7 @@ func Render(b *Bundle, dir string, write bool) (string, error) {
 		files[rel] = append([]byte(nil), data...)
 	}
 	for _, rel := range []string{"plugin/.mcp.json", "plugin/.codex-mcp.json"} {
-		out, err := rewriteMCP(files[rel], b.Exe)
+		out, err := rewriteMCP(files[rel], b.launch())
 		if err != nil {
 			return "", fmt.Errorf("%s: %v", rel, err)
 		}

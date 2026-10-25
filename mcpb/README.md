@@ -35,9 +35,11 @@ and `org_hint`, passed to the server as `KENAZ_ENV` and `KENAZ_ORG_HINT`, like
 unset field without one through as the literal `${user_config.…}`. The manifest
 also sets `KENAZ_MCP_HOST=claude-desktop` (see below).
 
-The description is the approved plugin description from
-`plugin/.claude-plugin/plugin.json`, trademark notice included. `tools` lists
-every tool `kenaz mcp` registers, described by the tool's own title.
+The description is Kameas's approved Claude Desktop extension text, extended
+trademark notice included; it differs from the plugin description in
+`plugin/.claude-plugin/plugin.json`, which is unchanged. `license` points at
+the official build's licence in `licenses/`. `tools` lists every tool
+`kenaz mcp` registers, described by the tool's own title.
 `go test ./mcpb ./app` fails if the manifest drifts from either.
 
 ## Under Claude Desktop

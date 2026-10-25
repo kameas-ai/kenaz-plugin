@@ -128,7 +128,7 @@ func TestMemorySyncLaneEndToEnd(t *testing.T) {
 	// The user approves at once: the relay runs the daemon-side executor
 	// with the stored payload and key.
 	relay := &instantRelay{exec: map[string]memory.Executor{}, res: map[string][]byte{}}
-	memory.RegisterExecutors(relay, memory.ExecOptions{StateRoot: root, Active: mp.active, Remote: memoryRemote(p), ConsentVersion: notices.MemorySyncV1ID})
+	memory.RegisterExecutors(relay, memory.ExecOptions{StateRoot: root, Active: mp.active, Remote: memoryRemote(p), ConsentVersion: notices.MemorySync().ID})
 	svc := mp.service(relay)
 	if out, err := svc.Save(ctx, memory.NewNote{ProjectKey: memory.GlobalProject, Title: "canary " + syncCanary, Body: "remember " + syncCanary, Source: memory.SourceCLI}); err != nil || out.Status != memory.OutcomeDone {
 		t.Fatalf("save = %+v %v", out, err)
@@ -201,7 +201,7 @@ func TestMemorySyncUnavailableInStubBuild(t *testing.T) {
 	if memoryRemote(stub.New()) != nil || memorySyncAvailable(stub.New()) {
 		t.Fatal("stub build claims memory sync")
 	}
-	if notices.MemorySync().ID != "memory-sync/v1" {
+	if notices.MemorySync().ID != "memory-sync/v2" {
 		t.Fatal("notice edition")
 	}
 }

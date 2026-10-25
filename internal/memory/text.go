@@ -11,7 +11,7 @@ import (
 
 // Notice is the user-facing statement about where memories go. It appears
 // verbatim in the READMEs and in `kenaz memory --help`.
-const Notice = "Memories are stored on this device. They are sent to Kameas only if you turn on memory sync for your Kameas Fleet account (off by default), and never as telemetry. When your AI tool uses a memory in a session, it becomes part of that session and is sent to your AI provider (Anthropic or OpenAI) like anything else in the conversation."
+const Notice = "Memories are stored on this device. They are sent to Kameas only if you turn on memory sync for your Kameas Fleet account (off by default), and never as telemetry. When your AI tool uses a memory in a session, it becomes part of that session and is sent to your AI tool's provider (for example Anthropic for Claude Code, or OpenAI for Codex) like anything else in the conversation."
 
 // OffMessage is returned by every memory tool while memory is turned off.
 const OffMessage = "Kenaz memory is turned off. Turn it on with `kenaz memory enable`."

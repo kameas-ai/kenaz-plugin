@@ -127,6 +127,9 @@ func RunEnv(env Env, args []string) int {
 		usage(stderr)
 		return ExitUsage
 	}
+	if registrationCheckCommands[args[0]] {
+		env.warnBrokenRegistrations()
+	}
 	return cmd.Run(env.withCredentialStore(args[0]), args[1:])
 }
 

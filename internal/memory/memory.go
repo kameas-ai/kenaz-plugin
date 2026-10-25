@@ -55,10 +55,11 @@ const (
 
 // Sources are who saved a note.
 const (
-	SourceClaudeCode = "claude-code"
-	SourceCodex      = "codex"
-	SourceCLI        = "cli"
-	SourceOpenCode   = "opencode"
+	SourceClaudeCode    = "claude-code"
+	SourceClaudeDesktop = "claude-desktop"
+	SourceCodex         = "codex"
+	SourceCLI           = "cli"
+	SourceOpenCode      = "opencode"
 )
 
 // GlobalProject is the project key of notes saved with project=global, and
@@ -368,7 +369,7 @@ func (n *NewNote) Validate() error {
 		return err
 	}
 	switch n.Source {
-	case SourceClaudeCode, SourceCodex, SourceCLI, SourceOpenCode:
+	case SourceClaudeCode, SourceClaudeDesktop, SourceCodex, SourceCLI, SourceOpenCode:
 	default:
 		return fmt.Errorf("%w: unknown source %q", ErrInvalidInput, n.Source)
 	}

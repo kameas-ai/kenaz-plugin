@@ -71,8 +71,13 @@ type Options struct {
 	Capabilities func(ctx context.Context) (fleetapi.Capabilities, error)
 	// ConsentVersion is the current memory-sync notice edition. A store
 	// whose sync was enabled under another edition sends no new notes
-	// until the user re-enables (re-consents).
+	// until the user re-enables (re-consents), unless that edition is in
+	// AcceptedConsentVersions.
 	ConsentVersion string
+	// AcceptedConsentVersions are earlier editions whose enablements stand
+	// without re-consent (their successor changed wording, not what is
+	// sent).
+	AcceptedConsentVersions []string
 	// Holder names this worker for the lease (unique per process).
 	Holder   string
 	Log      *slog.Logger
@@ -114,6 +119,20 @@ func New(o Options) *Worker {
 	w := &Worker{o: o, kick: make(chan struct{}, 1)}
 	w.lastCode.Store("")
 	return w
+}
+
+// consentAccepted reports whether an enablement recorded under edition v
+// still stands.
+func (w *Worker) consentAccepted(v string) bool {
+	if v == w.o.ConsentVersion {
+		return true
+	}
+	for _, a := range w.o.AcceptedConsentVersions {
+		if a != "" && v == a {
+			return true
+		}
+	}
+	return false
 }
 
 // Kick asks for a cycle now.
@@ -270,7 +289,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		}
 	}
 	active := set.Enabled
-	if active && set.ConsentVersion != w.o.ConsentVersion {
+	if active && !w.consentAccepted(set.ConsentVersion) {
 		// Accepted under another notice edition: nothing new is sent until
 		// the user re-confirms. Deletions still go.
 		w.setCode(ctx, CodeConsentReconfirm)

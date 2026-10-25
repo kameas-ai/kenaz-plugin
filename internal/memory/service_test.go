@@ -235,6 +235,21 @@ func TestGatePendingThenApproved(t *testing.T) {
 	}
 }
 
+// Forget-all's approval discloses that the erase reaches the account's
+// other devices, never-synced notes included.
+func TestForgetAllDisclosesOtherDevices(t *testing.T) {
+	ctx := context.Background()
+	e := newSvc(t, true)
+	e.syncOn(t)
+	out, err := e.svc.ForgetAll(ctx)
+	if err != nil || out.Status != OutcomeApprovalPending {
+		t.Fatalf("forget-all = %+v %v", out, err)
+	}
+	if q := e.relay.reqs[out.RequestID]; !strings.HasSuffix(q.Impact, ForgetAllOtherDevices) {
+		t.Fatalf("impact = %q", q.Impact)
+	}
+}
+
 // An approval that lands after an account switch does nothing.
 func TestGateAccountChangedBeforeApproval(t *testing.T) {
 	ctx := context.Background()

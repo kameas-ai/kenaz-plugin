@@ -196,7 +196,8 @@ func (l *memorySyncLane) reconcile(ctx context.Context) {
 	}
 	w := memsync.New(memsync.Options{
 		Store: st, Memory: fleetapi.MemoryOf(l.p), Session: l.p.Auth().Session, Capabilities: l.caps.get,
-		ConsentVersion: notices.MemorySyncV1ID, Holder: l.holder, Log: l.log,
+		ConsentVersion: notices.MemorySync().ID, AcceptedConsentVersions: notices.MemorySyncAccepted(),
+		Holder: l.holder, Log: l.log,
 	})
 	wctx, wcancel := context.WithCancel(ctx)
 	done := make(chan struct{})
@@ -312,7 +313,7 @@ func registerMemoryExecutors(m *approvals.Manager, p fleetapi.Provider, stateDir
 		StateRoot:      root,
 		Active:         func(ctx context.Context) memory.Profile { return memoryProfileOf(ctx, p) },
 		Remote:         memoryRemote(p),
-		ConsentVersion: notices.MemorySyncV1ID,
+		ConsentVersion: notices.MemorySync().ID,
 	})
 }
 
@@ -467,13 +468,13 @@ func renderMemory(op string) approvals.Renderer {
 				Impact: "Deletes this memory on this device and, if it was synced, in your Kameas Fleet account."}, nil
 		case memory.OpForgetAll:
 			return approvals.Rendered{Summary: "Delete every memory of this Kameas Fleet account, on this device and in Kameas Fleet.",
-				Impact: "Irreversible: erases all of this account's memories on this device and its memory in Kameas Fleet."}, nil
+				Impact: "Irreversible: erases all of this account's memories on this device and its memory in Kameas Fleet. " + memory.ForgetAllOtherDevices}, nil
 		case memory.OpSyncEnable:
 			details, err := noteDetails(pl.Records, func(r heldOpView) string { return "Upload " + strconv.Quote(clip(r.Title)) })
 			if err != nil {
 				return approvals.Rendered{}, fmt.Errorf("sync enable: %w", err)
 			}
-			out := approvals.Rendered{Summary: fmt.Sprintf("Turn on memory sync to your Kameas Fleet account under the Memory Sync Notice %s and upload %d notes.", notices.MemorySyncV1ID, len(pl.Records)),
+			out := approvals.Rendered{Summary: fmt.Sprintf("Turn on memory sync to your Kameas Fleet account under the Memory Sync Notice %s and upload %d notes.", notices.MemorySync().ID, len(pl.Records)),
 				Impact: "Keeps this account's synced notes in sync with your other devices. Each note it uploads is listed below with its full text.", Details: details}
 			for _, r := range pl.Records {
 				out.Targets = append(out.Targets, r.RecordID)

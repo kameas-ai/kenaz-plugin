@@ -57,6 +57,10 @@ type BundleReg struct {
 	Version  string `json:"version"`
 	Rendered string `json:"rendered"`
 	Digest   string `json:"digest"`
+	// Launcher is the executable the rendered plugin launches (Bundle.Launch:
+	// a version-independent path where there is one). Empty in state
+	// written before 0.6.0, whose plugin launched <Root>/bin/kenaz.
+	Launcher string `json:"launcher,omitempty"`
 	// Replaced is the GitHub marketplace source an explicit --bundle
 	// replaced, so --undo can say how to add it back.
 	Replaced string `json:"replaced,omitempty"`

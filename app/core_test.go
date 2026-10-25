@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -340,5 +341,29 @@ func TestEarlyAccessRefusalShownInLoginStatusSetup(t *testing.T) {
 	case <-ddone:
 	case <-time.After(3 * time.Second):
 		t.Fatal("daemon did not stop on logout")
+	}
+}
+
+// The startup self-check: a plugin registration whose launcher is gone
+// (brew upgrade removed the version a pre-0.6.0 setup registered) is
+// reported by user-facing commands, with the fix, and never by hook or
+// mcp (the hosts' hot path) or version.
+func TestStartupReportsBrokenRegistration(t *testing.T) {
+	h := newHarness(t, stub.New())
+	os.MkdirAll(h.state(), 0o700)
+	gone := filepath.Join(h.home, "opt", "homebrew", "Caskroom", "kenaz", "0.5.0", "kenaz_0.5.0_darwin_arm64")
+	st := `{"version":1,"claude":{"path":"x","written_sha256":"","created_container":false,"keys":{},
+		"bundle":{"root":` + strconv.Quote(gone) + `,"version":"0.5.0","rendered":"r","digest":"d"}}}`
+	if err := os.WriteFile(filepath.Join(h.state(), "setup-state.json"), []byte(st), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, errb := h.run(t, "status", "--json")
+	if !strings.Contains(errb, "Claude Code points at a kenaz that no longer exists") || !strings.Contains(errb, "kenaz init") {
+		t.Fatalf("status stderr: %q", errb)
+	}
+	for _, args := range [][]string{{"version"}, {"hook", "session-end"}} {
+		if _, _, errb := h.run(t, args...); strings.Contains(errb, "no longer exists") {
+			t.Fatalf("%v reported it: %q", args, errb)
+		}
 	}
 }

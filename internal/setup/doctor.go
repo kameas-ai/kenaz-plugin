@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kameas-ai/kenaz-plugin/internal/bundle"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemonstate"
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
@@ -103,20 +104,106 @@ func doctorBundle(o Options) []Check {
 			continue
 		}
 		src, enabled := o.registeredMarketplace(h)
-		exe := ""
-		if b, err := LoadBundle(fs.Bundle.Root); err == nil {
-			exe = b.Exe
-		}
+		exe, broken := registeredLauncher(fs.Bundle)
 		switch {
-		case exe == "":
-			cs = append(cs, Check{h.label(), "fail", fmt.Sprintf("the bundle at %s is missing or no longer verifies; re-run setup from the installed bundle", fs.Bundle.Root)})
+		case broken != "":
+			cs = append(cs, Check{h.label(), "fail", broken})
 		case src != fs.Bundle.Rendered || !enabled:
 			cs = append(cs, Check{h.label(), "warn", "the bundle plugin registration was changed outside setup; re-run setup"})
+		case bundle.StablePath(exe) != exe:
+			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s, which an upgrade removes; run `kenaz init` to register it through %s", exe, bundle.StablePath(exe))})
+		case fs.Bundle.Launcher == "" && isHomebrewCask(exe):
+			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s from Homebrew's versioned directory, which `brew upgrade` removes; run `kenaz init`", exe)})
 		default:
+			cur := currentBundleVersion(o)
+			if cur != "" && cur != fs.Bundle.Version {
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the registered plugin files are from kenaz %s and this kenaz is %s; run `kenaz init` to refresh them", fs.Bundle.Version, cur)})
+				continue
+			}
 			cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin registered from bundle %s (launches %s)", fs.Bundle.Version, exe)})
 		}
 	}
 	return cs
+}
+
+func isHomebrewCask(exe string) bool {
+	_, ok := bundle.HomebrewCaskPrefix(exe)
+	return ok
+}
+
+// currentBundleVersion is the version of the bundle this kenaz runs from
+// ("" when there is none or it does not verify).
+func currentBundleVersion(o Options) string {
+	if o.BundleRoot == "" {
+		return ""
+	}
+	b, err := LoadBundle(o.BundleRoot)
+	if err != nil {
+		return ""
+	}
+	return b.Version
+}
+
+// registeredLauncher returns the executable a bundle registration's
+// rendered plugin launches, and a non-empty problem when that executable
+// is gone (for example the versioned Homebrew directory `brew upgrade`
+// deleted, from state written before the launcher was recorded).
+func registeredLauncher(reg *BundleReg) (exe, problem string) {
+	// A bundle that is still there must still verify. One that is gone is
+	// expected after an upgrade removed its version, as long as the
+	// recorded launcher (a version-independent path) still exists.
+	if _, err := os.Stat(filepath.Join(reg.Root, BundleFile)); err == nil {
+		b, err := LoadBundle(reg.Root)
+		if err != nil {
+			return "", fmt.Sprintf("the bundle at %s no longer verifies (%v); re-run setup from the installed bundle", reg.Root, err)
+		}
+		exe = b.Exe
+	}
+	if reg.Launcher != "" {
+		fi, err := os.Stat(reg.Launcher)
+		if err != nil || fi.IsDir() {
+			return reg.Launcher, fmt.Sprintf("the plugin launches %s, which no longer exists; run `kenaz init` to register this kenaz again", reg.Launcher)
+		}
+		return reg.Launcher, ""
+	}
+	if exe == "" {
+		// Before the launcher was recorded, the plugin launched the
+		// bundle's own executable, and the bundle is gone.
+		return "", fmt.Sprintf("the bundle at %s is missing, so the plugin cannot start; run `kenaz init` to register this kenaz again", reg.Root)
+	}
+	return exe, ""
+}
+
+// BrokenRegistrations lists, for the setup state in stateDir, each Claude
+// Code or Codex plugin registration whose launcher no longer exists (for
+// example after `brew upgrade` removed the version a pre-0.6.0 setup
+// registered), as one sentence each. It only reads files; the fix is
+// `kenaz init` (or `kenaz setup claude|codex`), which re-registers.
+func BrokenRegistrations(stateDir string) []string {
+	state, err := loadState(stateDir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, h := range []harness{harnessClaude, harnessCodex} {
+		fs := state.get(h)
+		if fs == nil || fs.Bundle == nil {
+			continue
+		}
+		missing := false
+		if fs.Bundle.Launcher != "" {
+			_, err := os.Stat(fs.Bundle.Launcher)
+			missing = err != nil
+		} else {
+			// Cheap check (no re-verification): the bundle directory is gone.
+			_, err := os.Stat(filepath.Join(fs.Bundle.Root, BundleFile))
+			missing = err != nil
+		}
+		if missing {
+			out = append(out, fmt.Sprintf("the Kenaz plugin in %s points at a kenaz that no longer exists (it was registered from %s). Run `kenaz init` to fix it.", h.label(), fs.Bundle.Root))
+		}
+	}
+	return out
 }
 
 // healthz verifies the relay with the daemon's HMAC challenge-response; a

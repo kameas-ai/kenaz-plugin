@@ -403,8 +403,12 @@ func errResult(e *ToolError) *sdk.CallToolResult {
 
 // sourceOf names the harness that saved a note, from the MCP client's
 // self-reported name (Codex: "codex-mcp-client", OpenCode: "opencode",
-// Claude Code: "claude-code"). OpenCode also marks the processes it
-// starts with OPENCODE=1, which covers a client that reports no name.
+// Claude Code: "claude-code", Claude Desktop chat: "claude-ai"). The
+// Claude Desktop extension manifest also sets KENAZ_MCP_HOST=claude-desktop,
+// and OpenCode marks the processes it starts with OPENCODE=1; both cover a
+// client that reports no name. Fleet stores source as free text, so the
+// claude-desktop label needs no Fleet change. Claude Desktop's Code tab runs
+// Claude Code and reports "claude-code".
 func sourceOf(req *sdk.CallToolRequest) string {
 	return sourceFrom(clientName(req), os.Getenv)
 }
@@ -425,6 +429,11 @@ func sourceFrom(name string, getenv func(string) string) string {
 		return memory.SourceOpenCode
 	case strings.Contains(n, "codex"):
 		return memory.SourceCodex
+	case strings.Contains(n, "claude-code"):
+		return memory.SourceClaudeCode
+	case strings.TrimSpace(getenv(mcp.HostEnvVar)) == mcp.HostClaudeDesktop,
+		n == "claude-ai", strings.Contains(n, "claude-desktop"):
+		return memory.SourceClaudeDesktop
 	case strings.Contains(n, "claude"):
 		return memory.SourceClaudeCode
 	case getenv("OPENCODE") != "":

@@ -486,7 +486,8 @@ func Apply(o Options, h harness) error {
 		if cmds, err = o.planRegistration(h, mk, rendered, digest, prevReg); err != nil {
 			return err
 		}
-		reg = &BundleReg{Root: bundle.Root, Version: bundle.Version, Rendered: rendered, Digest: digest}
+		reg = &BundleReg{Root: bundle.Root, Version: bundle.Version, Rendered: rendered, Digest: digest, Launcher: bundle.Launch}
+		o.warnVersionedLaunch(bundle)
 		switch {
 		case mk.official():
 			reg.Replaced = mk.Remote
@@ -591,7 +592,7 @@ func Apply(o Options, h harness) error {
 	}
 	switch {
 	case reg != nil:
-		fmt.Fprintf(o.Out, "Registered the Kenaz plugin from %s in %s (launching %s).\n", bundle.Root, h.label(), bundle.Exe)
+		fmt.Fprintf(o.Out, "Registered the Kenaz plugin from %s in %s (launching %s).\n", bundle.Root, h.label(), bundle.Launch)
 	case adopt != nil:
 		fmt.Fprintf(o.Out, "%s uses the Kenaz plugin from GitHub (%s), which launches kenaz from PATH.\n", h.label(), OfficialRepo)
 	}
@@ -627,7 +628,7 @@ func (o *Options) loadBundle(h harness) (*Bundle, error) {
 		if err := checkAdapter(b.AdapterDir()); err != nil {
 			return nil, err
 		}
-		o.KenazBin, o.AdapterDir = b.Exe, b.AdapterDir()
+		o.KenazBin, o.AdapterDir = b.Launch, b.AdapterDir()
 	}
 	return b, nil
 }
@@ -919,6 +920,18 @@ func (o Options) relayState() (daemonstate.State, error) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// warnVersionedLaunch warns when b runs from a Homebrew cask's versioned
+// directory and no version-independent link to it was found, so the
+// registration would stop working after `brew upgrade`.
+func (o Options) warnVersionedLaunch(b *Bundle) {
+	prefix, ok := bundle.HomebrewCaskPrefix(b.Exe)
+	if !ok || b.Launch != b.Exe {
+		return
+	}
+	fmt.Fprintf(o.Err, "warning: kenaz runs from Homebrew's versioned directory %s, and %s does not link to it, so this registration will stop working after `brew upgrade`. Run `brew reinstall --cask kenaz`, then `kenaz init`.\n",
+		filepath.Dir(filepath.Dir(b.Exe)), filepath.Join(prefix, "bin", filepath.Base(b.Exe)))
 }
 
 // warnNotOnPath warns when the adopted GitHub plugin would not find

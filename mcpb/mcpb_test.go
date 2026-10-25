@@ -96,6 +96,10 @@ func TestTemplatePlaceholders(t *testing.T) {
 	}
 }
 
+// approvedDescription is the Claude Desktop extension description Kameas
+// approved. Use it exactly.
+const approvedDescription = "Kenaz, a Kameas AI product. Brings your organization's Kameas Fleet skills, team context and your Kenaz memory to Claude Desktop. Sends no usage telemetry. Claude, Claude Code and Claude Desktop are trademarks of Anthropic, PBC. OpenAI, ChatGPT and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI."
+
 func TestRenderEveryPlatform(t *testing.T) {
 	var plugin struct {
 		Description string `json:"description"`
@@ -133,9 +137,11 @@ func TestRenderEveryPlatform(t *testing.T) {
 			if m.ManifestVersion != "0.3" || m.Name != "kenaz" || m.DisplayName != "Kenaz" || m.Version != "1.2.3-rc.1" {
 				t.Errorf("identity: %q %q %q %q", m.ManifestVersion, m.Name, m.DisplayName, m.Version)
 			}
-			// Approved text only: the plugin's description, trademark notice included.
-			if m.Description != plugin.Description || !strings.Contains(m.Description, "not affiliated with, endorsed or sponsored by Anthropic") {
-				t.Errorf("description must be the approved plugin description")
+			// Approved text only: the Claude Desktop extension description,
+			// extended trademark notice included. It is its own
+			// text, not the plugin description (which is unchanged).
+			if m.Description != approvedDescription || m.Description == plugin.Description {
+				t.Errorf("description must be the approved Claude Desktop extension description, got %q", m.Description)
 			}
 			if m.Author.Name != "Kameas AI, Inc." || m.Author != plugin.Author {
 				t.Errorf("author %+v, plugin %+v", m.Author, plugin.Author)
@@ -143,8 +149,10 @@ func TestRenderEveryPlatform(t *testing.T) {
 			if raw["homepage"] != plugin.Homepage {
 				t.Errorf("homepage %v", raw["homepage"])
 			}
-			if _, ok := raw["license"]; ok {
-				t.Errorf("license: the bundle ships the official executable under its own licences (licenses/), not the plugin's")
+			// The bundle ships the official executable under its own licences
+			// (licenses/), not the plugin's.
+			if raw["license"] != "SEE LICENSE IN licenses/LICENSE" {
+				t.Errorf("license %v: must point at the official build's licence in licenses/", raw["license"])
 			}
 			s := m.Server
 			if s.Type != "binary" || s.EntryPoint != "server/"+exe || s.MCPConfig.Command != "${__dirname}/server/"+exe {
