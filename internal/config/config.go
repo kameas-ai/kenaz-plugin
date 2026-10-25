@@ -12,17 +12,15 @@ import (
 	"strings"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
-// Environment variables that select the Fleet env. KENAZ_ENV is what
-// the plugin's .mcp.json sets from the plugin's fleet_env user option.
-// Hook commands get no .mcp.json env block: Claude Code exports plugin
-// user options to every plugin subprocess as CLAUDE_PLUGIN_OPTION_<KEY>,
-// so hooks (SessionStart banner, approval links, SessionEnd) read the same
-// fleet_env through it and agree with the MCP server on the environment.
-// FLEET_PLUGIN_ENV is the original name. The first non-empty,
-// non-placeholder value wins.
-var EnvVars = []string{"KENAZ_ENV", "CLAUDE_PLUGIN_OPTION_FLEET_ENV", "FLEET_PLUGIN_ENV"}
+// EnvVars are the environment variables that select the Fleet env (see
+// variant.Identity.EnvVars). Hooks (SessionStart banner, approval links,
+// SessionEnd) and the MCP server read the same plugin option through them
+// and agree on the environment. The first non-empty, non-placeholder
+// value wins.
+var EnvVars = variant.Current.EnvVars
 
 // Source records where the resolved env came from (shown by doctor/status).
 type Source string
@@ -116,10 +114,10 @@ func exists(p string) bool {
 }
 
 func pathsFor(goos string, getenv func(string) string, home, userConfig func() (string, error)) (Paths, error) {
-	if h := getenv("KENAZ_HOME"); h != "" {
+	if h := getenv(variant.Current.HomeVar); h != "" {
 		return Paths{ConfigDir: filepath.Join(h, "config"), StateRoot: filepath.Join(h, "state")}, nil
 	}
-	const sub = "kameas/kenaz"
+	sub := filepath.Join("kameas", variant.Current.ConfigDir)
 	switch goos {
 	case "linux":
 		hd, err := home()
@@ -231,7 +229,7 @@ func ResolveEnv(flag string, getenv func(string) string, file File) (fleetapi.En
 		}
 		e := fleetapi.Env(strings.ToLower(v))
 		if !e.Valid() {
-			return "", "", true, fmt.Errorf("unknown Fleet env %q from %s (want prod|stage|dev)", v, src)
+			return "", "", true, fmt.Errorf("unknown Fleet env %q from %s (want %s)", v, src, variant.Current.EnvChoices("|"))
 		}
 		return e, src, true, nil
 	}
@@ -246,7 +244,7 @@ func ResolveEnv(flag string, getenv func(string) string, file File) (fleetapi.En
 	if e, s, ok, err := try(file.Get("env"), SourceFile); ok || err != nil {
 		return e, s, err
 	}
-	return fleetapi.EnvProd, SourceDefault, nil
+	return fleetapi.Env(variant.Current.DefaultEnv), SourceDefault, nil
 }
 
 // SetValue writes key = "value" into the config file at path, replacing an

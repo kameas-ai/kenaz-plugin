@@ -308,11 +308,16 @@ type SyncSettingsOutput struct {
 func ptr[T any](v T) *T { return &v }
 
 func register(s *sdk.Server, _ mcp.Deps, o Options, svc *memory.Service) {
+	// openWorldHint convention (every kenaz tool): true when the tool talks
+	// to Kameas Fleet, or can sync a change to or delete from the user's
+	// Fleet account; false when it only touches this device (local notebook,
+	// local relay, local skill folders). Memory reads are device-only; every
+	// memory write can reach Fleet when sync applies.
 	readOnly := func(title string) *sdk.ToolAnnotations {
 		return &sdk.ToolAnnotations{Title: title, ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: ptr(false)}
 	}
 	mut := func(title string, destructive bool) *sdk.ToolAnnotations {
-		return &sdk.ToolAnnotations{Title: title, DestructiveHint: ptr(destructive), OpenWorldHint: ptr(false)}
+		return &sdk.ToolAnnotations{Title: title, DestructiveHint: ptr(destructive), OpenWorldHint: ptr(true)}
 	}
 	add := func(name, title, desc string, ann *sdk.ToolAnnotations) *sdk.Tool {
 		return &sdk.Tool{Name: name, Title: title, Description: onDevice + desc, Annotations: ann}
@@ -343,7 +348,7 @@ func register(s *sdk.Server, _ mcp.Deps, o Options, svc *memory.Service) {
 		})
 
 	sdk.AddTool(s, add(ToolUpdate, "Edit a memory", "Change a saved memory's title, body or tags. A body change on a synced note gives it a new id. "+
-		"The result says where the change took effect.", mut("Edit a memory", false)),
+		"The result says where the change took effect.", mut("Edit a memory", true)),
 		func(ctx context.Context, _ *sdk.CallToolRequest, in UpdateInput) (*sdk.CallToolResult, UpdateOutput, error) {
 			out := runUpdate(ctx, o, svc, in)
 			return errResult(out.Error), out, nil
@@ -351,7 +356,7 @@ func register(s *sdk.Server, _ mcp.Deps, o Options, svc *memory.Service) {
 
 	sdk.AddTool(s, add(ToolForget, "Delete a memory", "Permanently delete one saved memory by id. This cannot be undone. "+
 		"The result says whether its copy in the user's Kameas Fleet account is being deleted too.",
-		&sdk.ToolAnnotations{Title: "Delete a memory", DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)}),
+		&sdk.ToolAnnotations{Title: "Delete a memory", DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(true)}),
 		func(ctx context.Context, _ *sdk.CallToolRequest, in ForgetInput) (*sdk.CallToolResult, ForgetOutput, error) {
 			out := runForget(ctx, o, svc, in)
 			return errResult(out.Error), out, nil

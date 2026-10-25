@@ -24,6 +24,7 @@ import (
 	kenaz "github.com/kameas-ai/kenaz-plugin"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Version is set at link time: -ldflags "-X .../app.Version=1.2.3".
@@ -123,7 +124,7 @@ func RunEnv(env Env, args []string) int {
 	}
 	cmd, ok := commands[args[0]]
 	if !ok {
-		fmt.Fprintf(stderr, "kenaz: unknown command %q\n\n", args[0])
+		fmt.Fprintf(stderr, variant.Current.Binary+": unknown command %q\n\n", args[0])
 		usage(stderr)
 		return ExitUsage
 	}
@@ -134,7 +135,7 @@ func RunEnv(env Env, args []string) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: kenaz <command> [flags]")
+	fmt.Fprintln(w, "usage: "+variant.Current.Binary+" <command> [flags]")
 	fmt.Fprintln(w)
 	names := make([]string, 0, len(commands))
 	for n := range commands {
@@ -149,10 +150,10 @@ func usage(w io.Writer) {
 // providerErr maps seam errors to exit codes and prints them.
 func providerErr(env Env, err error) int {
 	if errors.Is(err, fleetapi.ErrUnofficialBuild) {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUnofficial
 	}
-	fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+	fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 	return ExitError
 }
 
@@ -166,7 +167,7 @@ func runVersion(env Env, args []string) int {
 		}
 		return ExitOK
 	}
-	fmt.Fprintf(env.Stdout, "kenaz %s (%s build)\n", Version, env.Provider.Flavor())
+	fmt.Fprintf(env.Stdout, "%s %s (%s build)\n", variant.Current.Binary, Version, env.Provider.Flavor())
 	return ExitOK
 }
 func runLicenses(env Env, _ []string) int {

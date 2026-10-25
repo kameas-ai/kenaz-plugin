@@ -1,8 +1,10 @@
 # Claude Desktop extension (MCPB)
 
-**Not released.** Official releases do not include a Claude Desktop extension
-yet: Kenaz's notices cover Claude Code and Codex only, and the extension ships
-only once they cover Claude Desktop chat too.
+**Off by default.** An official release includes the Claude Desktop extension
+only when its release build enables the extension channel, which happens once
+Kenaz's notices cover Claude Desktop chat. Claude's directory
+no longer accepts `.mcpb` submissions, so the bundles ship by direct download
+(and Team/Enterprise admin upload) only.
 
 `manifest.json.tmpl` is the [MCP Bundle](https://github.com/modelcontextprotocol/mcpb)
 manifest (spec version 0.3) that gives Claude Desktop chat the same MCP tools as
@@ -25,9 +27,14 @@ Each rendered bundle declares exactly one platform. A bundle is:
 
 ```
 manifest.json
+icon.png             icon.png from this directory (512x512 RGBA PNG)
 server/kenaz[.exe]   the signed release executable, byte for byte
 licenses/            the release licences
 ```
+
+The manifest also carries `privacy_policies` (the Kenaz privacy policy),
+`support` (the same troubleshooting page as the winget listing),
+`documentation`, `repository`, `keywords` and `compatibility.claude_desktop`.
 
 `user_config` mirrors the plugin's `userConfig`: `fleet_env` (default `prod`)
 and `org_hint`, passed to the server as `KENAZ_ENV` and `KENAZ_ORG_HINT`, like
@@ -61,3 +68,7 @@ the official build's licence in `licenses/`. `tools` lists every tool
 - **Environment:** Claude Desktop passes only a minimal environment (`HOME`,
   `PATH`, `USER` and similar) plus the manifest's `env`. Nothing in `kenaz mcp`
   depends on `PATH`.
+- **Skills:** Claude Desktop chat loads no skill folders. With
+  `KENAZ_MCP_HOST=claude-desktop`, `skills_install` still installs for the
+  coding tools on the machine (if any) and also returns the skill's `SKILL.md`
+  as `skill_md`, so the chat can follow it.

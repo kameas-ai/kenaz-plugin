@@ -4,7 +4,9 @@
     checks.py no-policy [ROOT]   the plugin, the OpenCode adapter and setup
                                  add no policy, plus the Codex-only
                                  manifest overlay
-    checks.py names [ROOT]       no harness vendor names in our own names
+    checks.py names [ROOT]       no harness vendor names in our own names,
+                                 and no build identity value spelled out
+                                 outside internal/variant
     checks.py legacy-name [ROOT] the former product name stays gone, except
                                  for the allowlisted wire constants below
 
@@ -260,6 +262,72 @@ def chosen_names(root, errs):
             yield f"MCP tool ({src.relative_to(root)})", m.group(1)
 
 
+# Build identity values (binary, plugin, marketplace and MCP server names,
+# config and state directories, keychain service, relay ports, environment
+# variables, cookie names) live only in internal/variant, so that a build
+# variant changes all of them together. Go code elsewhere reads them from
+# variant.Current. Tests, test/ and the plugin sources are exempt.
+IDENTITY_LITERALS = [
+    (re.compile(r'"kenaz(\.exe| )?"'), "the executable, plugin, marketplace or MCP server name"),
+    (re.compile(r'kameas/kenaz(?![-\w])|"kameas",\s*"kenaz"'), "the config and state directory"),
+    (re.compile(r'"kenaz-plugin"'), "the keychain service or consent directory"),
+    (re.compile(r'kenaz@kenaz'), "the plugin id"),
+    (re.compile(r'kenaz_approvals_csrf|kenaz_enroll_'), "an approval page cookie name"),
+    (re.compile(r'"KENAZ_(ENV|HOME|STATE_DIR|MCP_HOST)"'), "an environment variable name"),
+    (re.compile(r'(?<![\w.])(4318|47318)(?![\w.])'), "a relay port"),
+    (re.compile(r'Caskroom/kenaz\b'), "the Homebrew cask"),
+    (re.compile(r'"Kenaz approvals|Title:\s*"Kenaz"'), "the display name"),
+]
+IDENTITY_EXEMPT_DIRS = ("internal/variant/", "test/", "plugin/")
+
+
+def go_code(text):
+    """Return text with Go comments blanked out (string and rune literals
+    kept), so identity checks see only code."""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            seg = text[i:n if j < 0 else j + 2]
+            out.append("\n" * seg.count("\n"))
+            i += len(seg)
+            continue
+        if c in "\"'`":
+            j = i + 1
+            while j < n and text[j] != c:
+                if c != "`" and text[j] == "\\":
+                    j += 1
+                elif c != "`" and text[j] == "\n":
+                    break
+                j += 1
+            out.append(text[i:j + 1])
+            i = j + 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def check_identity_literals(root, errs):
+    for src in sorted(root.rglob("*.go")):
+        rel = src.relative_to(root).as_posix()
+        if src.name.endswith("_test.go") or rel.startswith(IDENTITY_EXEMPT_DIRS):
+            continue
+        if any(part in LEGACY_SKIP_DIRS for part in src.relative_to(root).parts):
+            continue
+        for n, line in enumerate(go_code(src.read_text()).splitlines(), 1):
+            for pat, what in IDENTITY_LITERALS:
+                m = pat.search(line)
+                if m:
+                    errs.append(f"{rel}:{n}: {m.group(0)!r} spells out {what}; use variant.Current (internal/variant)")
+
+
 def check_names(root):
     errs = []
     for where, name in chosen_names(root, errs):
@@ -267,6 +335,7 @@ def check_names(root):
             continue
         if BANNED_NAME.search(name):
             errs.append(f"{where}: {name!r} contains a third-party mark (claude/codex/anthropic/openai)")
+    check_identity_literals(root, errs)
     return errs
 
 

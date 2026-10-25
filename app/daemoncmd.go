@@ -11,6 +11,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/logx"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // DaemonHook lets other parts of the app (the telemetry receiver, consent) extend the
@@ -35,7 +36,7 @@ func runDaemon(env Env, args []string) int {
 	}
 	r, err := env.resolve(*envName)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
 	}
 	rot := &logx.Rotator{Path: filepath.Join(r.StateDir, "logs", "relay.log")}
@@ -55,18 +56,18 @@ func runDaemon(env Env, args []string) int {
 	// daemon refuses to start rather than keep an unencrypted queue.
 	if err := env.cred.usable(); err != nil {
 		log.Error("credential store unusable; refusing to start", "err", err.Error())
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error()+"; the relay cannot start")
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error()+"; the relay cannot start")
 		return ExitError
 	}
 	key, err := spool.GetOrCreateKey(env.keyStore(), string(r.Env))
 	if err != nil {
 		if env.cred.files() {
 			log.Error("spool key file unusable; refusing to start", "err", err.Error())
-			fmt.Fprintln(env.Stderr, "kenaz: the spool key file cannot be used; the relay cannot start: "+err.Error())
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": the spool key file cannot be used; the relay cannot start: "+err.Error())
 			return ExitError
 		}
 		log.Error("keychain unavailable; refusing to start", "err", err.Error())
-		fmt.Fprintln(env.Stderr, "kenaz: "+errKeychainGone.Error()+"; the relay cannot start")
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+errKeychainGone.Error()+"; the relay cannot start")
 		return ExitError
 	}
 	if err := env.cred.record(); err != nil {
@@ -74,7 +75,7 @@ func runDaemon(env Env, args []string) int {
 	}
 	sp, err := spool.Open(filepath.Join(r.StateDir, "spool"), key, spool.Options{})
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	opt.Spool = sp
@@ -86,7 +87,7 @@ func runDaemon(env Env, args []string) int {
 	for _, h := range hooks {
 		mount, err := h(&opt)
 		if err != nil {
-			fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 			return ExitError
 		}
 		if mount != nil {
@@ -99,11 +100,11 @@ func runDaemon(env Env, args []string) int {
 	}
 	err = d.Run(env.Ctx)
 	if errors.Is(err, daemon.ErrAlreadyRunning) {
-		fmt.Fprintln(env.Stderr, "kenaz: relay already running")
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": relay already running")
 		return ExitOK
 	}
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	return ExitOK

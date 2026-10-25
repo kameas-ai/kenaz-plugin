@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // OpenCode configuration: two entries in the user's global opencode.json
@@ -34,7 +36,7 @@ import (
 // JSON (comments are refused rather than lost).
 
 // openCodeServerName is the MCP server name under "mcp".
-const openCodeServerName = "kenaz"
+var openCodeServerName = variant.Current.MCPServer
 
 // openCodeAdapterPackage is the adapter's package name.
 const openCodeAdapterPackage = "@kameas/kenaz-opencode"
@@ -66,7 +68,7 @@ func (c openCodeConfig) mcpEntry() (json.RawMessage, error) {
 	}
 	o.set("command", cmd)
 	if c.Env != "" {
-		env, err := json.Marshal(map[string]string{"KENAZ_ENV": c.Env})
+		env, err := json.Marshal(map[string]string{variant.Current.EnvVar: c.Env})
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +155,7 @@ func launchesKenazMCP(raw json.RawMessage) bool {
 		return false
 	}
 	base := strings.ToLower(filepath.Base(e.Command[0]))
-	return base == "kenaz" || base == "kenaz.exe"
+	return base == variant.Current.Binary || base == variant.Current.Binary+".exe"
 }
 
 func renderArray(elems []json.RawMessage) json.RawMessage {

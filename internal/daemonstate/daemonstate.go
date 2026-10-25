@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/canon"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // FileName is the daemon state file inside the state directory.
@@ -80,21 +81,17 @@ func System() (Resolver, error) {
 	return Resolver{Home: home, GOOS: runtime.GOOS, Getenv: os.Getenv}, nil
 }
 
-// Env returns the selected environment: KENAZ_ENV when it names a
-// known environment, otherwise "prod". Codex passes the plugin's
+// Env returns the selected environment: the build's env variable
+// (KENAZ_ENV) when it names an environment the build allows, otherwise
+// its default (prod). Codex passes the plugin's
 // ${user_config...} placeholders through unexpanded, so a value that still
 // starts with "${" is ignored.
 func (r Resolver) Env() string {
-	v := strings.TrimSpace(r.Getenv("KENAZ_ENV"))
-	if v == "" || strings.HasPrefix(v, "${") {
-		return "prod"
+	v := strings.TrimSpace(r.Getenv(variant.Current.EnvVar))
+	if v == "" || strings.HasPrefix(v, "${") || !variant.Current.Allowed(v) {
+		return variant.Current.DefaultEnv
 	}
-	for _, e := range Environments {
-		if v == e {
-			return v
-		}
-	}
-	return "prod"
+	return v
 }
 
 // StateDir is $STATE for env:
@@ -105,19 +102,19 @@ func (r Resolver) Env() string {
 func (r Resolver) StateDir(env string) string {
 	switch r.GOOS {
 	case "darwin":
-		return filepath.Join(r.Home, "Library", "Application Support", "kameas", "kenaz", "state", env)
+		return filepath.Join(r.Home, "Library", "Application Support", "kameas", variant.Current.ConfigDir, "state", env)
 	case "windows":
 		base := r.Getenv("LocalAppData")
 		if base == "" {
 			base = filepath.Join(r.Home, "AppData", "Local")
 		}
-		return filepath.Join(base, "kameas", "kenaz", "state", env)
+		return filepath.Join(base, "kameas", variant.Current.ConfigDir, "state", env)
 	default:
 		base := r.Getenv("XDG_STATE_HOME")
 		if base == "" {
 			base = filepath.Join(r.Home, ".local", "state")
 		}
-		return filepath.Join(base, "kameas", "kenaz", env)
+		return filepath.Join(base, "kameas", variant.Current.ConfigDir, env)
 	}
 }
 

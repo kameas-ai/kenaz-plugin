@@ -26,6 +26,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/consent"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // ErrAlreadyRunning is returned by Run when another daemon holds the lock.
@@ -33,7 +34,7 @@ var ErrAlreadyRunning = errors.New("kenaz daemon already running")
 
 // DefaultPorts is the bind preference: the OTLP/HTTP default, a
 // fixed fallback, then ephemeral.
-var DefaultPorts = []int{4318, 47318, 0}
+var DefaultPorts = variant.Current.Ports()
 
 // Timing defaults.
 const (

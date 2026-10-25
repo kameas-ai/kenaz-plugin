@@ -6,6 +6,7 @@ import (
 
 	"github.com/kameas-ai/kenaz-plugin/internal/device"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // runDevice shows or changes the device display name sent to Kameas Fleet
@@ -24,12 +25,12 @@ func runDevice(env Env, args []string) int {
 	}
 	r, err := env.resolve(*envName)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
 	}
 	nodeID, err := enroll.LoadOrCreateNodeID(r.StateDir, env.now())
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	rest := fs.Args()
@@ -49,12 +50,12 @@ func runDevice(env Env, args []string) int {
 		switch {
 		case *useHost && rfs.NArg() == 0:
 			if err := device.UseComputerName(r.StateDir); err != nil {
-				fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+				fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 				return ExitError
 			}
 		case !*useHost && rfs.NArg() == 1:
 			if _, err := device.Rename(r.StateDir, rfs.Arg(0)); err != nil {
-				fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+				fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 				return ExitUsage
 			}
 		default:
@@ -63,7 +64,7 @@ func runDevice(env Env, args []string) int {
 		}
 	case "reset":
 		if err := device.Reset(r.StateDir); err != nil {
-			fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 			return ExitError
 		}
 	default:

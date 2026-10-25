@@ -13,6 +13,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/internal/project"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // projectionVersion is the projection-table version. A change bumps
@@ -146,7 +147,7 @@ func runOptin(env Env, args []string) int {
 	case *class != "" || *on || *off:
 		// Opting in always goes through the notice; there is no silent
 		// opt-in flag.
-		fmt.Fprintln(env.Stderr, "kenaz: to opt in, run `kenaz optin` without flags so you can review what is sent")
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": to opt in, run `kenaz optin` without flags so you can review what is sent")
 		return ExitUsage
 	}
 	if !stdinInteractive() {
@@ -170,7 +171,7 @@ var stdinInteractive = func() bool {
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
-const errOptinNotInteractive = "kenaz: choosing what to share needs your own terminal. Run `kenaz optin` in a terminal window (not through an agent) to review the notice and choose."
+var errOptinNotInteractive = variant.Current.Binary + ": choosing what to share needs your own terminal. Run `" + variant.Current.Binary + " optin` in a terminal window (not through an agent) to review the notice and choose."
 
 func finishOptin(env Env, err error) int {
 	if err != nil {

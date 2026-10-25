@@ -1,6 +1,8 @@
 package mcpb
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -33,8 +35,18 @@ type manifest struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	} `json:"tools"`
-	Compatibility struct {
-		Platforms []string `json:"platforms"`
+	Repository struct {
+		Type string `json:"type"`
+		URL  string `json:"url"`
+	} `json:"repository"`
+	Documentation   string   `json:"documentation"`
+	Support         string   `json:"support"`
+	Icon            string   `json:"icon"`
+	Keywords        []string `json:"keywords"`
+	PrivacyPolicies []string `json:"privacy_policies"`
+	Compatibility   struct {
+		ClaudeDesktop string   `json:"claude_desktop"`
+		Platforms     []string `json:"platforms"`
 	} `json:"compatibility"`
 	UserConfig map[string]struct {
 		Type        string `json:"type"`
@@ -172,6 +184,28 @@ func TestRenderEveryPlatform(t *testing.T) {
 			if !reflect.DeepEqual(m.Compatibility.Platforms, []string{platform}) {
 				t.Errorf("platforms %v", m.Compatibility.Platforms)
 			}
+			// The published privacy policy (Anthropic's
+			// policy rejects an extension without one), the bundled icon,
+			// and the same support page as the winget listing.
+			if !reflect.DeepEqual(m.PrivacyPolicies, []string{"https://kenaz.kameas.ai/privacy.html"}) {
+				t.Errorf("privacy_policies %v", m.PrivacyPolicies)
+			}
+			if m.Icon != IconFile {
+				t.Errorf("icon %q, want %q (packed at the bundle root)", m.Icon, IconFile)
+			}
+			if m.Support != "https://docs.kameas.ai/docs/kenaz-plugin/troubleshooting" ||
+				m.Documentation != "https://docs.kameas.ai/docs/kenaz-plugin/overview" {
+				t.Errorf("support %q, documentation %q", m.Support, m.Documentation)
+			}
+			if m.Repository.Type != "git" || m.Repository.URL != "https://github.com/kameas-ai/kenaz-plugin.git" {
+				t.Errorf("repository %+v", m.Repository)
+			}
+			if len(m.Keywords) == 0 {
+				t.Error("keywords are empty")
+			}
+			if !strings.HasPrefix(m.Compatibility.ClaudeDesktop, ">=") {
+				t.Errorf("compatibility.claude_desktop %q: want a minimum version", m.Compatibility.ClaudeDesktop)
+			}
 			var keys, pkeys []string
 			for k := range m.UserConfig {
 				keys = append(keys, k)
@@ -219,6 +253,28 @@ func TestRenderRefusesBadInput(t *testing.T) {
 	for _, c := range [][2]string{{"v1.2.3", "darwin"}, {"1.2", "darwin"}, {"1.2.3", "linux"}, {"1.2.3", ""}} {
 		if _, err := Render(c[0], c[1]); err == nil {
 			t.Errorf("Render(%q, %q) accepted", c[0], c[1])
+		}
+	}
+}
+
+// The icon Claude Desktop shows: a 512x512 PNG with an alpha channel
+// (Anthropic's MCPB guidance: 512x512 recommended, PNG with transparency).
+func TestIcon(t *testing.T) {
+	b, err := os.ReadFile(IconFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(b, []byte("\x89PNG\r\n\x1a\n")) || len(b) < 33 || string(b[12:16]) != "IHDR" {
+		t.Fatalf("%s is not a PNG", IconFile)
+	}
+	w, h := binary.BigEndian.Uint32(b[16:20]), binary.BigEndian.Uint32(b[20:24])
+	depth, color := b[24], b[25]
+	if w != 512 || h != 512 || depth != 8 || color != 6 {
+		t.Errorf("%s is %dx%d, bit depth %d, colour type %d; want 512x512 8-bit RGBA", IconFile, w, h, depth, color)
+	}
+	for _, c := range []string{"eXIf", "tEXt", "iTXt", "zTXt", "tIME"} {
+		if bytes.Contains(b, []byte(c)) {
+			t.Errorf("%s carries a %s metadata chunk", IconFile, c)
 		}
 	}
 }

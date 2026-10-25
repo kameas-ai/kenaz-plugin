@@ -15,6 +15,10 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 )
 
+// closedWorld is the tool's explicit openWorldHint: it reads only the local
+// relay on this machine, never an open set of external services.
+var closedWorld = false
+
 // ToolStatus is the tool name.
 const ToolStatus = "approval_status"
 
@@ -41,7 +45,7 @@ func register(s *sdk.Server, d mcp.Deps) {
 		Name:        ToolStatus,
 		Title:       "Check a write approval",
 		Description: "Report whether a write you prepared (skills_publish, context_share, context_promote, memory writes) is still waiting for the user's approval, was approved and completed, or was canceled, denied or expired. Read-only; it cannot approve anything.",
-		Annotations: &sdk.ToolAnnotations{Title: "Check a write approval", ReadOnlyHint: true, IdempotentHint: true},
+		Annotations: &sdk.ToolAnnotations{Title: "Check a write approval", ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &closedWorld},
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in StatusInput) (*sdk.CallToolResult, StatusOutput, error) {
 		if d.Touch != nil {
 			d.Touch()

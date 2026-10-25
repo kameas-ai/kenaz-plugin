@@ -18,6 +18,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/internal/pathenv"
 	"github.com/kameas-ai/kenaz-plugin/internal/setup"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 const initUsage = `usage: kenaz init [--yes] [--no-path] [--env E] [--bundle DIR | --no-bundle] [--no-browser]
@@ -89,7 +90,7 @@ func runInit(env Env, args []string) int {
 		return ExitUsage
 	}
 	if *bundleDir != "" && *noBundle {
-		fmt.Fprintln(env.Stderr, "kenaz init: --bundle and --no-bundle cannot be used together")
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+" init: --bundle and --no-bundle cannot be used together")
 		return ExitUsage
 	}
 	if o.yes {
@@ -101,7 +102,7 @@ func runInit(env Env, args []string) int {
 	if *bundleDir != "" {
 		abs, err := filepath.Abs(*bundleDir)
 		if err != nil {
-			fmt.Fprintln(env.Stderr, "kenaz init:", err)
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+" init:", err)
 			return ExitUsage
 		}
 		o.setupFlags = append(o.setupFlags, "--bundle", abs)
@@ -156,7 +157,7 @@ func doInit(w, ew io.Writer, o initOptions, d initDeps) int {
 
 	fmt.Fprintln(w, "\n1. kenaz on PATH")
 	if err := d.ensurePath(w, o); err != nil {
-		fmt.Fprintln(ew, "kenaz init: PATH:", err)
+		fmt.Fprintln(ew, variant.Current.Binary+" init: PATH:", err)
 		failed = true
 	}
 
@@ -175,7 +176,7 @@ func doInit(w, ew io.Writer, o initOptions, d initDeps) int {
 			la = append(la, "--no-browser")
 		}
 		if code := d.login(la); code != ExitOK {
-			fmt.Fprintln(ew, "kenaz init: sign-in did not complete; run `kenaz init` again (or `kenaz login`) when you're ready.")
+			fmt.Fprintln(ew, variant.Current.Binary+" init: sign-in did not complete; run `kenaz init` again (or `kenaz login`) when you're ready.")
 			return code
 		}
 	}
@@ -276,7 +277,7 @@ func (d initDeps) ensurePath(w io.Writer, o initOptions) error {
 		sep = ";"
 	}
 	if pathenv.OnPath(d.getenv("PATH"), dir, sep, fold) || d.sameKenazOnPath() {
-		fmt.Fprintf(w, "kenaz is on PATH (%s).\n", dir)
+		fmt.Fprintf(w, "%s is on PATH (%s).\n", variant.Current.Binary, dir)
 		return nil
 	}
 	if d.goos == "windows" {
@@ -284,7 +285,7 @@ func (d initDeps) ensurePath(w io.Writer, o initOptions) error {
 	}
 	sh := pathenv.ShellFrom(d.getenv("SHELL"))
 	if sh == "" {
-		fmt.Fprintf(w, "kenaz is not on PATH, and your shell (%q) is not one kenaz init edits (zsh, bash, fish). Add this directory to PATH yourself:\n  %s\n", d.getenv("SHELL"), dir)
+		fmt.Fprintf(w, "%[3]s is not on PATH, and your shell (%[1]q) is not one %[3]s init edits (zsh, bash, fish). Add this directory to PATH yourself:\n  %[2]s\n", d.getenv("SHELL"), dir, variant.Current.Binary)
 		return nil
 	}
 	profile := pathenv.ProfileFor(sh, d.goos, d.home, d.getenv, nil)
@@ -293,11 +294,11 @@ func (d initDeps) ensurePath(w io.Writer, o initOptions) error {
 		return err
 	}
 	if o.noPath {
-		fmt.Fprintf(w, "kenaz is not on PATH. To add it, put this in %s:\n%s\n", profile, line)
+		fmt.Fprintf(w, "%s is not on PATH. To add it, put this in %s:\n%s\n", variant.Current.Binary, profile, line)
 		return nil
 	}
 	cantEdit := func(err error) error {
-		fmt.Fprintf(w, "kenaz init can't edit %s (%v). To put kenaz on PATH, add this to it yourself:\n%s\n", profile, err, line)
+		fmt.Fprintf(w, "%[4]s init can't edit %[1]s (%[2]v). To put %[4]s on PATH, add this to it yourself:\n%[3]s\n", profile, err, line, variant.Current.Binary)
 		return nil
 	}
 	// A symlinked profile (dotfiles) is edited at its target, keeping the
@@ -353,7 +354,7 @@ func (d initDeps) added(dir string) {
 
 func (d initDeps) windowsPath(w io.Writer, o initOptions, dir string) error {
 	if o.noPath {
-		fmt.Fprintf(w, "kenaz is not on PATH. To add it, add this folder to your user Path (Settings > System > About > Advanced system settings > Environment Variables):\n  %s\n", dir)
+		fmt.Fprintf(w, "%s is not on PATH. To add it, add this folder to your user Path (Settings > System > About > Advanced system settings > Environment Variables):\n  %s\n", variant.Current.Binary, dir)
 		return nil
 	}
 	ue, err := d.userEnv()
@@ -390,7 +391,7 @@ func (d initDeps) sameKenazOnPath() bool {
 	if d.lookPath == nil {
 		return false
 	}
-	p, err := d.lookPath("kenaz")
+	p, err := d.lookPath(variant.Current.Binary)
 	if err != nil {
 		return false
 	}

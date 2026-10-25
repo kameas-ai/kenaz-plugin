@@ -169,6 +169,32 @@ func prepare(it Item) (*prepared, error) {
 
 var errUnsupportedKind = errors.New("unsupported catalog kind")
 
+// PrepareDetail is the ack detail for an error from prepare (or
+// Instructions).
+func PrepareDetail(err error) string {
+	switch {
+	case errors.Is(err, ErrUnsupportedToolSkill):
+		return DetailUnsupportedTool
+	case errors.Is(err, errUnsupportedKind):
+		return DetailUnsupportedKind
+	default:
+		return DetailInvalidPayload
+	}
+}
+
+// Instructions returns the SKILL.md an install of it would write (decoded,
+// validated, translated and stripped exactly as Install does) and how many
+// other files the skill carries, without writing anything. Claude Desktop
+// chat loads no skill folders, so there skills_install hands the text to the
+// chat instead.
+func Instructions(it Item) (doc string, otherFiles int, err error) {
+	p, err := prepare(it)
+	if err != nil {
+		return "", 0, err
+	}
+	return p.skill.Files[ManifestName], len(p.skill.Files) - 1, nil
+}
+
 // SanitizeSlug maps a catalog slug to [a-z0-9-]{1,48}.
 func SanitizeSlug(s string) string {
 	var b strings.Builder
@@ -201,14 +227,7 @@ func (m *Materializer) Install(it Item) Result {
 	}
 	p, err := prepare(it)
 	if err != nil {
-		switch {
-		case errors.Is(err, ErrUnsupportedToolSkill):
-			res.Detail = DetailUnsupportedTool
-		case errors.Is(err, errUnsupportedKind):
-			res.Detail = DetailUnsupportedKind
-		default:
-			res.Detail = DetailInvalidPayload
-		}
+		res.Detail = PrepareDetail(err)
 		return res
 	}
 	res.Slug, res.Stripped, res.Translated = p.slug, p.stripped, p.translated

@@ -7,11 +7,13 @@ import (
 	"sync"
 
 	"github.com/zalando/go-keyring"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // KeychainService is the OS keychain service for every plugin secret.
 // Official builds store tokens under the same service.
-const KeychainService = "kenaz-plugin"
+var KeychainService = variant.Current.KeychainService
 
 // ErrNoKey means no spool key exists yet.
 var ErrNoKey = errors.New("spool: no key")

@@ -4,12 +4,14 @@ import (
 	"os"
 	"runtime"
 	"strings"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // HostEnvVar names the MCP host when the host cannot be told apart
 // otherwise. The Claude Desktop extension manifest (mcpb/) sets it to
 // HostClaudeDesktop.
-const HostEnvVar = "KENAZ_MCP_HOST"
+var HostEnvVar = variant.Current.MCPHostVar
 
 // HostClaudeDesktop is HostEnvVar's value under Claude Desktop.
 const HostClaudeDesktop = "claude-desktop"
@@ -28,15 +30,14 @@ func SignInRemedy() string {
 // (no user name in a tool result).
 func signInRemedy(getenv func(string) string, goos, exe, home string) string {
 	if strings.TrimSpace(getenv(HostEnvVar)) != HostClaudeDesktop {
-		return "Run /kenaz:login."
+		return "Run /" + variant.Current.Plugin + ":login."
 	}
 	args := " login"
-	switch e := strings.ToLower(strings.TrimSpace(getenv("KENAZ_ENV"))); e {
-	case "stage", "dev":
+	if e := strings.ToLower(strings.TrimSpace(getenv(variant.Current.EnvVar))); e != variant.Current.DefaultEnv && variant.Current.Allowed(e) {
 		args += " --env " + e
 	}
 	if exe == "" {
-		return "Open a terminal and run `kenaz" + args + "`, then try again."
+		return "Open a terminal and run `" + variant.Current.Binary + args + "`, then try again."
 	}
 	if goos == "windows" {
 		cmd := exe

@@ -1,0 +1,131 @@
+$ --help
+exit 0
+--- stdout
+usage: kenaz <command> [flags]
+
+  approvals List write requests and open the approval page
+  daemon    Run the on-demand relay (started by mcp and hooks)
+  device    Show or rename this device's display name
+  doctor    Diagnose installation and configuration
+  hook      Harness hook entry point (SessionStart/SessionEnd)
+  init      Set everything up: PATH, sign-in, and every app found
+  licenses  Print license and notice texts
+  login     Sign in to Kameas Fleet
+  logout    Sign out and purge local queued data
+  mcp       Run the MCP stdio server (started by the harness)
+  memory    Manage memories (on this device; optional sync to your Kameas Fleet account)
+  optin     Choose which usage data to share (shows the notice)
+  setup     Configure one app (Claude Code or Codex) to use Kameas Fleet
+  skills    List or sync shared Agent Skills from Kameas Fleet
+  status    Show sign-in, telemetry and consent state (--json)
+  version   Print version and build flavor
+--- stderr
+$ --version
+exit 0
+--- stdout
+kenaz 0.0.0-dev (unofficial build)
+--- stderr
+$ setup print-managed claude
+exit 0
+--- stdout
+# Claude Code managed settings for Kenaz for Claude Code and Codex
+#
+# Deploy as managed-settings.json:
+#   macOS: /Library/Application Support/ClaudeCode/managed-settings.json
+#   Linux: /etc/claude-code/managed-settings.json
+#   or paste into server-managed settings in the Claude admin console.
+# Merge with any managed settings you already deploy. This installs the
+# kenaz plugin for every user (they cannot disable it) and routes
+# telemetry to the local relay on 127.0.0.1:4318.
+#
+# Notes:
+# - Locking the OTLP destination against user overrides needs Claude Code
+#   2.1.217 or later.
+# - Claude Desktop sessions take environment variables from the app's
+#   launch environment, which wins over settings "env".
+# - If port 4318 is taken on some machines, the relay falls back to another
+#   port and "kenaz doctor" reports the mismatch.
+#
+# Each user also needs the kenaz binary on their PATH (the plugin runs it
+# directly; install it with your package manager of choice or your MDM; see the
+# Kameas Fleet admin guide) and must sign in once with "kenaz login".
+# Admin configuration never signs anyone in or turns on telemetry classes for them:
+# nothing is sent until each member signs in and opts in.
+
+----- managed-settings.json -----
+{
+  "extraKnownMarketplaces": {
+    "kenaz": {
+      "autoUpdate": true,
+      "source": {
+        "repo": "kameas-ai/kenaz-plugin",
+        "source": "github"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "kenaz@kenaz": true
+  },
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_METRICS_EXPORTER": "otlp",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+    "OTEL_LOG_USER_PROMPTS": "0",
+    "OTEL_LOG_ASSISTANT_RESPONSES": "0",
+    "OTEL_LOG_TOOL_DETAILS": "0",
+    "OTEL_LOG_TOOL_CONTENT": "0",
+    "OTEL_LOG_RAW_API_BODIES": "0"
+  }
+}
+--- stderr
+$ setup print-managed codex
+exit 0
+--- stdout
+# Codex managed configuration for Kenaz for Claude Code and Codex
+#
+# Deploy the block below in managed_config.toml, which overrides each
+# user's own [otel] settings:
+#   macOS/Linux file: /etc/codex/managed_config.toml
+#   macOS MDM: preference domain com.openai.codex, key config_toml_base64
+#              (base64 of the block)
+# Merge with any [otel] settings you already manage.
+#
+# To install the plugin for everyone: in the ChatGPT admin console, import
+# the GitHub marketplace kameas-ai/kenaz-plugin and set kenaz to "Installed" for the
+# roles that should have it. Plugin hooks still need each user to trust
+# them once in Codex; telemetry works without them.
+#
+# Each user also needs the kenaz binary on their PATH (the plugin runs it
+# directly; install it with your package manager of choice or your MDM; see the
+# Kameas Fleet admin guide) and must sign in once with "kenaz login".
+# Admin configuration never signs anyone in or turns on telemetry classes for them:
+# nothing is sent until each member signs in and opts in.
+
+----- managed_config.toml -----
+[otel]
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }
+trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }
+log_user_prompt = false
+tool_result = { max_bytes = 0 }
+--- stderr
+$ setup --help
+exit 64
+--- stdout
+--- stderr
+usage:
+  kenaz setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
+  kenaz setup --undo claude|codex [--yes] [--dry-run] [--env E]
+  kenaz setup print-managed claude|codex [--port N] [--raw]
+  kenaz setup doctor [--env E]
+
+To set up PATH, sign-in and every app at once, run kenaz init.
+
+Plugin source (Claude Code, Codex): a downloaded kenaz registers its own
+plugin by absolute path. If the "kenaz" marketplace from GitHub
+(kameas-ai/kenaz-plugin) is already registered, setup uses that instead,
+which starts kenaz from PATH. --bundle DIR registers that bundle's plugin
+and replaces the GitHub marketplace; --no-bundle never registers a bundle.
+Setup starts the Kenaz relay if it is not running.

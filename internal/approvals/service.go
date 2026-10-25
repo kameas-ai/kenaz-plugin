@@ -20,6 +20,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/clock"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Request is one write a tool wants to make. Prepare stores it verbatim.
@@ -209,7 +210,8 @@ type Options struct {
 	BaseURL func() string
 	Clock   clock.Clock
 	Logger  *slog.Logger
-	// RPDisplayName is shown by the authenticator ("Kenaz").
+	// RPDisplayName is shown by the authenticator (the build's display
+	// name, "Kenaz").
 	RPDisplayName string
 	// TTL overrides DefaultTTL (tests only).
 	TTL time.Duration
@@ -280,7 +282,7 @@ func New(opt Options) (*Manager, error) {
 		opt.Logger = slog.New(slog.DiscardHandler)
 	}
 	if opt.RPDisplayName == "" {
-		opt.RPDisplayName = "Kenaz"
+		opt.RPDisplayName = variant.Current.DisplayName
 	}
 	if opt.TTL <= 0 {
 		opt.TTL = DefaultTTL

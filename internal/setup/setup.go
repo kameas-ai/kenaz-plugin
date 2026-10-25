@@ -29,6 +29,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/bundle"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemonstate"
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 type harness int
@@ -164,7 +165,7 @@ func defaultOptions(env string, stdout, stderr io.Writer, resolve StateDirResolv
 	probe := apps.System()
 	return Options{
 		HostBins:          map[string]string{"claude": probe.ClaudeCLI(), "codex": probe.CodexCLI()},
-		KenazOnPath:       func() bool { _, err := exec.LookPath("kenaz"); return err == nil },
+		KenazOnPath:       func() bool { _, err := exec.LookPath(variant.Current.Binary); return err == nil },
 		ClaudeDir:         claudeDir,
 		CodexDir:          codexDir,
 		OpenCodeDir:       openCodeConfigDir(r.Home, os.Getenv),
@@ -215,39 +216,40 @@ const (
 )
 
 const usageOpenCode = `usage:
-  kenaz setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
-  kenaz setup opencode [--yes] [--dry-run] [--env E] [--adapter DIR] [--bundle DIR | --no-bundle]
-  kenaz setup --undo claude|codex|opencode [--yes] [--dry-run] [--env E]
-  kenaz setup print-managed claude|codex [--port N] [--raw]
-  kenaz setup doctor [--env E]
+  {bin} setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
+  {bin} setup opencode [--yes] [--dry-run] [--env E] [--adapter DIR] [--bundle DIR | --no-bundle]
+  {bin} setup --undo claude|codex|opencode [--yes] [--dry-run] [--env E]
+  {bin} setup print-managed claude|codex [--port N] [--raw]
+  {bin} setup doctor [--env E]
 
-To set up PATH, sign-in and every app at once, run kenaz init.
+To set up PATH, sign-in and every app at once, run {bin} init.
 ` + usageMarketplace
 
 const usageBase = `usage:
-  kenaz setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
-  kenaz setup --undo claude|codex [--yes] [--dry-run] [--env E]
-  kenaz setup print-managed claude|codex [--port N] [--raw]
-  kenaz setup doctor [--env E]
+  {bin} setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
+  {bin} setup --undo claude|codex [--yes] [--dry-run] [--env E]
+  {bin} setup print-managed claude|codex [--port N] [--raw]
+  {bin} setup doctor [--env E]
 
-To set up PATH, sign-in and every app at once, run kenaz init.
+To set up PATH, sign-in and every app at once, run {bin} init.
 ` + usageMarketplace
 
 const usageMarketplace = `
-Plugin source (Claude Code, Codex): a downloaded kenaz registers its own
-plugin by absolute path. If the "kenaz" marketplace from GitHub
-(kameas-ai/kenaz-plugin) is already registered, setup uses that instead,
-which starts kenaz from PATH. --bundle DIR registers that bundle's plugin
+Plugin source (Claude Code, Codex): a downloaded {bin} registers its own
+plugin by absolute path. If the "{marketplace}" marketplace from GitHub
+({repo}) is already registered, setup uses that instead,
+which starts {bin} from PATH. --bundle DIR registers that bundle's plugin
 and replaces the GitHub marketplace; --no-bundle never registers a bundle.
 Setup starts the Kenaz relay if it is not running.
 `
 
 // Usage is the setup help for this build (OpenCode only when enabled).
 func Usage() string {
+	u := usageBase
 	if features.OpenCode {
-		return usageOpenCode
+		u = usageOpenCode
 	}
-	return usageBase
+	return strings.NewReplacer("{bin}", variant.Current.Binary, "{marketplace}", variant.Current.Marketplace, "{repo}", variant.Current.MarketplaceRepo).Replace(u)
 }
 
 // Command runs `kenaz setup ...` and returns the exit code.
@@ -289,8 +291,8 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	dry := fl.Bool("dry-run", false, "show the diff and change nothing")
 	traces := fl.Bool("traces", false, "Claude Code only: also export traces (beta)")
 	undo := fl.Bool("undo", false, "restore what setup changed")
-	env := fl.String("env", "", "Kameas Fleet environment (prod, stage, dev)")
-	port := fl.Int("port", 4318, "print-managed: relay port to pin fleet-wide")
+	env := fl.String("env", "", "Kameas Fleet environment ("+variant.Current.EnvChoices(", ")+")")
+	port := fl.Int("port", variant.Current.RelayPorts[0], "print-managed: relay port to pin fleet-wide")
 	raw := fl.Bool("raw", false, "print-managed: print only the file content")
 	bundleDir := fl.String("bundle", "", "register a self-contained release bundle (default: the bundle this kenaz runs from, if any)")
 	noBundle := fl.Bool("no-bundle", false, "ignore the bundle this kenaz runs from and use kenaz from PATH")
@@ -320,7 +322,7 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 			return exitUsage
 		}
 		if h == harnessOpenCode {
-			fmt.Fprintln(stderr, "kenaz setup: print-managed is not available for OpenCode yet; run `kenaz setup opencode` for each user")
+			fmt.Fprintf(stderr, "%[1]s setup: print-managed is not available for OpenCode yet; run `%[1]s setup opencode` for each user\n", variant.Current.Binary)
 			return exitUsage
 		}
 		return printManaged(stdout, h, *port, *raw)
@@ -328,7 +330,7 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 
 	opts, err := defaultOptions(*env, stdout, stderr, resolve)
 	if err != nil {
-		fmt.Fprintln(stderr, "kenaz setup:", err)
+		fmt.Fprintln(stderr, variant.Current.Binary+" setup:", err)
 		return exitError
 	}
 	opts.Yes, opts.DryRun, opts.Traces = *yes, *dry, *traces
@@ -344,13 +346,13 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		opts.StartRelay = func() error { return hk.StartRelay(dir) }
 	}
 	if *bundleDir != "" && *noBundle {
-		fmt.Fprintln(stderr, "kenaz setup: --bundle and --no-bundle cannot be used together")
+		fmt.Fprintln(stderr, variant.Current.Binary+" setup: --bundle and --no-bundle cannot be used together")
 		return exitUsage
 	}
 	if *adapter != "" {
 		a, err := filepath.Abs(*adapter)
 		if err != nil {
-			fmt.Fprintln(stderr, "kenaz setup:", err)
+			fmt.Fprintln(stderr, variant.Current.Binary+" setup:", err)
 			return exitError
 		}
 		opts.AdapterDir = a
@@ -396,7 +398,7 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		hk.Result(err)
 	}
 	if err != nil {
-		fmt.Fprintln(stderr, "kenaz setup:", err)
+		fmt.Fprintln(stderr, variant.Current.Binary+" setup:", err)
 		return exitError
 	}
 	return exitOK
@@ -930,8 +932,8 @@ func (o Options) warnVersionedLaunch(b *Bundle) {
 	if !ok || b.Launch != b.Exe {
 		return
 	}
-	fmt.Fprintf(o.Err, "warning: kenaz runs from Homebrew's versioned directory %s, and %s does not link to it, so this registration will stop working after `brew upgrade`. Run `brew reinstall --cask kenaz`, then `kenaz init`.\n",
-		filepath.Dir(filepath.Dir(b.Exe)), filepath.Join(prefix, "bin", filepath.Base(b.Exe)))
+	fmt.Fprintf(o.Err, "warning: %[3]s runs from Homebrew's versioned directory %[1]s, and %[2]s does not link to it, so this registration will stop working after `brew upgrade`. Run `brew reinstall --cask %[4]s`, then `%[3]s init`.\n",
+		filepath.Dir(filepath.Dir(b.Exe)), filepath.Join(prefix, "bin", filepath.Base(b.Exe)), variant.Current.Binary, variant.Current.CaskToken)
 }
 
 // warnNotOnPath warns when the adopted GitHub plugin would not find
@@ -944,7 +946,7 @@ func (o Options) warnNotOnPath(h harness) {
 	if o.KenazBin != "" {
 		dir = filepath.Dir(o.KenazBin)
 	}
-	fmt.Fprintf(o.Err, "warning: the Kenaz plugin from GitHub starts `kenaz` from PATH, and kenaz is not on PATH. Run `kenaz init` to add %s to PATH, then restart %s.\n", dir, h.label())
+	fmt.Fprintf(o.Err, "warning: the Kenaz plugin from GitHub starts `%[3]s` from PATH, and %[3]s is not on PATH. Run `%[3]s init` to add %[1]s to PATH, then restart %[2]s.\n", dir, h.label(), variant.Current.Binary)
 }
 
 // enableHint says how to turn the plugin back on in h.

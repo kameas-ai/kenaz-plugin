@@ -106,11 +106,12 @@ func runDoctor(env Env, args []string) int {
 		}
 	} else {
 		warn("relay", "not running (starts on demand with your next session)")
-		if ln, err := net.Listen("tcp", "127.0.0.1:4318"); err == nil {
+		ports := daemon.DefaultPorts
+		if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", ports[0])); err == nil {
 			ln.Close()
-			check("receiver port", nil, "4318 available")
+			check("receiver port", nil, fmt.Sprintf("%d available", ports[0]))
 		} else {
-			warn("receiver port", "4318 is in use by another program; the relay will use 47318 or an ephemeral port")
+			warn("receiver port", fmt.Sprintf("%d is in use by another program; the relay will use %d or an ephemeral port", ports[0], ports[1]))
 		}
 	}
 

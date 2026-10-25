@@ -12,12 +12,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
-// Block markers. Everything between them belongs to kenaz.
-const (
-	beginMarker = "# >>> kenaz PATH >>>"
-	endMarker   = "# <<< kenaz PATH <<<"
+// Block markers. Everything between them belongs to this build of kenaz
+// (each build variant has its own block).
+var (
+	beginMarker = "# >>> " + variant.Current.Binary + " PATH >>>"
+	endMarker   = "# <<< " + variant.Current.Binary + " PATH <<<"
 )
 
 // Shell is a supported login shell.
@@ -79,7 +82,7 @@ func ProfileFor(sh Shell, goos, home string, getenv func(string) string, exists 
 		if cfg == "" {
 			cfg = filepath.Join(home, ".config")
 		}
-		return filepath.Join(cfg, "fish", "conf.d", "kenaz.fish")
+		return filepath.Join(cfg, "fish", "conf.d", variant.Current.Binary+".fish")
 	}
 	return ""
 }
@@ -229,7 +232,7 @@ func ReadProfile(path string) ([]byte, bool, error) {
 
 // BackupSuffix names the copy of a profile kept from before kenaz first
 // edited it.
-const BackupSuffix = ".kenaz-backup"
+var BackupSuffix = "." + variant.Current.Binary + "-backup"
 
 // WriteProfile writes next to target (a path Target returned), keeping an
 // existing file's mode. Before kenaz first changes an existing file it
@@ -253,7 +256,7 @@ func WriteProfile(target string, cur []byte, existed bool, next []byte) (backup 
 			backup = b
 		}
 	}
-	tmp := target + ".kenaz-tmp"
+	tmp := target + "." + variant.Current.Binary + "-tmp"
 	if err := os.WriteFile(tmp, next, mode); err != nil {
 		return "", err
 	}

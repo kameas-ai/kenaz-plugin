@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -318,5 +319,124 @@ func TestReconcilePublish(t *testing.T) {
 	}
 	if len(f.published) != 0 {
 		t.Fatal("reconcile wrote")
+	}
+}
+
+func underClaudeDesktop(t *testing.T) {
+	t.Helper()
+	old := Getenv
+	Getenv = func(k string) string {
+		if k == mcp.HostEnvVar {
+			return mcp.HostClaudeDesktop
+		}
+		return ""
+	}
+	t.Cleanup(func() { Getenv = old })
+}
+
+// Claude Desktop chat loads no skill folder, so under
+// KENAZ_MCP_HOST=claude-desktop skills_install also returns the SKILL.md it
+// installed (stripped exactly as on disk) and says where it took effect.
+func TestInstallUnderClaudeDesktopReturnsSkillText(t *testing.T) {
+	_, d, home := setup(t)
+	underClaudeDesktop(t)
+	cs := connect(t, d)
+	out, isErr := call(t, cs, "skills_install", map[string]any{"catalog_id": "cat-1"})
+	if isErr {
+		t.Fatalf("install: %v", out)
+	}
+	disk, err := os.ReadFile(filepath.Join(home, ".claude", "skills", "kameas-team-review", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["skill_md"] != string(disk) || strings.Contains(string(disk), "allowed-tools") {
+		t.Fatalf("skill_md %q, installed %q", out["skill_md"], disk)
+	}
+	if msg := out["message"].(string); !strings.Contains(msg, "Claude Desktop chat does not load installed skills") || !strings.Contains(msg, "skill_md") {
+		t.Fatalf("message = %q", msg)
+	}
+}
+
+// With no coding tool's skills folder, Claude Desktop still gets the text,
+// and nothing is written or subscribed.
+func TestInstallUnderClaudeDesktopWithoutSkillFolders(t *testing.T) {
+	_, d, home := setup(t)
+	os.RemoveAll(filepath.Join(home, ".claude"))
+	os.RemoveAll(filepath.Join(home, ".codex"))
+	if len(sk.DetectRoots(home)) != 0 {
+		t.Skip("this machine layout still detects a skills root")
+	}
+	underClaudeDesktop(t)
+	cs := connect(t, d)
+	out, isErr := call(t, cs, "skills_install", map[string]any{"catalog_id": "cat-1"})
+	if isErr {
+		t.Fatalf("install: %v", out)
+	}
+	if md, _ := out["skill_md"].(string); !strings.Contains(md, "Check it.") || strings.Contains(md, "allowed-tools") {
+		t.Fatalf("skill_md = %q", md)
+	}
+	if !strings.Contains(out["message"].(string), "nothing was installed") {
+		t.Fatalf("message = %q", out["message"])
+	}
+	if subs, _ := sk.NewStore(d.StateDir).Subscriptions(); len(subs) != 0 {
+		t.Fatalf("subscribed %v without installing", subs)
+	}
+}
+
+// Outside Claude Desktop the result carries no skill text.
+func TestInstallElsewhereOmitsSkillText(t *testing.T) {
+	_, d, _ := setup(t)
+	cs := connect(t, d)
+	out, isErr := call(t, cs, "skills_install", map[string]any{"catalog_id": "cat-1"})
+	if isErr {
+		t.Fatalf("install: %v", out)
+	}
+	if _, ok := out["skill_md"]; ok {
+		t.Fatalf("skill_md set outside Claude Desktop: %v", out)
+	}
+}
+
+// skill_md is capped at MaxSkillMD, cut on a UTF-8 boundary, and the
+// message says so; a skill's other files are named as not reaching chat.
+func TestForChatCapsAndNotes(t *testing.T) {
+	small, note := forChat("short", 0)
+	if small != "short" || note != "" {
+		t.Fatalf("small doc: %q %q", small, note)
+	}
+	// "é" is two bytes; put one across the cap.
+	doc := strings.Repeat("a", MaxSkillMD-1) + "é" + strings.Repeat("b", 100)
+	got, note := forChat(doc, 0)
+	if len(got) != MaxSkillMD-1 || !utf8.ValidString(got) || !strings.Contains(note, "truncated to its first 32 KiB") {
+		t.Fatalf("len %d valid %v note %q", len(got), utf8.ValidString(got), note)
+	}
+	if _, note = forChat("x", 1); !strings.Contains(note, "1 other file ") {
+		t.Fatalf("one file: %q", note)
+	}
+	if _, note = forChat("x", 3); !strings.Contains(note, "3 other files") {
+		t.Fatalf("three files: %q", note)
+	}
+}
+
+// End to end under Claude Desktop: a long SKILL.md with a script.
+func TestInstallUnderClaudeDesktopCapsSkillText(t *testing.T) {
+	f, d, _ := setup(t)
+	doc := "---\nname: big-skill\ndescription: A long skill.\n---\n" + strings.Repeat("Step.\n", 8000)
+	payload, _ := json.Marshal(sk.AgentSkill{Schema: sk.SchemaV1, Name: "big-skill", Description: "A long skill.",
+		Files: map[string]string{"SKILL.md": doc, "scripts/run.sh": "echo hi\n"}})
+	f.items["cat-big"] = fleetapi.CatalogItem{CatalogEntry: fleetapi.CatalogEntry{ID: "cat-big", Slug: "big-skill",
+		Kind: fleetapi.CatalogKindAgentSkill, Version: "1", Visibility: fleetapi.VisibilityTeam}, Payload: payload}
+	underClaudeDesktop(t)
+	cs := connect(t, d)
+	out, isErr := call(t, cs, "skills_install", map[string]any{"catalog_id": "cat-big"})
+	if isErr {
+		t.Fatalf("install: %v", out)
+	}
+	md, _ := out["skill_md"].(string)
+	if len(md) != MaxSkillMD || !strings.HasPrefix(doc, md) {
+		t.Fatalf("skill_md is %d bytes, want the first %d", len(md), MaxSkillMD)
+	}
+	msg := out["message"].(string)
+	if !strings.Contains(msg, "truncated") || !strings.Contains(msg, "1 other file") {
+		t.Fatalf("message = %q", msg)
 	}
 }

@@ -3,9 +3,10 @@
 // It never modifies the archive and never touches host configuration;
 // registering the rendered plugin with a host is internal/setup's job.
 //
-// The only edits Render makes are: the "kenaz" MCP server command in
-// .mcp.json and .codex-mcp.json, and the leading "kenaz" of each existing
-// hook command, both replaced by the archive's absolute executable. It adds
+// The only edits Render makes are: the build's MCP server command ("kenaz"
+// in the public build) in .mcp.json and .codex-mcp.json, and the leading
+// executable name of each existing hook command, both replaced by the
+// archive's absolute executable. It adds
 // no server, hook, event or setting (test-enforced).
 package bundle
 
@@ -23,6 +24,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // A release archive holds
@@ -156,7 +159,7 @@ func LoadBundle(root string) (*Bundle, error) {
 		return nil, fmt.Errorf("%s: %v", BundleFile, err)
 	}
 	switch {
-	case m.Schema != 1 || m.Name != "kenaz":
+	case m.Schema != 1 || m.Name != variant.Current.BundleName:
 		return nil, fmt.Errorf("%s: unsupported bundle (schema %d, name %q)", BundleFile, m.Schema, m.Name)
 	case m.Version == "":
 		return nil, fmt.Errorf("%s: no version", BundleFile)
@@ -251,7 +254,7 @@ func LoadBundle(root string) (*Bundle, error) {
 	}
 	_ = json.Unmarshal(verified[".claude-plugin/marketplace.json"], &mk)
 	for _, p := range mk.Plugins {
-		if p.Name == "kenaz" {
+		if p.Name == variant.Current.Plugin {
 			versions["marketplace.json"] = p.Version
 		}
 	}
@@ -344,7 +347,7 @@ func HomebrewCaskPrefix(exe string) (string, bool) {
 	token := filepath.Dir(verDir)
 	caskroom := filepath.Dir(token)
 	v := filepath.Base(verDir)
-	if filepath.Base(binDir) != "bin" || filepath.Base(token) != "kenaz" || filepath.Base(caskroom) != "Caskroom" ||
+	if filepath.Base(binDir) != "bin" || filepath.Base(token) != variant.Current.CaskToken || filepath.Base(caskroom) != "Caskroom" ||
 		v == "" || strings.HasPrefix(v, ".") {
 		return "", false
 	}
@@ -386,7 +389,7 @@ func StableRoot(root string) string {
 	if r, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = r
 	}
-	exe := StablePath(filepath.Join(abs, "bin", "kenaz"))
+	exe := StablePath(filepath.Join(abs, "bin", variant.Current.Binary))
 	if filepath.Base(filepath.Dir(filepath.Dir(exe))) == "current" {
 		return filepath.Dir(filepath.Dir(exe))
 	}
@@ -508,9 +511,9 @@ func rewriteMCP(raw []byte, exe string) ([]byte, error) {
 		return nil, err
 	}
 	servers, _ := doc["mcpServers"].(map[string]any)
-	srv, _ := servers["kenaz"].(map[string]any)
-	if srv == nil || srv["command"] != "kenaz" {
-		return nil, errors.New(`no "kenaz" server launching kenaz`)
+	srv, _ := servers[variant.Current.MCPServer].(map[string]any)
+	if srv == nil || srv["command"] != variant.Current.Binary {
+		return nil, fmt.Errorf("no %q server launching %s", variant.Current.MCPServer, variant.Current.Binary)
 	}
 	srv["command"] = exe
 	out, err := json.MarshalIndent(doc, "", "  ")
@@ -532,10 +535,10 @@ func rewriteHooks(raw []byte, quotedExe string) ([]byte, error) {
 			for _, h := range hs {
 				hm, _ := h.(map[string]any)
 				cmd, _ := hm["command"].(string)
-				if !strings.HasPrefix(cmd, "kenaz ") {
+				if !strings.HasPrefix(cmd, variant.Current.Binary+" ") {
 					return nil, fmt.Errorf("unexpected hook command %q", cmd)
 				}
-				hm["command"] = quotedExe + cmd[len("kenaz"):]
+				hm["command"] = quotedExe + cmd[len(variant.Current.Binary):]
 				n++
 			}
 		}

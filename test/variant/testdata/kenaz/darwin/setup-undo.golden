@@ -1,0 +1,86 @@
+$ setup --undo claude --yes
+exit 0
+--- stdout
+Setup will remove the Kenaz plugin registered from $ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM:
+  claude plugin uninstall kenaz@kenaz
+  claude plugin marketplace remove kenaz
+--- $HOME/.claude/settings.json
++++ /dev/null
+@@ -1,14 +0,0 @@
+-{
+-  "env": {
+-    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+-    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+-    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+-    "OTEL_LOGS_EXPORTER": "otlp",
+-    "OTEL_LOG_ASSISTANT_RESPONSES": "0",
+-    "OTEL_LOG_RAW_API_BODIES": "0",
+-    "OTEL_LOG_TOOL_CONTENT": "0",
+-    "OTEL_LOG_TOOL_DETAILS": "0",
+-    "OTEL_LOG_USER_PROMPTS": "0",
+-    "OTEL_METRICS_EXPORTER": "otlp"
+-  }
+-}
+Restored $HOME/.claude/settings.json.
+Your Kenaz memory ($HOME/Library/Application Support/kameas/kenaz/state/memory/memory.db) was kept. Delete it with `kenaz memory purge`. Notes saved under your account no longer appear while you are signed out.
+--- stderr
+$ setup --undo codex --yes
+exit 0
+--- stdout
+Setup will remove the Kenaz plugin registered from $ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM:
+  codex plugin remove kenaz@kenaz
+  codex plugin marketplace remove kenaz
+--- $HOME/.codex/config.toml
++++ /dev/null
+@@ -1,6 +0,0 @@
+-[otel]
+-exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }
+-trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }
+-metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }
+-log_user_prompt = false
+-tool_result = { max_bytes = 0 }
+Restored $HOME/.codex/config.toml.
+Your Kenaz memory ($HOME/Library/Application Support/kameas/kenaz/state/memory/memory.db) was kept. Delete it with `kenaz memory purge`. Notes saved under your account no longer appear while you are signed out.
+--- stderr
+--- files
+== .claude/settings.json.kameas-bak-$TIME
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_LOG_ASSISTANT_RESPONSES": "0",
+    "OTEL_LOG_RAW_API_BODIES": "0",
+    "OTEL_LOG_TOOL_CONTENT": "0",
+    "OTEL_LOG_TOOL_DETAILS": "0",
+    "OTEL_LOG_USER_PROMPTS": "0",
+    "OTEL_METRICS_EXPORTER": "otlp"
+  }
+}
+== .codex/config.toml.kameas-bak-$TIME
+[otel]
+exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "binary" } }
+trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "binary" } }
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }
+log_user_prompt = false
+tool_result = { max_bytes = 0 }
+== Library/Application Support/kameas/kenaz/state/credentials/STORE
+files
+== Library/Application Support/kameas/kenaz/state/memory-disclosure-shown
+$TIME
+== Library/Application Support/kameas/kenaz/state/prod/daemon.json
+{"pid":1,"port":4318,"version":"test","started_at":"$TIME","nonce":"n"}
+== Library/Application Support/kameas/kenaz/state/prod/setup-state.json
+{
+  "version": 1
+}
+--- host commands
+claude plugin marketplace add $HOME/Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM
+claude plugin install kenaz@kenaz
+codex plugin marketplace add $HOME/Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM
+codex plugin add kenaz@kenaz
+claude plugin uninstall kenaz@kenaz
+claude plugin marketplace remove kenaz
+codex plugin remove kenaz@kenaz
+codex plugin marketplace remove kenaz

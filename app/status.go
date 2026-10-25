@@ -11,6 +11,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/device"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // runStatus prints the relay status; --json emits the versioned schema
@@ -25,7 +26,7 @@ func runStatus(env Env, args []string) int {
 	}
 	r, err := env.resolve(*envName)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
 	}
 	var st daemon.Status
@@ -70,7 +71,7 @@ func runStatus(env Env, args []string) int {
 		return ExitOK
 	}
 	w := env.Stdout
-	fmt.Fprintf(w, "Kenaz %s — %s build (%s)\n", Version, st.Flavor, flavorLine(env.Provider))
+	fmt.Fprintf(w, "%s %s — %s build (%s)\n", variant.Current.DisplayName, Version, st.Flavor, flavorLine(env.Provider))
 	fmt.Fprintf(w, "  environment:  %s\n", st.Env)
 	fmt.Fprintf(w, "  session:      %s\n", strings.ReplaceAll(st.Session, "_", " "))
 	if st.Tier != "" {

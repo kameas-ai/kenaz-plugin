@@ -21,6 +21,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 	memorytools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/memory"
 	"github.com/kameas-ai/kenaz-plugin/internal/memory"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 	"github.com/kameas-ai/kenaz-plugin/notices"
 )
 
@@ -232,7 +233,7 @@ func runMemory(env Env, args []string) int {
 	}
 	mp, err := env.memoryPaths()
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	sub, rest := args[0], args[1:]
@@ -250,7 +251,7 @@ func runMemory(env Env, args []string) int {
 	switch sub {
 	case "enable":
 		if err := config.SetValue(mp.Config, memoryConfigKey, "on"); err != nil {
-			fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 			return ExitError
 		}
 		fmt.Fprintf(env.Stdout, "Kenaz memory is on (%s).\n", mp.DB)
@@ -258,7 +259,7 @@ func runMemory(env Env, args []string) int {
 		return ExitOK
 	case "disable":
 		if err := config.SetValue(mp.Config, memoryConfigKey, "off"); err != nil {
-			fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 			return ExitError
 		}
 		fmt.Fprintf(env.Stdout, "Kenaz memory is off. Your AI tool can no longer read or save memories, and sessions no longer get the memory index. Existing memories were kept in %s; delete them with `kenaz memory purge`.\n", mp.DB)
@@ -273,13 +274,13 @@ func runMemory(env Env, args []string) int {
 		return memorySync(ctx, env, mp, rest)
 	case "list", "search", "show", "forget", "update", "revert", "export", "forget-all":
 	default:
-		fmt.Fprintf(env.Stderr, "kenaz memory: unknown command %q\n\n", sub)
+		fmt.Fprintf(env.Stderr, variant.Current.Binary+" memory: unknown command %q\n\n", sub)
 		fmt.Fprint(env.Stderr, memoryUsage)
 		return ExitUsage
 	}
 
 	if !mp.enabled() {
-		fmt.Fprintln(env.Stderr, "kenaz: "+memory.OffMessage)
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+memory.OffMessage)
 		return ExitError
 	}
 	showDisclosure(env, mp)
@@ -312,12 +313,12 @@ func runMemory(env Env, args []string) int {
 	})
 	scope, err := memoryScope(*project)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz memory: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+" memory: "+err.Error())
 		return ExitUsage
 	}
 	svc := mp.service(cliSubmitter(env))
 	fail := func(err error) int {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	usage := func() int {
@@ -461,7 +462,7 @@ func printOutcome(env Env, out memory.Outcome, done string, noBrowser bool) int 
 	if msg == "" {
 		msg = "not done (" + out.Status + ")"
 	}
-	fmt.Fprintln(env.Stderr, "kenaz: "+msg)
+	fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+msg)
 	return ExitError
 }
 
@@ -543,7 +544,7 @@ func memorySync(ctx context.Context, env Env, mp memoryPaths, args []string) int
 	}
 	svc := mp.service(cliSubmitter(env))
 	fail := func(err error) int {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	switch args[0] {
@@ -653,7 +654,7 @@ func memoryPurge(env Env, mp memoryPaths, args []string) int {
 			s.Close()
 		}
 		if !memoryStdinTerminal() {
-			fmt.Fprintln(env.Stderr, "kenaz: purge deletes every note in this device's notebook; run it in a terminal to confirm, or pass --yes.")
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": purge deletes every note in this device's notebook; run it in a terminal to confirm, or pass --yes.")
 			return ExitError
 		}
 		if !confirm(env, fmt.Sprintf("Delete %s notes in this device's notebook (%s)? This cannot be undone.", n, mp.DB)) {
@@ -662,7 +663,7 @@ func memoryPurge(env Env, mp memoryPaths, args []string) int {
 		}
 	}
 	if err := memory.Purge(mp.DB); err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	fmt.Fprintf(env.Stdout, "Deleted your Kenaz memory notebook (%s).\n", mp.DB)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/bundle"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Self-contained archive installs (internal/bundle verifies the archive and
@@ -37,9 +38,9 @@ const BundleFile = bundle.BundleFile
 
 // bundleMarketplace and bundlePluginID are the local marketplace and plugin
 // the bundle registers in Claude Code and Codex.
-const (
-	bundleMarketplace = "kenaz"
-	bundlePluginID    = "kenaz@kenaz"
+var (
+	bundleMarketplace = variant.Current.Marketplace
+	bundlePluginID    = variant.Current.PluginID()
 )
 
 func renderPlugin(b *Bundle, dir string, write bool) (string, error) {
@@ -133,15 +134,15 @@ func (m marketplace) source() string {
 	return "?"
 }
 
-// OfficialRepo is the public GitHub repository that hosts the kenaz
-// marketplace.
-const OfficialRepo = "kameas-ai/kenaz-plugin"
+// OfficialRepo is the public GitHub repository that hosts the build's
+// marketplace ("" when the build is never published there).
+var OfficialRepo = variant.Current.MarketplaceRepo
 
-var officialURL = regexp.MustCompile(`(?i)^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)kameas-ai/kenaz-plugin(?:\.git)?/?(?:[#@].*)?$`)
+var officialURL = regexp.MustCompile(`(?i)^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)` + regexp.QuoteMeta(OfficialRepo) + `(?:\.git)?/?(?:[#@].*)?$`)
 
 func isOfficialSource(src string) bool {
 	src = strings.TrimSpace(src)
-	if src == "" {
+	if src == "" || OfficialRepo == "" {
 		return false
 	}
 	if officialURL.MatchString(src) {
@@ -246,8 +247,8 @@ func codexRegistration(text string) (string, bool) {
 }
 
 var (
-	codexMarketplaceHdr = regexp.MustCompile(`^\s*\[\s*marketplaces\.("kenaz"|kenaz)\s*\]\s*(#.*)?$`)
-	codexPluginHdr      = regexp.MustCompile(`^\s*\[\s*plugins\.("kenaz@kenaz"|'kenaz@kenaz')\s*\]\s*(#.*)?$`)
+	codexMarketplaceHdr = regexp.MustCompile(`^\s*\[\s*marketplaces\.("` + regexp.QuoteMeta(bundleMarketplace) + `"|` + regexp.QuoteMeta(bundleMarketplace) + `)\s*\]\s*(#.*)?$`)
+	codexPluginHdr      = regexp.MustCompile(`^\s*\[\s*plugins\.("` + regexp.QuoteMeta(bundlePluginID) + `"|'` + regexp.QuoteMeta(bundlePluginID) + `')\s*\]\s*(#.*)?$`)
 	codexStrKV          = regexp.MustCompile(`^\s*([A-Za-z_]+)\s*=\s*"((?:[^"\\]|\\.)*)"`)
 	codexEnabledKV      = regexp.MustCompile(`^\s*enabled\s*=\s*true\b`)
 )

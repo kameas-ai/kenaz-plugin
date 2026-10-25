@@ -11,6 +11,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/consent"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // runLogin signs in (PKCE loopback via fleetapi.Auth), then hands the
@@ -19,18 +20,18 @@ import (
 func runLogin(env Env, args []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
-	envName := fs.String("env", "", "Fleet environment: prod|stage|dev (default: KENAZ_ENV, config, prod)")
+	envName := fs.String("env", "", "Fleet environment: "+variant.Current.EnvChoices("|")+" (default: "+variant.Current.EnvVar+", config, "+variant.Current.DefaultEnv+")")
 	noBrowser := fs.Bool("no-browser", false, "print the sign-in URL instead of opening a browser")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
 	r, err := env.resolve(*envName)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
 	}
 	if err := env.cred.usable(); err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	open := env.OpenBrowser
@@ -57,7 +58,7 @@ func runLogin(env Env, args []string) int {
 	}
 	fmt.Fprintf(env.Stdout, "Signed in to Kameas Fleet (%s).\n", sess.Env)
 	if err := env.cred.record(); err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 	}
 	if c := connectDaemon(env.Ctx, r.StateDir); c != nil {
 		c.Kick(env.Ctx)
@@ -67,7 +68,7 @@ func runLogin(env Env, args []string) int {
 	// Fleet refuses orgs outside the early-access program. Wait briefly for the daemon's first enroll so the member sees
 	// that here rather than only in `kenaz status`.
 	if awaitEnroll(env.Ctx, r.StateDir, loginEnrollWait) == string(enroll.StateEarlyAccess) {
-		fmt.Fprintln(env.Stderr, "kenaz: "+fleetapi.EarlyAccessMessage)
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+fleetapi.EarlyAccessMessage)
 		return ExitError
 	}
 	// First-run opt-in. Nothing is sent until the member

@@ -13,6 +13,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // fileStoreNote is the security note doctor and the README give for the
@@ -121,9 +122,10 @@ func keychainProbe() error {
 	}
 }
 
-// paths is the on-disk layout, honoring KENAZ_HOME.
+// paths is the on-disk layout, honoring the build's home override
+// (KENAZ_HOME).
 func (e Env) paths() (config.Paths, error) {
-	if h := e.getenv("KENAZ_HOME"); h != "" {
+	if h := e.getenv(variant.Current.HomeVar); h != "" {
 		abs, err := filepath.Abs(h)
 		if err != nil {
 			return config.Paths{}, err

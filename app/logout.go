@@ -11,6 +11,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/consent"
 	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // runLogout signs out, stops the daemon after purging lanes, deletes the
@@ -25,7 +26,7 @@ func runLogout(env Env, args []string) int {
 	}
 	r, err := env.resolve(*envName)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
 	}
 	// Withdrawal on logout: forget the member's notice acceptance
@@ -69,7 +70,7 @@ func runLogout(env Env, args []string) int {
 		defer fmt.Fprintln(env.Stdout, l)
 	}
 	if err := errors.Join(errs...); err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	if authErr != nil && !errors.Is(authErr, fleetapi.ErrNotSignedIn) {

@@ -9,6 +9,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/internal/setup"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // runSetup is `kenaz setup`. State paths come from the
@@ -44,7 +45,7 @@ func runSetupWith(env Env, args []string, hk setup.Hooks) int {
 	if daemonDir != "" {
 		if c := connectDaemon(env.Ctx, daemonDir); c != nil {
 			if st, err := c.Status(env.Ctx); err == nil && st.Enroll == string(enroll.StateEarlyAccess) {
-				fmt.Fprintln(env.Stderr, "kenaz: "+fleetapi.EarlyAccessMessage)
+				fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+fleetapi.EarlyAccessMessage)
 			}
 		}
 	}
@@ -122,6 +123,6 @@ func (e Env) warnBrokenRegistrations() {
 		return
 	}
 	for _, line := range setup.BrokenRegistrations(paths.State(env)) {
-		fmt.Fprintln(e.Stderr, "kenaz: "+line)
+		fmt.Fprintln(e.Stderr, variant.Current.Binary+": "+line)
 	}
 }

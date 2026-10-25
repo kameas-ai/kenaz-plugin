@@ -18,6 +18,7 @@ import (
 	contexttools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/context"
 	skillstools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/skills"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/status"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // mcpGroups is the static tool registry.
@@ -82,7 +83,7 @@ func runMCP(env Env, args []string) int {
 	}
 	r, err := env.resolve(*envName)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
 	}
 	rot := &logx.Rotator{Path: filepath.Join(r.StateDir, "logs", "mcp.log")}

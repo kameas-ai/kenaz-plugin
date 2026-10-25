@@ -14,6 +14,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
 	"github.com/kameas-ai/kenaz-plugin/internal/skills"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Skills wiring. The MCP group (mcpcmd.go), the daemon lane
@@ -81,12 +82,12 @@ func runSkills(env Env, args []string) int {
 	}
 	r, err := env.resolve(*envName)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
 	}
 	home, err := skillsHome()
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
 	mat := &skills.Materializer{Roots: skills.DetectRoots(home)}
@@ -99,7 +100,7 @@ func runSkills(env Env, args []string) int {
 	case "list":
 		owned, err := mat.Owned()
 		if err != nil {
-			fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 			return ExitError
 		}
 		if len(mat.Roots) == 0 {
@@ -132,7 +133,7 @@ func runSkills(env Env, args []string) int {
 	case "sync":
 		nodeID, err := enroll.LoadOrCreateNodeID(r.StateDir, env.now())
 		if err != nil {
-			fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 			return ExitError
 		}
 		s := &skills.Syncer{Provider: env.Provider, Store: store, Mat: mat, MachineID: nodeID}

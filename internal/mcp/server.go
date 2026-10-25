@@ -15,10 +15,11 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // ServerName is the MCP implementation name the harness shows.
-const ServerName = "kenaz"
+var ServerName = variant.Current.MCPServer
 
 // StatusSource returns the relay status (the daemon client in production).
 type StatusSource interface {
@@ -52,7 +53,7 @@ func (f GroupFunc) Register(s *sdk.Server, d Deps) { f(s, d) }
 
 // NewServer builds the server with the given groups.
 func NewServer(version string, d Deps, groups ...Group) *sdk.Server {
-	s := sdk.NewServer(&sdk.Implementation{Name: ServerName, Title: "Kenaz", Version: version}, nil)
+	s := sdk.NewServer(&sdk.Implementation{Name: ServerName, Title: variant.Current.DisplayName, Version: version}, nil)
 	for _, g := range groups {
 		g.Register(s, d)
 	}

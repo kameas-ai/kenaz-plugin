@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -34,6 +35,9 @@ var Group = mcp.GroupFunc(register)
 
 // HomeDir returns the user's home directory (tests override it).
 var HomeDir = os.UserHomeDir
+
+// Getenv reads the environment (tests override it).
+var Getenv = os.Getenv
 
 // capTeamShare gates team/org publishing.
 const capTeamShare = "catalog_team_share"
@@ -79,7 +83,10 @@ type InstallOutput struct {
 	Directories []string `json:"directories"`
 	Stripped    []string `json:"stripped,omitempty"`
 	Translated  bool     `json:"translated,omitempty"`
-	Message     string   `json:"message"`
+	// SkillMD is the skill's SKILL.md, set only under Claude Desktop
+	// (KENAZ_MCP_HOST=claude-desktop), whose chat loads no skill folders.
+	SkillMD string `json:"skill_md,omitempty"`
+	Message string `json:"message"`
 }
 
 // UninstallInput is skills_uninstall's arguments.
@@ -133,8 +140,9 @@ type PublishPayload struct {
 func register(s *sdk.Server, d mcp.Deps) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "skills_search",
+		Title:       "Search shared skills",
 		Description: "Search the Kameas Fleet catalog for shared Agent Skills your organization or team has published. Returns each skill's catalog_id, name, description, version, visibility, and whether it is already installed on this machine. Read-only.",
-		Annotations: &sdk.ToolAnnotations{Title: "Search shared skills", ReadOnlyHint: true, IdempotentHint: true},
+		Annotations: &sdk.ToolAnnotations{Title: "Search shared skills", ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: ptr(true)},
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in SearchInput) (*sdk.CallToolResult, SearchOutput, error) {
 		touch(d)
 		out, err := Search(ctx, d, in)
@@ -142,8 +150,9 @@ func register(s *sdk.Server, d mcp.Deps) {
 	})
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "skills_install",
-		Description: "Install a shared skill from the Kameas Fleet catalog into this machine's skill folders, so it is available in your next session. Shared skills are installed without any tool pre-approvals or hooks they declare; the result says what was removed.",
-		Annotations: &sdk.ToolAnnotations{Title: "Install a shared skill", IdempotentHint: true, DestructiveHint: ptr(false)},
+		Title:       "Install a shared skill",
+		Description: "Install a shared skill from the Kameas Fleet catalog into this machine's skill folders, so it is available in your next session. Shared skills are installed without any tool pre-approvals or hooks they declare; the result says what was removed. In Claude Desktop chat, which does not load skill folders, the result also carries the skill's SKILL.md text as skill_md.",
+		Annotations: &sdk.ToolAnnotations{Title: "Install a shared skill", IdempotentHint: true, DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in InstallInput) (*sdk.CallToolResult, InstallOutput, error) {
 		touch(d)
 		out, err := Install(ctx, d, in)
@@ -151,8 +160,9 @@ func register(s *sdk.Server, d mcp.Deps) {
 	})
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "skills_uninstall",
+		Title:       "Uninstall a shared skill",
 		Description: "Remove a shared skill you installed from the Kameas Fleet catalog. Skills your organization requires cannot be removed this way.",
-		Annotations: &sdk.ToolAnnotations{Title: "Uninstall a shared skill", IdempotentHint: true},
+		Annotations: &sdk.ToolAnnotations{Title: "Uninstall a shared skill", IdempotentHint: true, DestructiveHint: ptr(true), OpenWorldHint: ptr(false)},
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in UninstallInput) (*sdk.CallToolResult, UninstallOutput, error) {
 		touch(d)
 		out, err := Uninstall(ctx, d, in)
@@ -160,6 +170,7 @@ func register(s *sdk.Server, d mcp.Deps) {
 	})
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "skills_publish",
+		Title:       "Publish a skill",
 		Description: "Prepare publishing a local Agent Skill directory (with SKILL.md) to your Kameas Fleet catalog. Nothing is uploaded by this call: it returns request_id, status \"pending\" and approve_url. The user must open approve_url, review the exact files and approve with their security key or device unlock; give them the link. Visibility defaults to private (only you); team or org_public share it with colleagues and need a Team plan.",
 		Annotations: &sdk.ToolAnnotations{Title: "Publish a skill", DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 		Meta:        requiresInteraction,
@@ -245,7 +256,8 @@ func Install(ctx context.Context, d mcp.Deps, in InstallInput) (InstallOutput, e
 	if err != nil {
 		return InstallOutput{}, err
 	}
-	if len(m.Roots) == 0 {
+	desktop := strings.TrimSpace(Getenv(mcp.HostEnvVar)) == mcp.HostClaudeDesktop
+	if len(m.Roots) == 0 && !desktop {
 		return InstallOutput{}, errors.New("no supported agent harness was found in your home directory")
 	}
 	item, err := d.Provider.Catalog().Get(ctx, in.CatalogID, in.Version)
@@ -254,6 +266,22 @@ func Install(ctx context.Context, d mcp.Deps, in InstallInput) (InstallOutput, e
 	}
 	if item.Revoked {
 		return InstallOutput{}, errors.New("this skill was revoked by its publisher or your organization")
+	}
+	skillMD, chatNote := "", ""
+	if desktop {
+		// Claude Desktop chat reads no skill folder: hand the chat the text
+		// instead, prepared exactly as an install would write it.
+		doc, others, err := sk.Instructions(sk.Item{CatalogID: item.ID, Kind: item.Kind, Slug: item.Slug, Version: item.Version, Payload: item.Payload, Source: sk.SourceSubscribed})
+		if err != nil {
+			return InstallOutput{}, errors.New(installFailure(sk.PrepareDetail(err)))
+		}
+		skillMD, chatNote = forChat(doc, others)
+		if len(m.Roots) == 0 {
+			return InstallOutput{
+				Slug: sk.SanitizeSlug(item.Slug), Version: item.Version, Directories: []string{}, SkillMD: skillMD,
+				Message: "Claude Desktop chat does not load installed skills, and no Claude Code or Codex skills folder was found on this computer, so nothing was installed. The skill's instructions are in skill_md." + chatNote,
+			}, nil
+		}
 	}
 	unlock, err := st.Lock(10 * time.Second)
 	if err != nil {
@@ -283,7 +311,37 @@ func Install(ctx context.Context, d mcp.Deps, in InstallInput) (InstallOutput, e
 	if res.Translated {
 		out.Message += " It was converted from an older Kenaz skill."
 	}
+	if desktop {
+		out.SkillMD = skillMD
+		out.Message += " Claude Desktop chat does not load installed skills: it is installed for Claude Code and the other coding tools on this computer. The skill's instructions are in skill_md." + chatNote
+	}
 	return out, nil
+}
+
+// MaxSkillMD caps skill_md: a chat result is not the place for a whole
+// manual, and the full text is installed for the coding tools anyway.
+const MaxSkillMD = 32 << 10
+
+// forChat returns SKILL.md as skill_md carries it (at most MaxSkillMD bytes,
+// cut on a UTF-8 boundary) and what the message must add: that it was
+// truncated, and that the skill's other files do not reach the chat.
+func forChat(doc string, otherFiles int) (string, string) {
+	note := ""
+	if len(doc) > MaxSkillMD {
+		cut := MaxSkillMD
+		for cut > 0 && !utf8.RuneStart(doc[cut]) {
+			cut--
+		}
+		doc = doc[:cut]
+		note += fmt.Sprintf(" skill_md is truncated to its first %d KiB.", MaxSkillMD>>10)
+	}
+	switch {
+	case otherFiles == 1:
+		note += " The skill also has 1 other file (such as a script or reference) that Claude Desktop chat cannot read."
+	case otherFiles > 1:
+		note += fmt.Sprintf(" The skill also has %d other files (such as scripts or references) that Claude Desktop chat cannot read.", otherFiles)
+	}
+	return doc, note
 }
 
 // Uninstall implements skills_uninstall.

@@ -14,6 +14,8 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // RPID is the WebAuthn relying-party id. Browsers accept "localhost" as a
@@ -44,8 +46,8 @@ type waUser struct {
 }
 
 func (u waUser) WebAuthnID() []byte                         { return u.handle }
-func (u waUser) WebAuthnName() string                       { return "Kenaz approvals" }
-func (u waUser) WebAuthnDisplayName() string                { return "Kenaz approvals" }
+func (u waUser) WebAuthnName() string                       { return variant.Current.ApprovalsName() }
+func (u waUser) WebAuthnDisplayName() string                { return variant.Current.ApprovalsName() }
 func (u waUser) WebAuthnCredentials() []webauthn.Credential { return u.creds }
 
 func (m *Manager) newWebAuthn(origin string) (*webauthn.WebAuthn, error) {

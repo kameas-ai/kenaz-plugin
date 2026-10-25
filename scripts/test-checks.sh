@@ -99,6 +99,28 @@ expect_fail "codex overlay unknown tool" no-policy
 fresh; echo '{"name":"@kameas/codex-bridge"}' > "$tmp/r/package.json"; expect_fail "npm @kameas/codex-bridge" names
 fresh; cp "$tmp/r/plugin/commands/login.md" "$tmp/r/plugin/commands/openai-login.md"; expect_fail "command openai-login" names
 
+# Build identity values belong in internal/variant only.
+idfail() {
+  local label="$1" code="$2"
+  fresh; mkdir -p "$tmp/r/internal/x"
+  printf 'package x\n\n%s\n' "$code" > "$tmp/r/internal/x/x.go"
+  expect_fail "identity literal: $label" names
+}
+idfail "binary name" 'var b = "kenaz"'
+idfail "config dir" 'var d = filepath.Join("kameas", "kenaz")'
+idfail "config dir path" 'const d = "kameas/kenaz"'
+idfail "keychain service" 'const s = "kenaz-plugin"'
+idfail "plugin id" 'const p = "kenaz@kenaz"'
+idfail "cookie" 'const c = "kenaz_approvals_csrf"'
+idfail "env var" 'const e = "KENAZ_ENV"'
+idfail "relay port" 'var p = []int{4318}'
+fresh; mkdir -p "$tmp/r/internal/x" "$tmp/r/internal/variant"
+printf 'package x\n\n// the "kenaz" marketplace on 4318\nconst p = "@kameas/kenaz-opencode"\n' > "$tmp/r/internal/x/x.go"
+printf 'package variant\n\nvar b = "kenaz"\n' > "$tmp/r/internal/variant/v.go"
+printf 'package x\n\nvar b = "kenaz"\n' > "$tmp/r/internal/x/x_test.go"
+python3 "$checks" names "$tmp/r" >/dev/null || { echo "FAIL: identity literals in comments, internal/variant or tests must pass" >&2; exit 1; }
+echo "ok: identity literals allowed in comments, internal/variant and tests"
+
 # The former product name must not come back outside the allowlisted lines.
 old="kameas-""fleet"
 fresh; printf 'Run `%s login`.\n' "$old" >> "$tmp/r/plugin/README.md"; expect_fail "former name in docs" legacy-name

@@ -17,6 +17,7 @@ import (
 	contexttools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/context"
 	skillstools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/skills"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Human-authorized writes. The daemon hosts
@@ -239,7 +240,7 @@ func runApprovals(env Env, args []string) int {
 		sub = rest[0]
 	}
 	if refusedApprovalVerbs[strings.ToLower(sub)] {
-		fmt.Fprintln(env.Stderr, "kenaz: the CLI cannot approve, cancel or set up anything. Open the approval page with `kenaz approvals open <request_id>` and use your security key or device unlock there.")
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": the CLI cannot approve, cancel or set up anything. Open the approval page with `kenaz approvals open <request_id>` and use your security key or device unlock there.")
 		return ExitUsage
 	}
 	switch sub {
@@ -253,12 +254,12 @@ func runApprovals(env Env, args []string) int {
 		return ExitUsage
 	}
 	if sub == "open" && len(rest) > 1 && !approvals.ValidID(rest[1]) {
-		fmt.Fprintln(env.Stderr, "kenaz: not a request id: "+rest[1])
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": not a request id: "+rest[1])
 		return ExitUsage
 	}
 	r, err := env.resolve(*envName)
 	if err != nil {
-		fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
 	}
 	spawn := r.spawner(env)
@@ -272,10 +273,10 @@ func runApprovals(env Env, args []string) int {
 	l, err := rc.List(env.Ctx)
 	if err != nil {
 		if errors.Is(err, approvals.ErrNotSignedIn) {
-			fmt.Fprintln(env.Stderr, "kenaz: not signed in; run `kenaz login`")
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": not signed in; run `kenaz login`")
 			return ExitError
 		}
-		fmt.Fprintln(env.Stderr, "kenaz: the Kenaz relay could not be reached: "+err.Error())
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": the Kenaz relay could not be reached: "+err.Error())
 		return ExitError
 	}
 	switch sub {
@@ -302,7 +303,7 @@ func runApprovals(env Env, args []string) int {
 	case "status":
 		st, res, err := rc.Status(env.Ctx, rest[1])
 		if err != nil {
-			fmt.Fprintln(env.Stderr, "kenaz: "+err.Error())
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 			return ExitError
 		}
 		fmt.Fprintln(env.Stdout, string(st))

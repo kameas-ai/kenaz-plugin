@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // The public marketplace repository and plugin id.
-const (
-	marketplaceName = "kenaz"
-	marketplaceRepo = "kameas-ai/kenaz-plugin"
-	pluginID        = "kenaz@" + marketplaceName
+var (
+	marketplaceName = variant.Current.Marketplace
+	marketplaceRepo = variant.Current.MarketplaceRepo
+	pluginID        = variant.Current.PluginID()
 )
 
 // ManagedClaude returns a managed-settings.json for Claude Code that
@@ -70,13 +72,13 @@ nothing is sent until each member signs in and opts in.`
 
 func printManaged(w io.Writer, h harness, port int, raw bool) int {
 	if port < 1 || port > 65535 {
-		fmt.Fprintln(w, "kenaz setup: --port must be 1-65535")
+		fmt.Fprintln(w, variant.Current.Binary+" setup: --port must be 1-65535")
 		return exitUsage
 	}
 	if h == harnessClaude {
 		content, err := ManagedClaude(port)
 		if err != nil {
-			fmt.Fprintln(w, "kenaz setup:", err)
+			fmt.Fprintln(w, variant.Current.Binary+" setup:", err)
 			return exitError
 		}
 		if raw {

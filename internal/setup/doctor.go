@@ -18,6 +18,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemonstate"
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Check is one doctor finding.
@@ -94,9 +95,9 @@ func doctorBundle(o Options) []Check {
 			case !mk.official() || !mk.Enabled:
 				cs = append(cs, Check{h.label(), "warn", "the Kenaz plugin from GitHub is no longer registered or enabled; re-run setup"})
 			case o.KenazOnPath != nil && !o.KenazOnPath():
-				cs = append(cs, Check{h.label(), "warn", "the Kenaz plugin from GitHub starts kenaz from PATH, and kenaz is not on PATH; run `kenaz init`"})
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin from GitHub starts %[1]s from PATH, and %[1]s is not on PATH; run `%[1]s init`", variant.Current.Binary)})
 			default:
-				cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin from GitHub (%s), launching kenaz from PATH", OfficialRepo)})
+				cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin from GitHub (%s), launching %s from PATH", OfficialRepo, variant.Current.Binary)})
 			}
 			continue
 		}
@@ -111,13 +112,13 @@ func doctorBundle(o Options) []Check {
 		case src != fs.Bundle.Rendered || !enabled:
 			cs = append(cs, Check{h.label(), "warn", "the bundle plugin registration was changed outside setup; re-run setup"})
 		case bundle.StablePath(exe) != exe:
-			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s, which an upgrade removes; run `kenaz init` to register it through %s", exe, bundle.StablePath(exe))})
+			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s, which an upgrade removes; run `%s init` to register it through %s", exe, variant.Current.Binary, bundle.StablePath(exe))})
 		case fs.Bundle.Launcher == "" && isHomebrewCask(exe):
-			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s from Homebrew's versioned directory, which `brew upgrade` removes; run `kenaz init`", exe)})
+			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s from Homebrew's versioned directory, which `brew upgrade` removes; run `%s init`", exe, variant.Current.Binary)})
 		default:
 			cur := currentBundleVersion(o)
 			if cur != "" && cur != fs.Bundle.Version {
-				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the registered plugin files are from kenaz %s and this kenaz is %s; run `kenaz init` to refresh them", fs.Bundle.Version, cur)})
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the registered plugin files are from %[1]s %[2]s and this %[1]s is %[3]s; run `%[1]s init` to refresh them", variant.Current.Binary, fs.Bundle.Version, cur)})
 				continue
 			}
 			cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin registered from bundle %s (launches %s)", fs.Bundle.Version, exe)})
@@ -162,14 +163,14 @@ func registeredLauncher(reg *BundleReg) (exe, problem string) {
 	if reg.Launcher != "" {
 		fi, err := os.Stat(reg.Launcher)
 		if err != nil || fi.IsDir() {
-			return reg.Launcher, fmt.Sprintf("the plugin launches %s, which no longer exists; run `kenaz init` to register this kenaz again", reg.Launcher)
+			return reg.Launcher, fmt.Sprintf("the plugin launches %[1]s, which no longer exists; run `%[2]s init` to register this %[2]s again", reg.Launcher, variant.Current.Binary)
 		}
 		return reg.Launcher, ""
 	}
 	if exe == "" {
 		// Before the launcher was recorded, the plugin launched the
 		// bundle's own executable, and the bundle is gone.
-		return "", fmt.Sprintf("the bundle at %s is missing, so the plugin cannot start; run `kenaz init` to register this kenaz again", reg.Root)
+		return "", fmt.Sprintf("the bundle at %[1]s is missing, so the plugin cannot start; run `%[2]s init` to register this %[2]s again", reg.Root, variant.Current.Binary)
 	}
 	return exe, ""
 }
@@ -200,7 +201,7 @@ func BrokenRegistrations(stateDir string) []string {
 			missing = err != nil
 		}
 		if missing {
-			out = append(out, fmt.Sprintf("the Kenaz plugin in %s points at a kenaz that no longer exists (it was registered from %s). Run `kenaz init` to fix it.", h.label(), fs.Bundle.Root))
+			out = append(out, fmt.Sprintf("the Kenaz plugin in %[1]s points at a %[3]s that no longer exists (it was registered from %[2]s). Run `%[3]s init` to fix it.", h.label(), fs.Bundle.Root, variant.Current.Binary))
 		}
 	}
 	return out
@@ -281,9 +282,9 @@ func doctorClaude(ctx context.Context, o Options, port int, run Runner) []Check 
 
 	if out, err := run(ctx, "claude", "plugin", "list", "--json"); err == nil {
 		if strings.Contains(out, `"`+pluginID+`"`) {
-			add("ok", "plugin kenaz is installed")
+			add("ok", "plugin %s is installed", variant.Current.Plugin)
 		} else {
-			add("warn", "plugin kenaz is not installed")
+			add("warn", "plugin %s is not installed", variant.Current.Plugin)
 		}
 	}
 	return cs
@@ -335,9 +336,9 @@ func doctorCodex(ctx context.Context, o Options, port int, run Runner) []Check {
 
 	if out, err := run(ctx, "codex", "plugin", "list"); err == nil {
 		if codexListsKenaz(out) {
-			add("ok", "plugin kenaz is installed")
+			add("ok", "plugin %s is installed", variant.Current.Plugin)
 		} else {
-			add("warn", "plugin kenaz is not installed")
+			add("warn", "plugin %s is not installed", variant.Current.Plugin)
 		}
 	}
 	return cs
@@ -399,7 +400,7 @@ func printDoctor(w io.Writer, cs []Check) int {
 // codexPluginRe matches the plugin's own name as a whole token in
 // `codex plugin list` output, so kenaz-* plugins or a bare "kenaz"
 // marketplace with other plugins do not count as this plugin.
-var codexPluginRe = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])kenaz(@kenaz)?([^A-Za-z0-9_.-]|$)`)
+var codexPluginRe = regexp.MustCompile(`(^|[^A-Za-z0-9_.-])` + regexp.QuoteMeta(variant.Current.Plugin) + `(@` + regexp.QuoteMeta(variant.Current.Marketplace) + `)?([^A-Za-z0-9_.-]|$)`)
 
 func codexListsKenaz(out string) bool {
 	for _, line := range strings.Split(out, "\n") {

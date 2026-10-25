@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals/web"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // PagePrefix is where the approval page is served on the daemon's
@@ -29,8 +30,9 @@ const (
 	ControlStatus  = "/control/approvals/" // + request id
 )
 
+var csrfCookie = variant.Current.ApprovalsCSRFCookie
+
 const (
-	csrfCookie = "kenaz_approvals_csrf"
 	csrfHeader = "X-Kenaz-CSRF"
 	csrfTTL    = 30 * time.Minute
 	maxBody    = 64 << 10
@@ -504,9 +506,9 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // CrossSiteMessage is the refusal page for an approval link opened from
 // another site or app.
-const CrossSiteMessage = "Kenaz approvals: this page was not opened.\n\n" +
-	"For your safety, Kenaz approval pages only open when you go to them directly, not from a link on another web page, chat or email.\n\n" +
-	"Copy the approval link from your terminal (or run `kenaz approvals`) and paste it into your browser's address bar:\n\n"
+var CrossSiteMessage = variant.Current.ApprovalsName() + ": this page was not opened.\n\n" +
+	"For your safety, " + variant.Current.DisplayName + " approval pages only open when you go to them directly, not from a link on another web page, chat or email.\n\n" +
+	"Copy the approval link from your terminal (or run `" + variant.Current.Binary + " approvals`) and paste it into your browser's address bar:\n\n"
 
 func crossSitePage(w http.ResponseWriter, link string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -589,7 +591,7 @@ func writeErr(w http.ResponseWriter, err error) {
 
 // ---- enrollment browser binding ----
 
-const enrollCookiePrefix = "kenaz_enroll_"
+var enrollCookiePrefix = variant.Current.EnrollCookiePrefix
 
 func setEnrollCookie(w http.ResponseWriter, eid, secret string) {
 	http.SetCookie(w, &http.Cookie{Name: enrollCookiePrefix + eid, Value: secret, Path: PagePrefix, HttpOnly: true,

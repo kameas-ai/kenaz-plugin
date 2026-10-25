@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Store persists, per Fleet user, the notice version the member accepted
@@ -31,18 +33,21 @@ type storeFile struct {
 // NewStore returns a Store backed by path (created on first write).
 func NewStore(path string) *Store { return &Store{path: path} }
 
-// DefaultStorePath is $KENAZ_STATE_DIR/consent.json, or the user
-// config dir. TODO: move to internal/config's $STATE.
+// DefaultStorePath is $KENAZ_STATE_DIR/consent.json, or the build's
+// consent directory in the user config dir (variant.Identity.ConsentDir).
+// TODO: move to internal/config's $STATE.
 func DefaultStorePath() (string, error) {
-	if d := os.Getenv("KENAZ_STATE_DIR"); d != "" {
+	if d := os.Getenv(variant.Current.StateDirVar); d != "" {
 		return filepath.Join(d, "consent.json"), nil
 	}
 	d, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	// Not "kenaz": that directory belongs to the Kenaz desktop app.
-	return filepath.Join(d, "kenaz-plugin", "consent.json"), nil
+	if variant.Current.ConsentDir == "" {
+		return filepath.Join(d, "kameas", variant.Current.ConfigDir, "consent.json"), nil
+	}
+	return filepath.Join(d, variant.Current.ConsentDir, "consent.json"), nil
 }
 
 // Accepted returns the stored version for userID, or "".

@@ -14,6 +14,10 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/setup"
 )
 
+// closedWorld is the tool's explicit openWorldHint: it reads only the local
+// relay on this machine, never an open set of external services.
+var closedWorld = false
+
 // Input takes no arguments.
 type Input struct{}
 
@@ -23,8 +27,9 @@ var Group = mcp.GroupFunc(register)
 func register(s *sdk.Server, d mcp.Deps) {
 	tool := &sdk.Tool{
 		Name:        "fleet_status",
+		Title:       "Kameas Fleet status",
 		Description: "Show the Kameas Fleet connection status for this machine: whether you are signed in, the Fleet environment and plan tier, whether telemetry uploads are running or held (for example while an approval is pending or the organization is paused), and the titles of any pending approvals with the dashboard link to review them, and whether reporting is working (consent, last successful upload, queued count, last error category, receiver port, per-host setup). Read-only. Accepting an approval happens in the Kameas Fleet dashboard, not here.",
-		Annotations: &sdk.ToolAnnotations{Title: "Kameas Fleet status", ReadOnlyHint: true, IdempotentHint: true},
+		Annotations: &sdk.ToolAnnotations{Title: "Kameas Fleet status", ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &closedWorld},
 	}
 	sdk.AddTool(s, tool, func(ctx context.Context, _ *sdk.CallToolRequest, _ Input) (*sdk.CallToolResult, daemon.Status, error) {
 		if d.Touch != nil {
