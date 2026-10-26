@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "tools": [
+    {
+      "id": "claude-code",
+      "name": "Claude Code, including Claude Code in the Claude desktop app's Code tab",
+      "maker": "Anthropic, PBC",
+      "connection": "on-device",
+      "usage_telemetry": true,
+      "uses": "Skills, team context, memory, usage summaries",
+      "status": "early-access",
+      "listed_since": "2026-10-14",
+      "hosts": ["claude-code"]
+    },
+    {
+      "id": "codex",
+      "name": "Codex, including Codex mode in the ChatGPT desktop app",
+      "maker": "OpenAI",
+      "connection": "on-device",
+      "usage_telemetry": true,
+      "uses": "Skills, team context, memory, usage summaries",
+      "status": "early-access",
+      "listed_since": "2026-10-14",
+      "hosts": ["codex"]
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+$ --help
+exit 0
+--- stdout
+usage: kenaz-dev <command> [flags]
+
+  approvals List write requests and open the approval page
+  daemon    Run the on-demand relay (started by mcp and hooks)
+  device    Show or rename this device's display name
+  doctor    Diagnose installation and configuration
+  hook      Harness hook entry point (SessionStart/SessionEnd)
+  init      Set everything up: PATH, sign-in, and every app found
+  licenses  Print license and notice texts
+  login     Sign in to Kameas Fleet
+  logout    Sign out and purge local queued data
+  mcp       Run the MCP stdio server (started by the harness)
+  memory    Manage memories (on this device; optional sync to your Kameas Fleet account)
+  migrate   Move files from an earlier release to ~/.kenaz/plugin (close your AI apps first)
+  optin     Choose which usage data to share (shows the notice)
+  setup     Configure one app (Claude Code or Codex) to use Kameas Fleet
+  skills    List or sync shared Agent Skills from Kameas Fleet
+  status    Show sign-in, telemetry and consent state (--json)
+  version   Print version and build flavor
+--- stderr
+$ --version
+exit 0
+--- stdout
+kenaz-dev 0.0.0-dev (unofficial build)
+--- stderr
+$ setup print-managed claude
+exit 64
+--- stdout
+--- stderr
+kenaz-dev setup: print-managed is not available in this build; it is never deployed fleet-wide
+$ setup print-managed codex
+exit 64
+--- stdout
+--- stderr
+kenaz-dev setup: print-managed is not available in this build; it is never deployed fleet-wide
+$ setup --help
+exit 64
+--- stdout
+--- stderr
+usage:
+  kenaz-dev setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
+  kenaz-dev setup --undo claude|codex [--yes] [--dry-run] [--env E]
+  kenaz-dev setup print-managed claude|codex [--port N] [--raw]
+  kenaz-dev setup doctor [--env E]
+
+To set up PATH, sign-in and every app at once, run kenaz-dev init.
+
+Plugin source (Claude Code, Codex): kenaz-dev registers the plugin of the
+bundle it runs from by absolute path (--bundle DIR: that bundle's).
+Setup starts the kenaz-dev relay if it is not running.

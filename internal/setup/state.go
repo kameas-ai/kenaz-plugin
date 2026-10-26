@@ -3,16 +3,24 @@ package setup
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // State records exactly what setup changed, so --undo can restore it.
 // It lives in the relay state directory with mode
 // 0600.
 type State struct {
-	Version int        `json:"version"`
+	Version int `json:"version"`
+	// Variant is the build that made this setup ("" in files written
+	// before builds recorded it, which were all kenaz). Every build keeps a
+	// Fleet environment's setup in the same state directory, so another
+	// build's setup there is refused (see loadState).
+	Variant string     `json:"variant,omitempty"`
 	Claude  *FileState `json:"claude,omitempty"`
 	Codex   *FileState `json:"codex,omitempty"`
 	// OpenCode is keyed "opencode" in setup-state.json.
@@ -76,6 +84,9 @@ func loadState(dir string) (*State, error) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, err
 	}
+	if v := s.build(); v != variant.Current.Name && (s.Claude != nil || s.Codex != nil || s.OpenCode != nil) {
+		return nil, &OtherBuildError{Variant: v}
+	}
 	for _, fs := range []*FileState{s.Claude, s.Codex, s.OpenCode} {
 		if fs == nil {
 			continue
@@ -94,8 +105,26 @@ func loadState(dir string) (*State, error) {
 // directory (it moved, e.g. the Windows state migration) onto dir: a path
 // that no longer exists and has a "setup" component becomes the same
 // tail under dir when that exists. Anything else is returned unchanged.
+//
+// A path that still exists through a link the move left at the old
+// location (it resolves inside dir but is not spelled under it) is mapped
+// onto dir the same way, so pruning and re-registration see the plugin
+// copy setup actually uses.
 func rebase(dir, p string) string {
-	if p == "" || fileExists(p) {
+	if p == "" {
+		return p
+	}
+	if fileExists(p) {
+		if within(dir, p) {
+			return p
+		}
+		rp, err1 := realPath(p)
+		rd, err2 := realPath(dir)
+		if err1 == nil && err2 == nil && within(rd, rp) {
+			if rel, err := filepath.Rel(rd, rp); err == nil {
+				return filepath.Join(dir, rel)
+			}
+		}
 		return p
 	}
 	sep := string(filepath.Separator)
@@ -110,10 +139,35 @@ func rebase(dir, p string) string {
 	return p
 }
 
+func (s *State) build() string {
+	if s.Variant == "" {
+		return variant.Kenaz.Name
+	}
+	return s.Variant
+}
+
+// recordedVariant is what files record as their build: "" for kenaz, so
+// the public build's files read as they always have.
+func recordedVariant() string {
+	if variant.Current.Name == variant.Kenaz.Name {
+		return ""
+	}
+	return variant.Current.Name
+}
+
+// OtherBuildError means another build set up the apps for this Fleet
+// environment: one build at a time can (they share its state directory).
+type OtherBuildError struct{ Variant string }
+
+func (e *OtherBuildError) Error() string {
+	return fmt.Sprintf("%[1]s set up the apps for this Fleet environment on this device, and only one build at a time can. Use %[1]s for it, or run `%[1]s setup --undo` for each app first", e.Variant)
+}
+
 func saveState(dir string, s *State) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	s.Variant = recordedVariant()
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err

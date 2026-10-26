@@ -116,9 +116,9 @@ CODEX_OVERLAY_SERVER_KEYS = {"command", "args", "tools"}
 def check_codex_overlay(root, errs):
     """plugin/.codex-plugin/plugin.json is the manifest Codex prefers over
     .claude-plugin/plugin.json (codex-rs DISCOVERABLE_PLUGIN_MANIFEST_PATHS).
-    It must mirror the Claude manifest and point at .codex-mcp.json, which
-    must launch the same server and may only add approval_mode=prompt for
-    tools this repo declares."""
+    It must mirror the Claude manifest (all but the description) and point
+    at .codex-mcp.json, which must launch the same server and may only
+    add approval_mode=prompt for tools this repo declares."""
     plugin = root / "plugin"
     overlay = plugin / ".codex-plugin" / "plugin.json"
     if not overlay.exists():
@@ -127,7 +127,9 @@ def check_codex_overlay(root, errs):
     cm = load_json(plugin / ".claude-plugin" / "plugin.json", errs)
     if om is None or cm is None:
         return
-    for k in ("name", "version", "description", "license"):
+    # The descriptions differ on purpose (each names only the tools that
+    # read it); TestPluginIdentity pins both exactly.
+    for k in ("name", "version", "license"):
         if om.get(k) != cm.get(k):
             errs.append(f"plugin/.codex-plugin/plugin.json: {k!r} differs from .claude-plugin/plugin.json")
     if om.get("mcpServers") != "./.codex-mcp.json":
@@ -263,21 +265,80 @@ def chosen_names(root, errs):
 
 
 # Build identity values (binary, plugin, marketplace and MCP server names,
-# config and state directories, keychain service, relay ports, environment
-# variables, cookie names) live only in internal/variant, so that a build
-# variant changes all of them together. Go code elsewhere reads them from
-# variant.Current. Tests, test/ and the plugin sources are exempt.
-IDENTITY_LITERALS = [
-    (re.compile(r'"kenaz(\.exe| )?"'), "the executable, plugin, marketplace or MCP server name"),
-    (re.compile(r'kameas/kenaz(?![-\w])|"kameas",\s*"kenaz"'), "the config and state directory"),
-    (re.compile(r'"kenaz-plugin"'), "the keychain service or consent directory"),
-    (re.compile(r'kenaz@kenaz'), "the plugin id"),
-    (re.compile(r'kenaz_approvals_csrf|kenaz_enroll_'), "an approval page cookie name"),
-    (re.compile(r'"KENAZ_(ENV|HOME|STATE_DIR|MCP_HOST)"'), "an environment variable name"),
-    (re.compile(r'(?<![\w.])(4318|47318)(?![\w.])'), "a relay port"),
-    (re.compile(r'Caskroom/kenaz\b'), "the Homebrew cask"),
-    (re.compile(r'"Kenaz approvals|Title:\s*"Kenaz"'), "the display name"),
-]
+# the shared root, keychain service, relay ports, environment variables,
+# cookie names) live only in internal/variant, so that a build variant
+# changes all of them together. Go code elsewhere reads them from
+# variant.Current or variant.Shared. Tests, test/ and the plugin sources are
+# exempt.
+#
+# The patterns are generated from internal/variant/variant.go: every
+# variant table (Identity{...}) and the shared table (SharedValues{...}),
+# so a value added to either is covered (issue #34 F3).
+VARIANT_GO = pathlib.Path("internal") / "variant" / "variant.go"
+TABLE = re.compile(r"^var (\w+) = (Identity|SharedValues)\{\n(.*?)^\}", re.S | re.M)
+FIELD = re.compile(r"^\t(\w+):\s*(.+?),?\s*(?://.*)?$", re.M)
+
+
+def variant_tables(root):
+    """Return {table name: {field: value}} from variant.go (the repo's own
+    when root has none): strings, string lists and int lists."""
+    src = root / VARIANT_GO
+    if not src.is_file():
+        src = pathlib.Path(__file__).resolve().parent.parent / VARIANT_GO
+    tables = {}
+    for m in TABLE.finditer(src.read_text()):
+        fields = {}
+        for f in FIELD.finditer(m.group(3)):
+            raw = f.group(2).strip()
+            if raw.startswith('"'):
+                fields[f.group(1)] = raw.strip('"')
+            elif raw.startswith("[]string{"):
+                fields[f.group(1)] = re.findall(r'"([^"]*)"', raw)
+            elif raw.startswith("[]int{"):
+                fields[f.group(1)] = [int(x) for x in re.findall(r"\d+", raw)]
+        tables[m.group(1)] = fields
+    return tables
+
+
+def identity_literals(root):
+    tables = variant_tables(root)
+    ids = [t for n, t in tables.items() if "Binary" in t]
+    shared = next((t for t in tables.values() if "KeychainService" in t), {})
+    alt = lambda vals: "|".join(re.escape(v) for v in sorted(set(vals), key=len, reverse=True) if v)
+    pats = []
+    names = [i[k] for i in ids for k in ("Binary", "BundleName", "Marketplace", "Plugin", "MCPServer", "CaskToken") if i.get(k)]
+    if names:
+        pats.append((rf'"({alt(names)})(\.exe| )?"', "the executable, bundle, plugin, marketplace, MCP server or cask name"))
+        pats.append((rf"Caskroom/({alt(names)})\b", "the Homebrew cask"))
+    ids_ = [f"{i['Plugin']}@{i['Marketplace']}" for i in ids if i.get("Plugin") and i.get("Marketplace")]
+    if ids_:
+        pats.append((alt(ids_), "the plugin id"))
+    disp = [i["DisplayName"] for i in ids if i.get("DisplayName")]
+    if disp:
+        pats.append((rf'"({alt(disp)}) approvals|Title:\s*"({alt(disp)})"', "the display name"))
+    bins = [i["Binary"] for i in ids if i.get("Binary")]
+    if bins:
+        b = alt(bins)
+        pats.append((rf"\.({b})-(backup|tmp)\b|\b({b})\.fish\b|>>> ({b}) PATH", "a PATH profile file, marker or backup name"))
+    # Earlier releases' directories (the migration builds them from
+    # variant.Kenaz.Binary).
+    pats.append((r'kameas/kenaz(?![-\w])|"kameas",\s*"kenaz"', "an earlier release's config and state directory"))
+    strs = [shared.get(k) for k in ("KeychainService", "RootDir", "HomeVar", "EnvVar", "MCPHostVar")]
+    strs += [v for v in shared.get("EnvVars", []) if v.startswith("KENAZ_")]
+    strs = [v for v in strs if v]
+    if strs:
+        pats.append((rf'"({alt(strs)})"', "the keychain service, the shared root or an environment variable name"))
+    cookies = [shared.get(k) for k in ("ApprovalsCSRFCookie", "EnrollCookiePrefix") if shared.get(k)]
+    if cookies:
+        # Per-environment CSRF cookies insert the environment after the
+        # first underscore.
+        pats.append((rf"({alt(cookies)})|kenaz_\w+_approvals_csrf", "an approval page cookie name"))
+    ports = [str(p) for p in shared.get("RelayPorts", []) if p]
+    if ports:
+        pats.append((rf"(?<![\w.])({alt(ports)})(?![\w.])", "a relay port"))
+    return [(re.compile(p), what) for p, what in pats]
+
+
 IDENTITY_EXEMPT_DIRS = ("internal/variant/", "test/", "plugin/")
 
 
@@ -315,6 +376,7 @@ def go_code(text):
 
 
 def check_identity_literals(root, errs):
+    literals = identity_literals(root)
     for src in sorted(root.rglob("*.go")):
         rel = src.relative_to(root).as_posix()
         if src.name.endswith("_test.go") or rel.startswith(IDENTITY_EXEMPT_DIRS):
@@ -322,10 +384,10 @@ def check_identity_literals(root, errs):
         if any(part in LEGACY_SKIP_DIRS for part in src.relative_to(root).parts):
             continue
         for n, line in enumerate(go_code(src.read_text()).splitlines(), 1):
-            for pat, what in IDENTITY_LITERALS:
+            for pat, what in literals:
                 m = pat.search(line)
                 if m:
-                    errs.append(f"{rel}:{n}: {m.group(0)!r} spells out {what}; use variant.Current (internal/variant)")
+                    errs.append(f"{rel}:{n}: {m.group(0)!r} spells out {what}; use variant.Current or variant.Shared (internal/variant)")
 
 
 def check_names(root):

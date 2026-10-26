@@ -159,6 +159,8 @@ func LoadBundle(root string) (*Bundle, error) {
 		return nil, fmt.Errorf("%s: %v", BundleFile, err)
 	}
 	switch {
+	case m.Schema == 1 && m.Name != variant.Current.BundleName && otherVariant(m.Name):
+		return nil, fmt.Errorf("%s is a %s bundle: %s registers only %s bundles", abs, m.Name, variant.Current.Binary, variant.Current.BundleName)
 	case m.Schema != 1 || m.Name != variant.Current.BundleName:
 		return nil, fmt.Errorf("%s: unsupported bundle (schema %d, name %q)", BundleFile, m.Schema, m.Name)
 	case m.Version == "":
@@ -240,6 +242,9 @@ func LoadBundle(root string) (*Bundle, error) {
 			return nil, fmt.Errorf("bundle lacks %s", rel)
 		}
 	}
+	if err := checkIdentity(verified); err != nil {
+		return nil, err
+	}
 	b := &Bundle{Root: abs, Version: m.Version, OS: m.OS, Arch: m.Arch, Exe: filepath.Join(abs, filepath.FromSlash(m.Executable)), OpenCode: m.OpenCode,
 		verified: verified}
 	b.Launch = StablePath(b.Exe)
@@ -276,6 +281,53 @@ func LoadBundle(root string) (*Bundle, error) {
 		}
 	}
 	return b, nil
+}
+
+// otherVariant reports whether name is another build variant's bundle.
+func otherVariant(name string) bool {
+	for _, v := range variant.Variants {
+		if v.BundleName == name && v.Name != variant.Current.Name {
+			return true
+		}
+	}
+	return false
+}
+
+// checkIdentity refuses a bundle whose plugin or marketplace is another
+// build variant's: each build registers only its own plugin, so a
+// kenaz-dev binary never registers a kenaz bundle, and the reverse.
+func checkIdentity(verified map[string][]byte) error {
+	id := variant.Current
+	wrong := func(what, got, want string) error {
+		return fmt.Errorf("the bundle's %s is %q, not %q: %s registers only %s bundles", what, got, want, id.Binary, id.BundleName)
+	}
+	var mk struct {
+		Name    string
+		Plugins []struct{ Name string }
+	}
+	if err := json.Unmarshal(verified[".claude-plugin/marketplace.json"], &mk); err != nil {
+		return fmt.Errorf(".claude-plugin/marketplace.json: %v", err)
+	}
+	if mk.Name != id.Marketplace {
+		return wrong("marketplace", mk.Name, id.Marketplace)
+	}
+	found := false
+	for _, p := range mk.Plugins {
+		found = found || p.Name == id.Plugin
+	}
+	if !found {
+		return fmt.Errorf("the bundle's marketplace has no %q plugin: %s registers only %s bundles", id.Plugin, id.Binary, id.BundleName)
+	}
+	for _, rel := range []string{"plugin/.claude-plugin/plugin.json", "plugin/.codex-plugin/plugin.json"} {
+		var pj struct{ Name string }
+		if err := json.Unmarshal(verified[rel], &pj); err != nil {
+			return fmt.Errorf("%s: %v", rel, err)
+		}
+		if pj.Name != id.Plugin {
+			return wrong("plugin ("+rel+")", pj.Name, id.Plugin)
+		}
+	}
+	return nil
 }
 
 // InstallStateFile marks a release installer's install root: it holds

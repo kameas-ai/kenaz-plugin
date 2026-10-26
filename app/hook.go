@@ -9,6 +9,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemonstate"
 	"github.com/kameas-ai/kenaz-plugin/internal/hook"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // runHook is the harness hook entry point. It must never
@@ -26,6 +27,9 @@ func runHook(env Env, args []string) int {
 	if r, err := env.resolve(""); err == nil {
 		deps.Daemon = relayDaemon{stateDir: r.StateDir, spawn: r.spawner(env)}
 		deps.Banners = consentBanners{env: env, r: r}
+		if variant.Current.StaffOnly {
+			deps.Tag = "[" + variant.Current.BannerTag + " · " + string(r.Env) + "]"
+		}
 		// reloadSkills is emitted only under Claude Code (hook.Run checks).
 		deps.Skills = skillsReload{stateDir: r.StateDir}
 	}

@@ -200,6 +200,9 @@ func errCode(err error) string {
 type Options struct {
 	// Dir holds the pending-write store (created 0700).
 	Dir string
+	// Env is the relay's Fleet environment (it names the page's CSRF
+	// cookie; "" is prod).
+	Env string
 	// Identity reports the active session (required).
 	Identity IdentitySource
 	// Verifier performs browser identity verification for enrollment;

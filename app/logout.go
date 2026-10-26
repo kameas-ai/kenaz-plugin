@@ -52,7 +52,7 @@ func runLogout(env Env, args []string) int {
 	}
 	// managed skill directories go with the session, even when the
 	// daemon was not running to purge its lane.
-	if err := purgeSkills(env.Provider, r.StateDir); err != nil {
+	if err := purgeSkills(env.Provider, r.Env, r.StateDir); err != nil {
 		errs = append(errs, fmt.Errorf("remove managed skills: %w", err))
 	}
 	if err := env.keyStore().Delete(string(r.Env)); err != nil {

@@ -108,9 +108,9 @@ func TestTemplatePlaceholders(t *testing.T) {
 	}
 }
 
-// approvedDescription is the Claude Desktop extension description Kameas
-// approved. Use it exactly.
-const approvedDescription = "Kenaz, a Kameas AI product. Brings your organization's Kameas Fleet skills, team context and your Kenaz memory to Claude Desktop. Sends no usage telemetry. Claude, Claude Code and Claude Desktop are trademarks of Anthropic, PBC. OpenAI, ChatGPT and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI."
+// approvedDescription is the Claude desktop app extension description
+// Kameas approved. Use it exactly.
+const approvedDescription = "Kenaz, a Kameas AI product. Brings your organization's Kameas Fleet skills, team context and your Kenaz memory to chat in the Claude desktop app. Sends no usage telemetry. Requires the kenaz program and a Kameas Fleet account. Claude is a trademark of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic."
 
 func TestRenderEveryPlatform(t *testing.T) {
 	var plugin struct {

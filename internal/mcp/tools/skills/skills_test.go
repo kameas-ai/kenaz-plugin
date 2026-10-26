@@ -168,7 +168,7 @@ func TestInstallSearchUninstall(t *testing.T) {
 	if !strings.Contains(out["message"].(string), "allowed-tools") {
 		t.Fatalf("install must say what was stripped: %v", out)
 	}
-	doc, err := os.ReadFile(filepath.Join(home, ".claude", "skills", "kameas-team-review", "SKILL.md"))
+	doc, err := os.ReadFile(filepath.Join(home, ".claude", "skills", sk.DirPrefixFor("dev")+"team-review", "SKILL.md"))
 	if err != nil || strings.Contains(string(doc), "allowed-tools") {
 		t.Fatalf("installed doc = %q err=%v", doc, err)
 	}
@@ -190,14 +190,14 @@ func TestInstallSearchUninstall(t *testing.T) {
 	if isErr || out["removed"].(float64) != 2 {
 		t.Fatalf("uninstall = %v", out)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "kameas-team-review")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", sk.DirPrefixFor("dev")+"team-review")); !os.IsNotExist(err) {
 		t.Fatal("codex copy not removed")
 	}
 }
 
 func TestUninstallMandatedRefused(t *testing.T) {
 	f, d, home := setup(t)
-	m := &sk.Materializer{Roots: sk.DetectRoots(home)}
+	m := &sk.Materializer{Roots: sk.DetectRoots(home), Env: string(d.Env)}
 	it := f.items["cat-1"]
 	if r := m.Install(sk.Item{CatalogID: "cat-1", Kind: it.Kind, Slug: it.Slug, Version: "2", Payload: it.Payload, Source: sk.SourceMandated}); r.Status != fleetapi.AckApplied {
 		t.Fatalf("seed: %+v", r)
@@ -207,7 +207,7 @@ func TestUninstallMandatedRefused(t *testing.T) {
 	if !isErr || !strings.Contains(out["error"].(string), "organization requires") {
 		t.Fatalf("uninstall mandated = %v", out)
 	}
-	if _, err := sk.ReadMarker(filepath.Join(home, ".claude", "skills", "kameas-team-review")); err != nil {
+	if _, err := sk.ReadMarker(filepath.Join(home, ".claude", "skills", sk.DirPrefixFor("dev")+"team-review")); err != nil {
 		t.Fatal("mandated skill removed")
 	}
 }
@@ -345,7 +345,7 @@ func TestInstallUnderClaudeDesktopReturnsSkillText(t *testing.T) {
 	if isErr {
 		t.Fatalf("install: %v", out)
 	}
-	disk, err := os.ReadFile(filepath.Join(home, ".claude", "skills", "kameas-team-review", "SKILL.md"))
+	disk, err := os.ReadFile(filepath.Join(home, ".claude", "skills", sk.DirPrefixFor("dev")+"team-review", "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

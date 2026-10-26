@@ -31,6 +31,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/forward"
 	"github.com/kameas-ai/kenaz-plugin/internal/project"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // laneFleet is an in-memory Fleet for the telemetry-lane end-to-end test.
@@ -400,7 +401,7 @@ func TestOptinRefusesPipedAnswers(t *testing.T) {
 	var out, errb bytes.Buffer
 	env := Env{Provider: f, Stdout: &out, Stderr: &errb, Ctx: context.Background(), KeyStore: &spool.Memory{},
 		Getenv: func(k string) string {
-			if k == "KENAZ_ENV" {
+			if k == variant.Shared.EnvVar {
 				return "dev"
 			}
 			return ""

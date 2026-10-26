@@ -17,6 +17,8 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/bundle"
 	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemonstate"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant/varianttest"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -24,11 +26,13 @@ var update = flag.Bool("update", false, "rewrite golden files")
 // repoRoot is the module root, two levels up from this package.
 var repoRoot, _ = filepath.Abs(filepath.Join("..", ".."))
 
-// built holds the binaries TestMain builds once: the kenaz build under
-// test and the fake host CLIs.
+// built holds the binaries TestMain builds once: every build variant
+// (kenaz, and kenaz-dev with -tags kenaz_dev), the one under test (this
+// test binary's variant) and the fake host CLIs.
 var built struct {
 	dir   string
-	kenaz string
+	bins  map[string]string // by variant name
+	kenaz string            // variant.Current's binary
 	hosts string
 	err   error
 }
@@ -63,9 +67,20 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	built.dir = dir
-	built.kenaz = filepath.Join(dir, "kenaz", exe("kenaz"))
+	built.bins = map[string]string{}
 	built.hosts = filepath.Join(dir, "hosts")
-	built.err = goBuild(built.kenaz, "./cmd/kenaz", buildTags...)
+	for _, v := range variant.Variants {
+		var tags []string
+		if v.Name == variant.KenazDev.Name {
+			tags = []string{"kenaz_dev"}
+		}
+		bin := filepath.Join(dir, v.Name, exe(v.Binary))
+		if built.err == nil {
+			built.err = goBuild(bin, "./cmd/kenaz", tags...)
+		}
+		built.bins[v.Name] = bin
+	}
+	built.kenaz = built.bins[variant.Current.Name]
 	if built.err == nil {
 		built.err = goBuild(filepath.Join(built.hosts, exe("claude")), "./test/variant/fakehost")
 	}
@@ -115,7 +130,8 @@ func (m *machine) environ() []string {
 	}
 }
 
-// layout is where one build keeps its files on this machine.
+// layout is where the builds keep their files on this machine: one root,
+// one state directory per Fleet environment, shared by every build.
 type layout struct {
 	ConfigDir string
 	StateRoot string
@@ -123,19 +139,11 @@ type layout struct {
 
 func (l layout) state(env string) string { return filepath.Join(l.StateRoot, env) }
 
-// layoutFor is the expected platform layout for a build whose config
-// root is kameas/<dir>.
-func (m *machine) layoutFor(dir string) layout {
-	switch runtime.GOOS {
-	case "darwin":
-		base := filepath.Join(m.home, "Library", "Application Support", "kameas", dir)
-		return layout{ConfigDir: base, StateRoot: filepath.Join(base, "state")}
-	default:
-		return layout{
-			ConfigDir: filepath.Join(m.home, ".config", "kameas", dir),
-			StateRoot: filepath.Join(m.home, ".local", "state", "kameas", dir),
-		}
-	}
+// layout is ~/.kenaz/plugin on every platform (as the harness uses
+// ~/.kenaz/harness).
+func (m *machine) layout() layout {
+	root := filepath.Join(m.home, ".kenaz", "plugin")
+	return layout{ConfigDir: root, StateRoot: root}
 }
 
 // prepare seeds what a signed-in machine has before setup: the file
@@ -230,11 +238,13 @@ func (m *machine) installBundle(name, bin string, tree func(dst string)) string 
 	return x
 }
 
-// publicTree copies the repository's plugin sources into a bundle root.
-func publicTree(t *testing.T) func(string) {
+// pluginTree writes the repository's plugin sources, as variant v ships
+// them, into a bundle root.
+func pluginTree(t *testing.T, v variant.Identity) func(string) {
 	return func(dst string) {
-		copyTree(t, filepath.Join(repoRoot, "plugin"), filepath.Join(dst, "plugin"))
-		copyTree(t, filepath.Join(repoRoot, ".claude-plugin"), filepath.Join(dst, ".claude-plugin"))
+		if err := varianttest.WritePluginTree(repoRoot, dst, v); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

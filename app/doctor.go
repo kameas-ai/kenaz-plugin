@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // runDoctor reports the build flavor first, then local checks.
@@ -27,6 +29,9 @@ func runDoctor(env Env, args []string) int {
 	}
 	w := env.Stdout
 	fmt.Fprintf(w, "build flavor: %s\n", flavorLine(env.Provider))
+	if variant.Current.StaffOnly {
+		fmt.Fprintf(w, "build variant: %s (%s)\n", variant.Current.Name, staffOnlyNote)
+	}
 	if env.Provider.Flavor() == fleetapi.FlavorUnofficial {
 		fmt.Fprintln(w, "note: "+fleetapi.ErrUnofficialBuild.Error())
 	}
@@ -41,7 +46,7 @@ func runDoctor(env Env, args []string) int {
 	}
 	warn := func(name, msg string) { fmt.Fprintf(w, "[warn] %-18s %s\n", name, msg) }
 
-	r, err := env.resolve(*envName)
+	r, err := env.resolveState(*envName)
 	check("environment", err, fmt.Sprintf("%s (from %s)", r.Env, r.Source))
 	if err != nil {
 		return ExitError
@@ -50,6 +55,14 @@ func runDoctor(env Env, args []string) int {
 	err = os.WriteFile(probe, []byte("ok"), 0o600)
 	os.Remove(probe)
 	check("state directory", err, "writable")
+	if lp, err := config.Layout(env.getenv); err == nil {
+		for _, o := range lp.OldInUse() {
+			fmt.Fprintf(w, "[info] %-18s %s is used where an earlier release left it; run `%s migrate` with your AI apps closed to move it to %s (on another volume it stays)\n", "files", o, variant.Current.Binary, lp.StateRoot)
+		}
+		for _, u := range lp.Unused() {
+			fmt.Fprintf(w, "[info] %-18s %s\n", "old files", unusedAdvice(u, lp.Current(), false))
+		}
+	}
 
 	_, kerr := env.keyStore().Get(string(r.Env))
 	if errors.Is(kerr, spool.ErrNoKey) {
@@ -99,7 +112,9 @@ func runDoctor(env Env, args []string) int {
 	}
 
 	c := connectDaemon(env.Ctx, r.StateDir)
-	if c != nil {
+	if r.Conflict != nil {
+		check("relay", r.Conflict, "")
+	} else if c != nil {
 		check("relay", nil, fmt.Sprintf("healthy on 127.0.0.1:%d", c.Info.Port))
 		if c.Info.Port != daemon.DefaultPorts[0] {
 			warn("receiver port", fmt.Sprintf("bound %d, not %d; `kenaz setup` writes the bound port", c.Info.Port, daemon.DefaultPorts[0]))

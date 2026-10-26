@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant/varianttest"
 )
 
 // Render changes launch commands only: the rendered hooks and MCP files
@@ -14,31 +17,33 @@ import (
 // executable, and nothing added or removed.
 func TestRenderOnlyRewritesLaunchCommands(t *testing.T) {
 	root := filepath.Join("..", "..")
-	exe := filepath.Join(t.TempDir(), "Kenaz Bundle", "bin", "kenaz")
+	bin := variant.Current.Binary
+	exe := filepath.Join(t.TempDir(), "Kenaz Bundle", "bin", bin)
 	abs, _ := filepath.Abs(root)
+	tree := readTree(t, abs)
 	b := &Bundle{Root: abs, Version: "0", OS: "x", Arch: "y", Exe: exe, verified: readTree(t, abs)}
 	dir := filepath.Join(t.TempDir(), "r")
 	if _, err := Render(b, dir, true); err != nil {
 		t.Fatal(err)
 	}
-	load := func(p string) any {
+	parse := func(raw []byte) any {
 		var v any
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			t.Fatal(err)
-		}
 		if err := json.Unmarshal(raw, &v); err != nil {
 			t.Fatal(err)
 		}
 		return v
 	}
 	for _, rel := range []string{".mcp.json", ".codex-mcp.json", "hooks/hooks.json"} {
-		orig := load(filepath.Join(root, "plugin", filepath.FromSlash(rel)))
-		got := load(filepath.Join(dir, "plugin", filepath.FromSlash(rel)))
+		orig := parse(tree["plugin/"+rel])
+		raw, err := os.ReadFile(filepath.Join(dir, "plugin", filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := parse(raw)
 		// Undo the one permitted edit and compare whole documents.
-		raw, _ := json.Marshal(got)
-		s := strings.ReplaceAll(string(raw), mustJSONInner(`"`+exe+`"`), "kenaz")
-		s = strings.ReplaceAll(s, mustJSONInner(exe), "kenaz")
+		raw, _ = json.Marshal(got)
+		s := strings.ReplaceAll(string(raw), mustJSONInner(`"`+exe+`"`), bin)
+		s = strings.ReplaceAll(s, mustJSONInner(exe), bin)
 		var back any
 		json.Unmarshal([]byte(s), &back)
 		if !reflect.DeepEqual(orig, back) {
@@ -46,22 +51,16 @@ func TestRenderOnlyRewritesLaunchCommands(t *testing.T) {
 		}
 	}
 	// Every other plugin file is copied byte for byte.
-	filepath.WalkDir(filepath.Join(root, "plugin"), func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
+	for rel, a := range tree {
+		switch rel {
+		case "plugin/.mcp.json", "plugin/.codex-mcp.json", "plugin/hooks/hooks.json":
+			continue
 		}
-		rel, _ := filepath.Rel(filepath.Join(root, "plugin"), p)
-		switch filepath.ToSlash(rel) {
-		case ".mcp.json", ".codex-mcp.json", "hooks/hooks.json":
-			return nil
-		}
-		a, _ := os.ReadFile(p)
-		c, err := os.ReadFile(filepath.Join(dir, "plugin", rel))
+		c, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
 		if err != nil || string(a) != string(c) {
 			t.Errorf("%s not copied verbatim", rel)
 		}
-		return nil
-	})
+	}
 }
 
 func mustJSONInner(s string) string {
@@ -80,20 +79,15 @@ func TestHookQuoteRefusesExpansion(t *testing.T) {
 	}
 }
 
-// readTree loads the files Render copies from a source tree (the repo),
-// standing in for LoadBundle's verified bytes.
+// readTree loads the files Render copies from the repo's plugin sources as
+// this build variant ships them, standing in for LoadBundle's verified
+// bytes.
 func readTree(t *testing.T, root string) map[string][]byte {
 	t.Helper()
-	out := map[string][]byte{}
-	filepath.WalkDir(filepath.Join(root, "plugin"), func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		rel, _ := filepath.Rel(root, p)
-		out[filepath.ToSlash(rel)], _ = os.ReadFile(p)
-		return nil
-	})
-	out[".claude-plugin/marketplace.json"], _ = os.ReadFile(filepath.Join(root, ".claude-plugin", "marketplace.json"))
+	out, err := varianttest.PluginTree(root, variant.Current)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return out
 }
 
@@ -101,5 +95,34 @@ func readTree(t *testing.T, root string) map[string][]byte {
 func TestRenderNeedsVerifiedBundle(t *testing.T) {
 	if _, err := Render(&Bundle{Root: t.TempDir(), Exe: "/x/kenaz"}, t.TempDir(), false); err == nil {
 		t.Fatal("rendered an unverified bundle")
+	}
+}
+
+// A bundle.json that names another build's bundle is refused with a
+// message that says so (issue #34 F5); an unknown name is an unsupported
+// bundle.
+func TestLoadBundleOtherVariantName(t *testing.T) {
+	for _, v := range variant.Variants {
+		root := t.TempDir()
+		man := `{"schema":1,"name":"` + v.BundleName + `","version":"1","os":"x","arch":"y"}`
+		if err := os.WriteFile(filepath.Join(root, BundleFile), []byte(man), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadBundle(root)
+		other := "is a " + v.BundleName + " bundle: " + variant.Current.Binary + " registers only " + variant.Current.BundleName + " bundles"
+		switch {
+		case v.Name == variant.Current.Name:
+			// Its own name gets past the identity check, to the platform one.
+			if err == nil || strings.Contains(err.Error(), "registers only") {
+				t.Errorf("own bundle: %v", err)
+			}
+		case err == nil || !strings.Contains(err.Error(), other):
+			t.Errorf("%s bundle: %v", v.Name, err)
+		}
+	}
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, BundleFile), []byte(`{"schema":1,"name":"someone-else"}`), 0o644)
+	if _, err := LoadBundle(root); err == nil || !strings.Contains(err.Error(), "unsupported bundle") {
+		t.Errorf("unknown name: %v", err)
 	}
 }

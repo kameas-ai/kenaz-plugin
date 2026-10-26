@@ -78,6 +78,15 @@ func hostCLI(h harness) string {
 	return "codex"
 }
 
+// registered is the rendered plugin path the host was given: Rendered as
+// recorded, before loadState rebased it onto a moved state directory.
+func (r *BundleReg) registered() string {
+	if r.formerRendered != "" {
+		return r.formerRendered
+	}
+	return r.Rendered
+}
+
 func registerCmds(h harness, rendered string) [][]string {
 	if h == harnessClaude {
 		return [][]string{{"plugin", "marketplace", "add", rendered}, {"plugin", "install", bundlePluginID}}

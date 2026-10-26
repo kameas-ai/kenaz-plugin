@@ -13,6 +13,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/internal/pathenv"
 	"github.com/kameas-ai/kenaz-plugin/internal/setup"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // fakeInit records the steps kenaz init runs.
@@ -111,7 +112,7 @@ func TestInitFullFlow(t *testing.T) {
 	s := out.String()
 	for _, w := range []string{
 		"Add " + dir + " to PATH in " + filepath.Join(home, ".zshrc") + "? [y/N] ",
-		"+# >>> kenaz PATH >>>",
+		"+# >>> " + variant.Current.Binary + " PATH >>>",
 		"Claude Desktop            found (/Applications/Claude.app)",
 		"Claude Desktop (Code tab): covered by Claude Code setup",
 		"ChatGPT desktop (Codex): covered by Codex setup",
@@ -153,7 +154,7 @@ func TestInitAlreadyOnPathAndYes(t *testing.T) {
 	if strings.Join(f.calls, "|") != "setup claude --yes|summary " {
 		t.Fatalf("%v", f.calls)
 	}
-	if !strings.Contains(out.String(), "kenaz is on PATH") {
+	if !strings.Contains(out.String(), variant.Current.Binary+" is on PATH") {
 		t.Fatal(out.String())
 	}
 	if _, err := os.Stat(filepath.Join(home, ".bashrc")); !os.IsNotExist(err) {
@@ -296,7 +297,7 @@ func TestInitProfileNotEditable(t *testing.T) {
 	cases := map[string]func(rc string){
 		"read-only": func(rc string) { os.WriteFile(rc, []byte("x\n"), 0o444) },
 		"unterminated block": func(rc string) {
-			os.WriteFile(rc, []byte("# >>> kenaz PATH >>>\nexport PATH=/old:$PATH\n"), 0o600)
+			os.WriteFile(rc, []byte("# >>> "+variant.Current.Binary+" PATH >>>\nexport PATH=/old:$PATH\n"), 0o600)
 		},
 		"dangling symlink": func(rc string) { os.Symlink(filepath.Join(filepath.Dir(rc), "gone"), rc) },
 	}
@@ -365,7 +366,7 @@ func TestInitMacBashKeepsProfile(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".bash_profile")); !os.IsNotExist(err) {
 		t.Fatal("created .bash_profile in front of .profile")
 	}
-	if got, _ := os.ReadFile(filepath.Join(home, ".profile")); !strings.Contains(string(got), "kenaz PATH") {
+	if got, _ := os.ReadFile(filepath.Join(home, ".profile")); !strings.Contains(string(got), variant.Current.Binary+" PATH") {
 		t.Fatalf("%s", got)
 	}
 }

@@ -23,9 +23,30 @@ var ThirdPartyNotices string
 var Notice string
 
 // Disclaimer is the third-party trademark disclaimer. It must appear
-// verbatim in README.md, at the end of plugin.json's description, and in
-// the marketplace entry's description.
+// verbatim in README.md and plugin/README.md and at the end of
+// plugin/.codex-plugin/plugin.json's description (read by Codex).
 const Disclaimer = "Claude and Claude Code are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz for Claude Code and Codex is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI."
+
+// DisclaimerGAnthropic is the trademark notice for surfaces that name only
+// Anthropic products. It ends the Claude plugin manifest's description
+// (Claude Code and Cowork).
+const DisclaimerGAnthropic = "Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic."
+
+// DisclaimerGAnthropicOpenAI is the trademark notice for surfaces that name
+// both Anthropic and OpenAI products. It ends the marketplace descriptions.
+const DisclaimerGAnthropicOpenAI = "Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI."
+
+// ClaudePluginDescription is the approved description in
+// plugin/.claude-plugin/plugin.json, read by Claude Code and Cowork and
+// shown in the Claude directory.
+const ClaudePluginDescription = "Kenaz, a Kameas AI product. Connects Claude Code and Cowork on your computer to your organization's Kameas Fleet: shared skills, team context and your private memory, and in Claude Code, usage summaries you choose to share. Requires the kenaz program and a Kameas Fleet account. " + DisclaimerGAnthropic
+
+// MarketplaceDescription is the approved description of the kenaz entry in
+// .claude-plugin/marketplace.json, imported by Claude Code and Codex.
+const MarketplaceDescription = "Kenaz, a Kameas AI product. Connects AI tools such as Claude Code, Cowork and Codex to your organization's Kameas Fleet: shared skills, team context, your private memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. " + DisclaimerGAnthropicOpenAI
+
+// MarketplaceMetadataDescription is the marketplace's own description.
+const MarketplaceMetadataDescription = "Kenaz plugins. " + DisclaimerGAnthropicOpenAI
 
 // OpenCoreStatement is the approved open-source wording.
 // Never claim "fully open source". Usable only while this repository is

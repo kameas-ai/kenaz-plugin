@@ -2,7 +2,7 @@ $ setup claude --yes
 exit 0
 --- stdout
 Setup will register the Kenaz plugin from $ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM:
-  claude plugin marketplace add $HOME/Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM
+  claude plugin marketplace add $HOME/.kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM
   claude plugin install kenaz@kenaz
 --- $HOME/.claude/settings.json
 +++ $HOME/.claude/settings.json (after kenaz setup)
@@ -23,13 +23,13 @@ Setup will register the Kenaz plugin from $ROOT/Kenaz Bundles/kenaz_$VERSION_$PL
 +}
 Registered the Kenaz plugin from $ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM in Claude Code (launching $ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM/bin/kenaz).
 Configured Claude Code to send telemetry to the Kenaz relay on 127.0.0.1:4318. Restart running sessions to pick it up.
-Kenaz memory is on: your AI tool can save notes to $HOME/Library/Application Support/kameas/kenaz/state/memory/memory.db on this device. They stay on this device unless you turn on memory sync (`kenaz memory sync enable`). Turn off: `kenaz memory disable`. Clear: `kenaz memory purge`.
+Kenaz memory is on: your AI tool can save notes to $HOME/.kenaz/plugin/memory/memory.db on this device. They stay on this device unless you turn on memory sync (`kenaz memory sync enable`). Turn off: `kenaz memory disable`. Clear: `kenaz memory purge`.
 --- stderr
 $ setup codex --yes
 exit 0
 --- stdout
 Setup will register the Kenaz plugin from $ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM:
-  codex plugin marketplace add $HOME/Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM
+  codex plugin marketplace add $HOME/.kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM
   codex plugin add kenaz@kenaz
 --- $HOME/.codex/config.toml
 +++ $HOME/.codex/config.toml (after kenaz setup)
@@ -52,7 +52,7 @@ Configured Codex to send telemetry to the Kenaz relay on 127.0.0.1:4318. Restart
   "extraKnownMarketplaces": {
     "kenaz": {
       "source": {
-        "path": "$HOME/Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM",
+        "path": "$HOME/.kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM",
         "source": "directory"
       }
     }
@@ -73,7 +73,7 @@ Configured Codex to send telemetry to the Kenaz relay on 127.0.0.1:4318. Restart
 == .codex/config.toml
 [marketplaces.kenaz]
 source_type = "local"
-source = "$HOME/Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM"
+source = "$HOME/.kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM"
 [plugins."kenaz@kenaz"]
 enabled = true
 
@@ -83,13 +83,13 @@ trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", p
 metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }
 log_user_prompt = false
 tool_result = { max_bytes = 0 }
-== Library/Application Support/kameas/kenaz/state/credentials/STORE
+== .kenaz/plugin/credentials/STORE
 files
-== Library/Application Support/kameas/kenaz/state/memory-disclosure-shown
+== .kenaz/plugin/memory-disclosure-shown
 $TIME
-== Library/Application Support/kameas/kenaz/state/prod/daemon.json
+== .kenaz/plugin/prod/daemon.json
 {"pid":1,"port":4318,"version":"test","started_at":"$TIME","nonce":"n"}
-== Library/Application Support/kameas/kenaz/state/prod/setup-state.json
+== .kenaz/plugin/prod/setup-state.json
 {
   "version": 1,
   "claude": {
@@ -142,7 +142,7 @@ $TIME
     "bundle": {
       "root": "$ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM",
       "version": "$VERSION",
-      "rendered": "$HOME/Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM",
+      "rendered": "$HOME/.kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM",
       "digest": "$SHA256",
       "launcher": "$ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM/bin/kenaz"
     }
@@ -177,13 +177,13 @@ $TIME
     "bundle": {
       "root": "$ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM",
       "version": "$VERSION",
-      "rendered": "$HOME/Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM",
+      "rendered": "$HOME/.kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM",
       "digest": "$SHA256",
       "launcher": "$ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM/bin/kenaz"
     }
   }
 }
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/.claude-plugin/marketplace.json
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/.claude-plugin/marketplace.json
 {
   "name": "kenaz",
   "owner": {
@@ -191,26 +191,26 @@ $TIME
     "url": "https://kameas.ai"
   },
   "metadata": {
-    "description": "Kenaz plugins. Claude and Claude Code are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz for Claude Code and Codex is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI."
+    "description": "Kenaz plugins. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI."
   },
   "plugins": [
     {
       "name": "kenaz",
       "source": "./plugin",
       "version": "$VERSION",
-      "description": "Kenaz, a Kameas AI product. Connects your Claude Code and Codex sessions to your organization's Kameas Fleet. Claude and Claude Code are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz for Claude Code and Codex is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
+      "description": "Kenaz, a Kameas AI product. Connects AI tools such as Claude Code, Cowork and Codex to your organization's Kameas Fleet: shared skills, team context, your private memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
       "license": "Apache-2.0",
       "homepage": "https://kameas.ai"
     }
   ]
 }
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/.kenaz-rendered
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/.kenaz-rendered
 $SHA256
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.claude-plugin/plugin.json
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.claude-plugin/plugin.json
 {
   "name": "kenaz",
   "version": "$VERSION",
-  "description": "Kenaz, a Kameas AI product. Connects your Claude Code and Codex sessions to your organization's Kameas Fleet. Claude and Claude Code are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz for Claude Code and Codex is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
+  "description": "Kenaz, a Kameas AI product. Connects Claude Code and Cowork on your computer to your organization's Kameas Fleet: shared skills, team context and your private memory, and in Claude Code, usage summaries you choose to share. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic.",
   "author": {
     "name": "Kameas AI, Inc.",
     "url": "https://kameas.ai"
@@ -238,7 +238,7 @@ $SHA256
     }
   }
 }
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.codex-mcp.json
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.codex-mcp.json
 {
   "mcpServers": {
     "kenaz": {
@@ -272,7 +272,7 @@ $SHA256
     }
   }
 }
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.codex-plugin/plugin.json
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.codex-plugin/plugin.json
 {
   "name": "kenaz",
   "version": "$VERSION",
@@ -285,7 +285,7 @@ $SHA256
   "license": "Apache-2.0",
   "mcpServers": "./.codex-mcp.json"
 }
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.mcp.json
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.mcp.json
 {
   "mcpServers": {
     "kenaz": {
@@ -300,14 +300,38 @@ $SHA256
     }
   }
 }
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/README.md
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/README.md
 # Kenaz plugin
 
 *Kenaz, a Kameas AI product.*
 
 Kenaz for Claude Code and Codex. One plugin package, loaded by both harnesses from `.claude-plugin/`.
 
-It needs the `kenaz` binary on your `PATH` and a Kameas Fleet sign-in (`kenaz login`). Install the binary first, from the Kameas downloads page, with your package manager, or as provided by your administrator. The plugin's MCP server and hooks run `kenaz` directly.
+It gives your AI tool your organization's shared skills, team context and a private memory from Kameas Fleet, and in Claude Code it can share usage summaries you choose. Its MCP server and hooks run the `kenaz` program directly, so `kenaz` must be on your `PATH`, and you need a Kameas Fleet sign-in (`kenaz login`).
+
+### Before you install: the `kenaz` program
+
+The plugin runs the `kenaz` program on your computer, so install that first. One line does it:
+
+- macOS and Linux: `curl -fsSL https://downloads.kameas.ai/kenaz-plugin/install.sh | sh`
+- Windows (PowerShell): `irm https://downloads.kameas.ai/kenaz-plugin/install.ps1 | iex`
+
+Then run `kenaz init`, as the installer tells you. Other ways to install are on https://kenaz.kameas.ai/, or your administrator may provide it. You also need an account in a Kameas Fleet organization that has joined the Kenaz early-access program.
+
+### Privacy Policy
+
+Our Privacy Policy is at https://kenaz.kameas.ai/privacy.html, and the full list of what Kenaz can send is at https://kenaz.kameas.ai/telemetry. In short:
+
+- **Where data goes:** only to your organization's Kameas Fleet, run by Kameas AI, Inc. Kenaz sends nothing to any other company (see "Your AI tool" below). The `kenaz` program sends nothing to the companies that make your AI tools.
+- **Signing in and your device:** when you sign in, Kenaz registers this device with your organization's Fleet: an opaque device ID, a display name you control, the operating system, architecture and software version. Before you sign in, nothing is sent.
+- **Usage telemetry, only the classes you turn on:** session counts and timing, tool kinds, error categories, model names, token counts and estimated cost, linked to your account and device. Every class is off until you turn it on (`kenaz optin`). It comes from your AI tool's own OpenTelemetry export, which `kenaz setup` points at the `kenaz` program on your computer, not from the plugin's hooks or tools. Prompts, AI responses, tool inputs and outputs, code, file contents and file paths are never sent.
+- **Memory:** notes are kept on your device. They are sent to Kameas Fleet, for your account alone, only if you turn on memory sync, which is off until you turn it on and shows its own notice first. Your organization's administrators and Kameas staff have no view of synced notes.
+- **Skills and team context:** searches, and skills or context you open, are sent to your Fleet as requests. Content is sent only when you publish a skill or share a note, and only after you approve the exact content on the local approval page (see [Approving writes](https://github.com/kameas-ai/kenaz-plugin#approving-writes)).
+- **Your AI tool:** anything Kenaz gives your AI tool during a session (a memory note, a skill, team context, or teammates' names where your administrator allows it) becomes part of that session and is handled by the company that makes the tool, like the rest of your conversation.
+
+For the usage, memory, skills and context data above, your organization is the controller and Kameas processes it on its behalf. Kameas is the controller for account and sign-in security data, as the Privacy Policy explains. Questions: dpo@kameas.ai.
+
+At session start the hooks start the local `kenaz` relay and give your AI tool a short index of your memory note titles from this device and, when you are signed in, a Fleet status line. Signed out, they send nothing to Kameas Fleet, and with no notes on this device they print nothing.
 
 `kenaz` is the end-user plugin component. It is not the Kameas Fleet admin CLI (`fleet-admin`), a staff-only tool for operating the Kameas Fleet service. `kenaz` never uses AWS credentials; it signs in only with your own Kameas account.
 
@@ -316,29 +340,29 @@ Memory: your agent can save short notes on this device with the `memory_*` tools
 On Windows, Claude Code and Codex start the MCP server without a shell, so `kenaz` must resolve to `kenaz.exe` on your `PATH` (the Windows installer or release zip). A script launcher such as `kenaz.cmd` is not found there.
 
 Claude and Claude Code are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz for Claude Code and Codex is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/commands/login.md
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/commands/login.md
 ---
 description: Sign in to Kameas Fleet
 ---
 Run `kenaz login` in the terminal (pass `--env` if the user asked for a non-production environment) and tell the user to finish sign-in in the browser window that opens. Afterwards call the `fleet_status` tool and summarize the result.
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/commands/share.md
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/commands/share.md
 ---
 description: Share a note you wrote with your team in Kameas Fleet
 argument-hint: "[what to share]"
 ---
 Draft the note to share based on: $ARGUMENTS. Show the exact title and text to the user, ask which team, and only then call `context_share`. Never include code, secrets or content the user did not ask to share.
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/commands/skills.md
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/commands/skills.md
 ---
 description: Find, install or remove skills from your organization's Kameas Fleet catalog
 argument-hint: "[search terms | install <slug> | uninstall <slug>]"
 ---
 Use `skills_search`, `skills_install` or `skills_uninstall` for: $ARGUMENTS. Show results as a short list with each skill's description and whether it is mandated by an administrator.
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/commands/status.md
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/commands/status.md
 ---
 description: Show Kameas Fleet sign-in, telemetry and notice status
 ---
 Call the `fleet_status` tool and summarize: signed-in organization, which telemetry classes are on, any pending notices (the user reviews them in Kameas Fleet), and whether uploads are held (org paused or lockdown).
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/hooks/hooks.json
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/hooks/hooks.json
 {
   "hooks": {
     "SessionEnd": [
@@ -365,7 +389,7 @@ Call the `fleet_status` tool and summarize: signed-in organization, which teleme
     ]
   }
 }
-== Library/Application Support/kameas/kenaz/state/prod/setup/bundle/$VERSION_$PLATFORM/plugin/skills/kenaz/SKILL.md
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/skills/kenaz/SKILL.md
 ---
 name: kenaz
 description: Use when the user asks about Kameas Fleet — signing in, telemetry/consent status, finding or sharing skills from their organization's catalog, or searching and sharing team context — or about Kenaz memory (saving and finding notes across sessions, and its optional sync). Explains which kenaz MCP tools to call and what they never do.

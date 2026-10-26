@@ -35,6 +35,7 @@ func normalized(b []byte, root string) []byte {
 }
 
 func TestOpenCodeGolden(t *testing.T) {
+	skipOpenCode(t)
 	cases := []struct{ fixture, golden, env string }{
 		{"", "opencode/absent", ""},
 		{"opencode/existing.json", "opencode/existing", ""},
@@ -82,6 +83,7 @@ func TestOpenCodeGolden(t *testing.T) {
 }
 
 func TestOpenCodeIdempotentAndNoPortNeeded(t *testing.T) {
+	skipOpenCode(t)
 	e, _ := openCodeEnv(t)
 	os.Remove(filepath.Join(e.opts.StateDir, "daemon.json"))
 	e.seed(t, harnessOpenCode, "opencode/existing.json")
@@ -103,6 +105,7 @@ func TestOpenCodeIdempotentAndNoPortNeeded(t *testing.T) {
 // Moving the binary or the relay state re-renders the owned entries in
 // place; undo still restores the original file.
 func TestOpenCodeReapplyAfterMove(t *testing.T) {
+	skipOpenCode(t)
 	e, root := openCodeEnv(t)
 	in := e.seed(t, harnessOpenCode, "opencode/existing.json")
 	if err := Apply(e.opts, harnessOpenCode); err != nil {
@@ -131,6 +134,7 @@ func TestOpenCodeReapplyAfterMove(t *testing.T) {
 }
 
 func TestOpenCodeRefusals(t *testing.T) {
+	skipOpenCode(t)
 	cases := []struct {
 		name    string
 		content string
@@ -172,6 +176,7 @@ func TestOpenCodeRefusals(t *testing.T) {
 }
 
 func TestOpenCodeUndoKeepsUserChanges(t *testing.T) {
+	skipOpenCode(t)
 	e, _ := openCodeEnv(t)
 	e.seed(t, harnessOpenCode, "opencode/existing.json")
 	if err := Apply(e.opts, harnessOpenCode); err != nil {
@@ -211,6 +216,7 @@ func TestOpenCodeUndoKeepsUserChanges(t *testing.T) {
 }
 
 func TestOpenCodeDoctor(t *testing.T) {
+	skipOpenCode(t)
 	e, _ := openCodeEnv(t)
 	e.seed(t, harnessOpenCode, "opencode/existing.json")
 	if err := Apply(e.opts, harnessOpenCode); err != nil {

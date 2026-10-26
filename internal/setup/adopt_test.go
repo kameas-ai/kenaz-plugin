@@ -35,6 +35,7 @@ const githubClaude = `{
 const githubCodex = "[marketplaces.kenaz]\nsource_type = \"git\"\nsource = \"https://github.com/kameas-ai/kenaz-plugin.git\"\n"
 
 func TestOfficialSource(t *testing.T) {
+	skipWithoutPublicMarketplace(t)
 	for src, want := range map[string]bool{
 		"kameas-ai/kenaz-plugin":                        true,
 		"Kameas-AI/Kenaz-Plugin":                        true,
@@ -62,6 +63,7 @@ func TestOfficialSource(t *testing.T) {
 // marketplace the user already registered: no host command, no refusal,
 // only the relay keys.
 func TestAdoptGitHubMarketplaceClaude(t *testing.T) {
+	skipWithoutPublicMarketplace(t)
 	e, f, _ := bundleEnv(t, false)
 	os.MkdirAll(e.opts.ClaudeDir, 0o700)
 	os.WriteFile(e.opts.path(harnessClaude), []byte(githubClaude), 0o600)
@@ -118,6 +120,7 @@ func TestAdoptGitHubMarketplaceClaude(t *testing.T) {
 // installed, setup installs it with the host's own command and uninstalls
 // only that on --undo.
 func TestAdoptGitHubMarketplaceCodexInstallsPlugin(t *testing.T) {
+	skipWithoutPublicMarketplace(t)
 	e, f, _ := bundleEnv(t, false)
 	os.MkdirAll(e.opts.CodexDir, 0o700)
 	os.WriteFile(e.opts.path(harnessCodex), []byte(githubCodex), 0o600)
@@ -151,6 +154,7 @@ func TestAdoptGitHubMarketplaceCodexInstallsPlugin(t *testing.T) {
 
 // --no-bundle (no bundle root) with the GitHub marketplace adopts it too.
 func TestAdoptWithoutBundle(t *testing.T) {
+	skipWithoutPublicMarketplace(t)
 	e := newEnv(t, 4318)
 	f := &fakeHosts{t: t, o: &e.opts}
 	e.opts.HostRun = f.run
@@ -167,6 +171,7 @@ func TestAdoptWithoutBundle(t *testing.T) {
 // An explicit --bundle replaces the GitHub marketplace with the bundle's
 // copy, and --undo says how to add the GitHub one back.
 func TestExplicitBundleReplacesGitHubMarketplace(t *testing.T) {
+	skipWithoutPublicMarketplace(t)
 	e, f, _ := bundleEnv(t, false)
 	e.opts.BundleExplicit = true
 	os.MkdirAll(e.opts.ClaudeDir, 0o700)
@@ -276,6 +281,7 @@ func TestStateMoveRebasesBundleRegistration(t *testing.T) {
 // A plugin the user installed and then turned off is theirs: setup does
 // not install, enable or (on --undo) uninstall it, and says it is off.
 func TestAdoptInstalledButDisabled(t *testing.T) {
+	skipWithoutPublicMarketplace(t)
 	cases := []struct {
 		name string
 		h    harness
@@ -326,6 +332,7 @@ func TestAdoptInstalledButDisabled(t *testing.T) {
 // An uninstall that fails on --undo is reported (non-nil error, warning),
 // after the configuration has still been restored.
 func TestUndoReportsUninstallError(t *testing.T) {
+	skipWithoutPublicMarketplace(t)
 	e, f, _ := bundleEnv(t, false)
 	os.MkdirAll(e.opts.CodexDir, 0o700)
 	os.WriteFile(e.opts.path(harnessCodex), []byte(githubCodex), 0o600)

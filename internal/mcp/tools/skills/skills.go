@@ -189,12 +189,12 @@ func touch(d mcp.Deps) {
 	}
 }
 
-func materializer() (*sk.Materializer, error) {
+func materializer(d mcp.Deps) (*sk.Materializer, error) {
 	home, err := HomeDir()
 	if err != nil {
 		return nil, errors.New("cannot find your home directory")
 	}
-	return &sk.Materializer{Roots: sk.DetectRoots(home)}, nil
+	return &sk.Materializer{Roots: sk.DetectRoots(home), Env: string(d.Env)}, nil
 }
 
 func store(d mcp.Deps) (sk.Store, error) {
@@ -213,7 +213,7 @@ func Search(ctx context.Context, d mcp.Deps, in SearchInput) (SearchOutput, erro
 		return SearchOutput{}, fmt.Errorf("scope must be private, team or org_public")
 	}
 	installed := map[string]bool{}
-	if m, err := materializer(); err == nil {
+	if m, err := materializer(d); err == nil {
 		if owned, err := m.Owned(); err == nil {
 			for _, o := range owned {
 				installed[o.Marker.CatalogID] = true
@@ -252,7 +252,7 @@ func Install(ctx context.Context, d mcp.Deps, in InstallInput) (InstallOutput, e
 	if err != nil {
 		return InstallOutput{}, err
 	}
-	m, err := materializer()
+	m, err := materializer(d)
 	if err != nil {
 		return InstallOutput{}, err
 	}
@@ -350,7 +350,7 @@ func Uninstall(_ context.Context, d mcp.Deps, in UninstallInput) (UninstallOutpu
 	if err != nil {
 		return UninstallOutput{}, err
 	}
-	m, err := materializer()
+	m, err := materializer(d)
 	if err != nil {
 		return UninstallOutput{}, err
 	}

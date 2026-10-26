@@ -9,7 +9,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func tryLock(path string) (release func(), err error) {
+// TryLock takes an exclusive, non-blocking lock on path (ErrAlreadyRunning
+// when another process holds it).
+func TryLock(path string) (release func(), err error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err

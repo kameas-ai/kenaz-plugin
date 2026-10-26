@@ -33,7 +33,7 @@ func skillsDaemonHook(opt *daemon.Options) (func(*daemon.Daemon), error) {
 	if err != nil {
 		return nil, err
 	}
-	lane := newSkillsLane(opt.Provider, opt.StateDir, home, nodeID, opt.Logger)
+	lane := newSkillsLane(opt.Provider, opt.Env, opt.StateDir, home, nodeID, opt.Logger)
 	opt.Lanes = append(opt.Lanes, lane)
 	opt.Contributors = append(opt.Contributors, lane)
 	return nil, nil
@@ -43,26 +43,27 @@ func skillsDaemonHook(opt *daemon.Options) (func(*daemon.Daemon), error) {
 // poll for mandated items: it fetches GET /configs (ETag/304) every
 // skills.DefaultInterval or on Kick, and the daemon holds/resumes it with the
 // other lanes on org pause and lockdown.
-func newSkillsLane(p fleetapi.Provider, stateDir, home, nodeID string, log *slog.Logger) *skills.Lane {
+func newSkillsLane(p fleetapi.Provider, env fleetapi.Env, stateDir, home, nodeID string, log *slog.Logger) *skills.Lane {
 	return &skills.Lane{Syncer: &skills.Syncer{
 		Provider:  p,
 		Store:     skills.NewStore(stateDir),
-		Mat:       &skills.Materializer{Roots: skills.DetectRoots(home)},
+		Mat:       &skills.Materializer{Roots: skills.DetectRoots(home), Env: string(env)},
 		MachineID: nodeID,
 		Log:       log,
 	}}
 }
 
-// purgeSkills removes every Kameas-managed skill directory and the local
+// purgeSkills removes every Kameas-managed skill directory of Fleet
+// environment env (other environments' skills stay) and the local
 // skills state, independent of whether the daemon is running (logout and
 // withdrawal: org content does not outlive the session). Unmarked
 // directories are never touched.
-func purgeSkills(p fleetapi.Provider, stateDir string) error {
+func purgeSkills(p fleetapi.Provider, env fleetapi.Env, stateDir string) error {
 	home, err := skillsHome()
 	if err != nil {
 		return err
 	}
-	return newSkillsLane(p, stateDir, home, "", nil).Purge()
+	return newSkillsLane(p, env, stateDir, home, "", nil).Purge()
 }
 
 // skillsReload implements hook.Skills for the Claude SessionStart hook.
@@ -90,7 +91,7 @@ func runSkills(env Env, args []string) int {
 		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
-	mat := &skills.Materializer{Roots: skills.DetectRoots(home)}
+	mat := &skills.Materializer{Roots: skills.DetectRoots(home), Env: string(r.Env)}
 	store := skills.NewStore(r.StateDir)
 	sub := "list"
 	if rest := fs.Args(); len(rest) > 0 {

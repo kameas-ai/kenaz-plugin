@@ -11,7 +11,7 @@ import (
 // HostEnvVar names the MCP host when the host cannot be told apart
 // otherwise. The Claude Desktop extension manifest (mcpb/) sets it to
 // HostClaudeDesktop.
-var HostEnvVar = variant.Current.MCPHostVar
+var HostEnvVar = variant.Shared.MCPHostVar
 
 // HostClaudeDesktop is HostEnvVar's value under Claude Desktop.
 const HostClaudeDesktop = "claude-desktop"
@@ -33,7 +33,7 @@ func signInRemedy(getenv func(string) string, goos, exe, home string) string {
 		return "Run /" + variant.Current.Plugin + ":login."
 	}
 	args := " login"
-	if e := strings.ToLower(strings.TrimSpace(getenv(variant.Current.EnvVar))); e != variant.Current.DefaultEnv && variant.Current.Allowed(e) {
+	if e := strings.ToLower(strings.TrimSpace(getenv(variant.Shared.EnvVar))); e != variant.Current.DefaultEnv && variant.Current.Allowed(e) {
 		args += " --env " + e
 	}
 	if exe == "" {

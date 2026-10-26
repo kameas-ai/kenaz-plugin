@@ -13,7 +13,6 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
-	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // fileStoreNote is the security note doctor and the README give for the
@@ -122,19 +121,6 @@ func keychainProbe() error {
 	}
 }
 
-// paths is the on-disk layout, honoring the build's home override
-// (KENAZ_HOME).
-func (e Env) paths() (config.Paths, error) {
-	if h := e.getenv(variant.Current.HomeVar); h != "" {
-		abs, err := filepath.Abs(h)
-		if err != nil {
-			return config.Paths{}, err
-		}
-		return config.Paths{ConfigDir: filepath.Join(abs, "config"), StateRoot: filepath.Join(abs, "state")}, nil
-	}
-	return config.DefaultPaths()
-}
-
 // noProbeCommands run inside the harness's hook and startup budgets. They
 // never probe: they follow the recorded store, or, before one is recorded,
 // run with no credentials at all.
@@ -172,7 +158,7 @@ func (e Env) withCredentialStore(cmd string) Env {
 		cs.store = credstore.Keychain
 		return e
 	}
-	cs.dir = filepath.Join(paths.StateRoot, "credentials")
+	cs.dir = filepath.Join(paths.StateRoot, config.CredentialsDir)
 	rec, err := credstore.ReadMarker(cs.dir)
 	switch {
 	case err != nil:

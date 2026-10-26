@@ -20,20 +20,27 @@ func TestDisclaimerPresent(t *testing.T) {
 		}
 	}
 
-	for _, path := range []string{"plugin/.claude-plugin/plugin.json", "plugin/.codex-plugin/plugin.json"} {
+	for path, want := range map[string]string{
+		"plugin/.claude-plugin/plugin.json": DisclaimerGAnthropic,
+		"plugin/.codex-plugin/plugin.json":  Disclaimer,
+	} {
 		var pj struct{ Description string }
 		readJSON(t, path, &pj)
-		if !strings.HasSuffix(pj.Description, Disclaimer) {
-			t.Errorf("%s: description must end with the disclaimer", path)
+		if !strings.HasSuffix(pj.Description, want) {
+			t.Errorf("%s: description must end with its disclaimer", path)
 		}
 	}
 
 	var mk struct {
-		Plugins []struct{ Description string }
+		Metadata struct{ Description string }
+		Plugins  []struct{ Description string }
 	}
 	readJSON(t, ".claude-plugin/marketplace.json", &mk)
-	if len(mk.Plugins) == 0 || !strings.Contains(mk.Plugins[0].Description, Disclaimer) {
-		t.Error("marketplace entry description must contain the disclaimer")
+	if len(mk.Plugins) == 0 || !strings.HasSuffix(mk.Plugins[0].Description, DisclaimerGAnthropicOpenAI) {
+		t.Error("marketplace entry description must end with the Anthropic and OpenAI trademark notice")
+	}
+	if !strings.HasSuffix(mk.Metadata.Description, DisclaimerGAnthropicOpenAI) {
+		t.Error("marketplace metadata description must end with the Anthropic and OpenAI trademark notice")
 	}
 }
 
@@ -168,34 +175,43 @@ func TestPluginLaunchesInstalledBinary(t *testing.T) {
 	}
 }
 
-// approvedDescription is the approved plugin description. Each manifest's
-// description is this sentence followed by the disclaimer.
-const approvedDescription = "Kenaz, a Kameas AI product. Connects your Claude Code and Codex sessions to your organization's Kameas Fleet."
+// codexDescription is the approved Codex plugin description (unchanged by
+// the newer listing text: it names Claude Code and Codex). The Claude
+// plugin and the marketplace use ClaudePluginDescription and
+// MarketplaceDescription (legal.go).
+const codexDescription = "Kenaz, a Kameas AI product. Connects your Claude Code and Codex sessions to your organization's Kameas Fleet."
 
 // TestPluginIdentity pins the product name everywhere a harness or a user
 // sees it: plugin and marketplace names (install id kenaz@kenaz), the
-// skill directory, the binary directory and the approved description.
+// skill directory, the binary directory and the approved descriptions.
 func TestPluginIdentity(t *testing.T) {
-	for _, path := range []string{"plugin/.claude-plugin/plugin.json", "plugin/.codex-plugin/plugin.json"} {
+	for path, want := range map[string]string{
+		"plugin/.claude-plugin/plugin.json": ClaudePluginDescription,
+		"plugin/.codex-plugin/plugin.json":  codexDescription + " " + Disclaimer,
+	} {
 		var pj struct{ Name, Description string }
 		readJSON(t, path, &pj)
 		if pj.Name != "kenaz" {
 			t.Errorf("%s: name %q, want kenaz", path, pj.Name)
 		}
-		if pj.Description != approvedDescription+" "+Disclaimer {
-			t.Errorf("%s: description must be the approved description followed by the disclaimer", path)
+		if pj.Description != want {
+			t.Errorf("%s: description must be the approved text, got %q", path, pj.Description)
 		}
 	}
 	var mk struct {
-		Name    string
-		Plugins []struct{ Name, Description string }
+		Name     string
+		Metadata struct{ Description string }
+		Plugins  []struct{ Name, Description string }
 	}
 	readJSON(t, ".claude-plugin/marketplace.json", &mk)
 	if mk.Name != "kenaz" {
 		t.Errorf("marketplace name %q, want kenaz", mk.Name)
 	}
-	if len(mk.Plugins) != 1 || mk.Plugins[0].Name != "kenaz" || mk.Plugins[0].Description != approvedDescription+" "+Disclaimer {
+	if len(mk.Plugins) != 1 || mk.Plugins[0].Name != "kenaz" || mk.Plugins[0].Description != MarketplaceDescription {
 		t.Errorf("marketplace must list exactly the kenaz plugin with the approved description, got %+v", mk.Plugins)
+	}
+	if mk.Metadata.Description != MarketplaceMetadataDescription {
+		t.Errorf("marketplace metadata description %q", mk.Metadata.Description)
 	}
 	for _, dir := range []string{"plugin/skills/kenaz", "cmd/kenaz"} {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {

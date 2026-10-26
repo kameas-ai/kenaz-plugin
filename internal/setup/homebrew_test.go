@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/bundle"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // cask simulates a Homebrew cask install of kenaz under a fake prefix.
@@ -32,10 +33,10 @@ func newCask(t *testing.T) *cask {
 }
 
 func (c *cask) versionDir(v string) string {
-	return filepath.Join(c.prefix, "Caskroom", "kenaz", v)
+	return filepath.Join(c.prefix, "Caskroom", variant.Current.CaskToken, v)
 }
 
-func (c *cask) link() string { return filepath.Join(c.prefix, "bin", "kenaz") }
+func (c *cask) link() string { return filepath.Join(c.prefix, "bin", tBin) }
 
 // install unpacks the v archive into <prefix>/Caskroom/kenaz/<v>/ and
 // links <prefix>/bin/kenaz to its bin/kenaz, the way `brew install` and
@@ -50,7 +51,7 @@ func (c *cask) install(v string) string {
 	}
 	os.MkdirAll(filepath.Dir(c.link()), 0o755)
 	os.Remove(c.link())
-	if err := os.Symlink(filepath.Join(root, "bin", "kenaz"), c.link()); err != nil {
+	if err := os.Symlink(filepath.Join(root, "bin", tBin), c.link()); err != nil {
 		c.t.Skip("symlinks unavailable:", err)
 	}
 	return root
@@ -98,7 +99,7 @@ func launchCommands(t *testing.T, e *env, h harness) []string {
 	if err != nil || json.Unmarshal(raw, &m) != nil {
 		t.Fatalf("%s: %v", mcp, err)
 	}
-	out = append(out, m.MCPServers["kenaz"].Command)
+	out = append(out, m.MCPServers[variant.Current.MCPServer].Command)
 	raw, _ = os.ReadFile(filepath.Join(src, "plugin", "hooks", "hooks.json"))
 	var hk struct {
 		Hooks map[string][]struct {
@@ -182,7 +183,7 @@ func TestHomebrewUpgradeKeepsRegistration(t *testing.T) {
 		t.Fatalf("doctor: %+v", cs)
 	}
 	for _, ch := range cs {
-		if ch.Status != "warn" || !strings.Contains(ch.Detail, "from kenaz 0.5.0 and this kenaz is 0.5.1") {
+		if ch.Status != "warn" || !strings.Contains(ch.Detail, "from "+tBin+" 0.5.0 and this "+tBin+" is 0.5.1") {
 			t.Fatalf("doctor after upgrade: %+v", ch)
 		}
 	}
@@ -257,12 +258,12 @@ func TestHomebrewLegacyRegistrationSelfHeals(t *testing.T) {
 
 	c.upgrade("0.5.0", "0.5.1")
 	broken := BrokenRegistrations(e.opts.StateDir)
-	if len(broken) != 2 || !strings.Contains(broken[0], "Claude Code") || !strings.Contains(broken[1], "Codex") || !strings.Contains(broken[0], "kenaz init") {
+	if len(broken) != 2 || !strings.Contains(broken[0], "Claude Code") || !strings.Contains(broken[1], "Codex") || !strings.Contains(broken[0], "`"+tBin+" init`") {
 		t.Fatalf("startup check: %v", broken)
 	}
 	optsFor(e, c.link())
 	for _, ch := range doctorBundle(e.opts) {
-		if ch.Status != "fail" || !strings.Contains(ch.Detail, "kenaz init") {
+		if ch.Status != "fail" || !strings.Contains(ch.Detail, "`"+tBin+" init`") {
 			t.Fatalf("doctor: %+v", ch)
 		}
 	}
@@ -296,7 +297,7 @@ func TestHomebrewMissingLinkWarns(t *testing.T) {
 	c := newCask(t)
 	e, _, _ := bundleEnv(t, false)
 	root := c.install("0.5.0")
-	exe := filepath.Join(root, "bin", "kenaz")
+	exe := filepath.Join(root, "bin", tBin)
 	os.Remove(c.link())
 	optsFor(e, exe)
 	if e.opts.KenazBin != exe || e.opts.BundleRoot != root {
@@ -318,15 +319,15 @@ func TestHomebrewNoOpOffMacOS(t *testing.T) {
 	t.Cleanup(func() { bundle.HomebrewCasks = prev })
 	e, _, _ := bundleEnv(t, false)
 	tmp, _ := filepath.EvalSymlinks(t.TempDir())
-	root := filepath.Join(tmp, "Caskroom", "kenaz", "0.5.0", "kenaz_0.5.0")
+	root := filepath.Join(tmp, "Caskroom", variant.Current.CaskToken, "0.5.0", variant.Current.BundleName+"_0.5.0")
 	staged := makeBundle(t, t.TempDir(), testBundleVersion, false)
 	os.MkdirAll(filepath.Dir(root), 0o755)
 	if err := os.Rename(staged, root); err != nil {
 		t.Fatal(err)
 	}
-	name := "kenaz"
+	name := tBin
 	if runtime.GOOS == "windows" {
-		name = "kenaz.exe"
+		name = tBin + ".exe"
 	}
 	exe := filepath.Join(root, "bin", name)
 	e.opts.KenazBin, e.opts.BundleRoot = bundle.StablePath(exe), DetectBundle(exe)

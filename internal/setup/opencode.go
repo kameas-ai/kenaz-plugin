@@ -68,7 +68,7 @@ func (c openCodeConfig) mcpEntry() (json.RawMessage, error) {
 	}
 	o.set("command", cmd)
 	if c.Env != "" {
-		env, err := json.Marshal(map[string]string{variant.Current.EnvVar: c.Env})
+		env, err := json.Marshal(map[string]string{variant.Shared.EnvVar: c.Env})
 		if err != nil {
 			return nil, err
 		}

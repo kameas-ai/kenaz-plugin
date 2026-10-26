@@ -97,7 +97,7 @@ func (h *fileHarness) run(t *testing.T, args ...string) (int, string, string) {
 	return code, out.String(), errb.String()
 }
 
-func (h *fileHarness) credDir() string { return filepath.Join(h.home, "state", "credentials") }
+func (h *fileHarness) credDir() string { return filepath.Join(h.home, "plugin", "credentials") }
 
 func mode(t *testing.T, p string) os.FileMode {
 	t.Helper()
@@ -129,7 +129,7 @@ func TestCredentialStoreKeychainSelected(t *testing.T) {
 	if d := p.dir(); d != "" {
 		t.Fatalf("UseFiles called with a usable keychain: %s", d)
 	}
-	if _, err := os.Stat(filepath.Join(h.home, "state", "credentials")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(h.home, "plugin", "credentials")); !os.IsNotExist(err) {
 		t.Fatalf("credentials dir created in keychain mode: %v", err)
 	}
 }
@@ -420,7 +420,7 @@ func TestRecordedKeychainUnavailableFailsClosed(t *testing.T) {
 	if code, out, errb := run("login"); code != 0 {
 		t.Fatalf("login exit=%d out=%s err=%s", code, out, errb)
 	}
-	cred := filepath.Join(h.home, "state", "credentials")
+	cred := filepath.Join(h.home, "plugin", "credentials")
 	if b, _ := os.ReadFile(filepath.Join(cred, "STORE")); string(b) != "keychain\n" {
 		t.Fatalf("marker = %q", b)
 	}

@@ -6,7 +6,11 @@ import (
 	"sort"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
+
+// staffOnlyNote is what status and doctor say about a staff-only build.
+const staffOnlyNote = "STAFF ONLY: not for customer data"
 
 // Release hooks for the official release pipeline. Official builds set these before calling Run; public builds
 // leave them empty. They are configuration, not behavior: the public CLI
@@ -33,8 +37,11 @@ var (
 // BuildInfo is `version --json` (the schema the official release pipeline's
 // checks and scripts/verify-release.sh read).
 type BuildInfo struct {
-	Version              string   `json:"version"`
-	Flavor               string   `json:"flavor"`
+	Version string `json:"version"`
+	Flavor  string `json:"flavor"`
+	// Variant is the build variant's name (variant.Identity.Name): kenaz,
+	// or kenaz-dev for the staff dev build.
+	Variant              string   `json:"variant"`
 	PublicCommit         string   `json:"public_commit"`
 	PublicModuleVersion  string   `json:"public_module_version"`
 	PrivateModuleVersion string   `json:"private_module_version"`
@@ -56,6 +63,7 @@ func CurrentBuildInfo(p fleetapi.Provider) BuildInfo {
 	bi := BuildInfo{
 		Version:              Version,
 		Flavor:               "unofficial",
+		Variant:              variant.Current.Name,
 		PublicCommit:         or(BuildCommit),
 		PublicModuleVersion:  or(PublicModuleVersion),
 		PrivateModuleVersion: or(PrivateModuleVersion),

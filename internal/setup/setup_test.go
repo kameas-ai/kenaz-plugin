@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/daemonstate"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -371,6 +372,7 @@ func TestPortChangeAndBackupPruning(t *testing.T) {
 }
 
 func TestManagedSnippets(t *testing.T) {
+	skipWithoutPublicMarketplace(t)
 	b, err := ManagedClaude(4318)
 	if err != nil {
 		t.Fatal(err)
@@ -423,6 +425,15 @@ func TestManagedSnippets(t *testing.T) {
 
 func TestCommandParsing(t *testing.T) {
 	var out, errb bytes.Buffer
+	if OfficialRepo == "" {
+		// A build with no public marketplace has nothing to deploy.
+		for _, h := range []string{"claude", "codex"} {
+			if code := Command(context.Background(), []string{"print-managed", h}, &out, &errb); code != exitUsage || !strings.Contains(errb.String(), "not available in this build") {
+				t.Fatalf("print-managed %s: code %d: %s", h, code, errb.String())
+			}
+		}
+		return
+	}
 	if code := Command(context.Background(), []string{"print-managed", "codex", "--raw", "--port", "47318"}, &out, &errb); code != 0 {
 		t.Fatalf("code %d: %s", code, errb.String())
 	}
@@ -450,7 +461,7 @@ func TestDoctor(t *testing.T) {
 		case "codex --version":
 			return "codex-cli 0.145.0\n", nil
 		case "claude plugin list --json":
-			return `[{"id":"kenaz@kenaz"}]`, nil
+			return `[{"id":"` + tID + `"}]`, nil
 		}
 		return "", errors.New("not found")
 	}
@@ -466,7 +477,7 @@ func TestDoctor(t *testing.T) {
 	for _, want := range []struct{ name, status, substr string }{
 		{"relay", "warn", "not answering"},
 		{"Claude Code", "ok", "exports to the relay"},
-		{"Claude Code", "ok", "plugin kenaz is installed"},
+		{"Claude Code", "ok", "plugin " + variant.Current.Plugin + " is installed"},
 		{"Codex", "warn", "older than the supported minimum 0.147.0"},
 		{"Codex", "fail", "https://otel.example.com:4317"},
 	} {

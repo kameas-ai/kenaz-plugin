@@ -20,7 +20,7 @@ import (
 func runLogin(env Env, args []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
-	envName := fs.String("env", "", "Fleet environment: "+variant.Current.EnvChoices("|")+" (default: "+variant.Current.EnvVar+", config, "+variant.Current.DefaultEnv+")")
+	envName := fs.String("env", "", "Fleet environment: "+variant.Current.EnvChoices("|")+" (default: "+variant.Shared.EnvVar+", config, "+variant.Current.DefaultEnv+")")
 	noBrowser := fs.Bool("no-browser", false, "print the sign-in URL instead of opening a browser")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage

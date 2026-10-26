@@ -14,6 +14,7 @@ usage: kenaz <command> [flags]
   logout    Sign out and purge local queued data
   mcp       Run the MCP stdio server (started by the harness)
   memory    Manage memories (on this device; optional sync to your Kameas Fleet account)
+  migrate   Move files from an earlier release to ~/.kenaz/plugin (close your AI apps first)
   optin     Choose which usage data to share (shows the notice)
   setup     Configure one app (Claude Code or Codex) to use Kameas Fleet
   skills    List or sync shared Agent Skills from Kameas Fleet

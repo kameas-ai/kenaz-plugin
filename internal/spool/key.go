@@ -13,7 +13,7 @@ import (
 
 // KeychainService is the OS keychain service for every plugin secret.
 // Official builds store tokens under the same service.
-var KeychainService = variant.Current.KeychainService
+var KeychainService = variant.Shared.KeychainService
 
 // ErrNoKey means no spool key exists yet.
 var ErrNoKey = errors.New("spool: no key")

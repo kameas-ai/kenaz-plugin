@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // withHomebrewCasks sets HomebrewCasks for one test.
@@ -20,11 +22,11 @@ func withHomebrewCasks(t *testing.T, on bool) {
 // returns the resolved executable.
 func fakeCask(t *testing.T, prefix, version string) string {
 	t.Helper()
-	root := filepath.Join(prefix, "Caskroom", "kenaz", version, "kenaz_"+version+"_darwin_arm64")
+	root := filepath.Join(prefix, "Caskroom", variant.Current.CaskToken, version, variant.Current.BundleName+"_"+version+"_darwin_arm64")
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	exe := filepath.Join(root, "bin", "kenaz")
+	exe := filepath.Join(root, "bin", variant.Current.Binary)
 	os.WriteFile(exe, []byte("kenaz "+version), 0o755)
 	os.WriteFile(filepath.Join(root, BundleFile), []byte("{}"), 0o644)
 	return exe
@@ -34,7 +36,7 @@ func fakeCask(t *testing.T, prefix, version string) string {
 // does on install and on every upgrade.
 func brewLink(t *testing.T, prefix, exe string) string {
 	t.Helper()
-	link := filepath.Join(prefix, "bin", "kenaz")
+	link := filepath.Join(prefix, "bin", variant.Current.Binary)
 	os.MkdirAll(filepath.Dir(link), 0o755)
 	os.Remove(link)
 	if err := os.Symlink(exe, link); err != nil {

@@ -13,9 +13,11 @@ import (
 	"testing"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/bundle"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant/varianttest"
 )
 
-const testBundleVersion = "0.6.1"
+const testBundleVersion = "0.6.2"
 
 func copyTree(t *testing.T, src, dst string) {
 	t.Helper()
@@ -46,15 +48,16 @@ func copyTree(t *testing.T, src, dst string) {
 // with every file's digest. The directory name contains a space.
 func makeBundle(t *testing.T, parent, version string, opencode bool) string {
 	t.Helper()
-	root := filepath.Join(parent, "Kenaz Bundle", "kenaz_"+version+"_"+runtime.GOOS+"_"+runtime.GOARCH)
-	exe := "kenaz"
+	root := filepath.Join(parent, "Kenaz Bundle", variant.Current.BundleName+"_"+version+"_"+runtime.GOOS+"_"+runtime.GOARCH)
+	exe := tBin
 	if runtime.GOOS == "windows" {
-		exe = "kenaz.exe"
+		exe = tBin + ".exe"
 	}
 	os.MkdirAll(filepath.Join(root, "bin"), 0o755)
 	os.WriteFile(filepath.Join(root, "bin", exe), []byte("kenaz binary "+version), 0o755)
-	copyTree(t, filepath.Join("..", "..", "plugin"), filepath.Join(root, "plugin"))
-	copyTree(t, filepath.Join("..", "..", ".claude-plugin"), filepath.Join(root, ".claude-plugin"))
+	if err := varianttest.WritePluginTree(filepath.Join("..", ".."), root, variant.Current); err != nil {
+		t.Fatal(err)
+	}
 	if opencode {
 		copyTree(t, filepath.Join("..", "..", "opencode"), filepath.Join(root, "opencode"))
 	}
@@ -82,7 +85,7 @@ func writeManifest(t *testing.T, root, version, exe string, opencode bool) {
 		return nil
 	})
 	m := map[string]any{
-		"schema": 1, "name": "kenaz", "version": version, "os": runtime.GOOS, "arch": runtime.GOARCH,
+		"schema": 1, "name": variant.Current.BundleName, "version": version, "os": runtime.GOOS, "arch": runtime.GOARCH,
 		"executable": exe, "executable_sha256": files[exe], "opencode": opencode, "files": files,
 	}
 	b, _ := json.MarshalIndent(m, "", "  ")
@@ -124,7 +127,7 @@ func (f *fakeHosts) run(_ context.Context, name string, args ...string) (string,
 		}
 		switch cmd {
 		case "plugin marketplace add":
-			ensure("extraKnownMarketplaces")["kenaz"] = map[string]any{"source": map[string]any{"source": "directory", "path": last}}
+			ensure("extraKnownMarketplaces")[tMk] = map[string]any{"source": map[string]any{"source": "directory", "path": last}}
 		case "plugin install":
 			ensure("enabledPlugins")[last] = true
 		case "plugin uninstall":
@@ -144,8 +147,8 @@ func (f *fakeHosts) run(_ context.Context, name string, args ...string) (string,
 		p := f.o.path(harnessCodex)
 		b, _, _ := readFile(p)
 		s := string(b)
-		mk := "\n[marketplaces.kenaz]\nsource_type = \"local\"\nsource = " + mustJSON(last) + "\n"
-		pl := "\n[plugins.\"kenaz@kenaz\"]\nenabled = true\n"
+		mk := "\n[marketplaces." + tMk + "]\nsource_type = \"local\"\nsource = " + mustJSON(last) + "\n"
+		pl := "\n[plugins.\"" + tID + "\"]\nenabled = true\n"
 		switch cmd {
 		case "plugin marketplace add":
 			s += mk
@@ -154,7 +157,7 @@ func (f *fakeHosts) run(_ context.Context, name string, args ...string) (string,
 		case "plugin remove":
 			s = strings.Replace(s, pl, "", 1)
 		case "plugin marketplace remove":
-			if i := strings.Index(s, "\n[marketplaces.kenaz]\n"); i >= 0 {
+			if i := strings.Index(s, "\n[marketplaces."+tMk+"]\n"); i >= 0 {
 				j := strings.Index(s[i+1:], "\n[")
 				if j < 0 {
 					s = s[:i]
@@ -210,7 +213,7 @@ func TestLoadBundle(t *testing.T) {
 	if _, err := LoadBundle(t.TempDir()); err == nil {
 		t.Fatal("non-bundle accepted")
 	}
-	if DetectBundle(filepath.Join(t.TempDir(), "bin", "kenaz")) != "" {
+	if DetectBundle(filepath.Join(t.TempDir(), "bin", tBin)) != "" {
 		t.Fatal("detected a bundle where there is none")
 	}
 }
@@ -231,8 +234,8 @@ func TestRenderPluginAbsoluteLaunch(t *testing.T) {
 		}
 		raw, _ := os.ReadFile(filepath.Join(dir, rel))
 		json.Unmarshal(raw, &m)
-		if m.McpServers["kenaz"]["command"] != b.Exe {
-			t.Errorf("%s: command %v", rel, m.McpServers["kenaz"]["command"])
+		if m.McpServers[variant.Current.MCPServer]["command"] != b.Exe {
+			t.Errorf("%s: command %v", rel, m.McpServers[variant.Current.MCPServer]["command"])
 		}
 	}
 	raw, _ := os.ReadFile(filepath.Join(dir, "plugin", ".codex-mcp.json"))
@@ -312,7 +315,7 @@ func TestBundleClaudeCodexApplyIdempotentUndo(t *testing.T) {
 
 func TestBundleRefusesForeignMarketplace(t *testing.T) {
 	e, f, _ := bundleEnv(t, false)
-	in := []byte(`{"extraKnownMarketplaces": {"kenaz": {"source": {"source": "github", "repo": "example/other-kenaz"}}}, "enabledPlugins": {"kenaz@kenaz": true}}`)
+	in := []byte(`{"extraKnownMarketplaces": {"` + tMk + `": {"source": {"source": "github", "repo": "example/other-kenaz"}}}, "enabledPlugins": {"` + tID + `": true}}`)
 	os.MkdirAll(e.opts.ClaudeDir, 0o700)
 	os.WriteFile(e.opts.path(harnessClaude), in, 0o600)
 	err := Apply(e.opts, harnessClaude)
@@ -347,7 +350,7 @@ func TestBundleUpgradeReregisters(t *testing.T) {
 		t.Fatal("old rendered plugin kept")
 	}
 	b, _ := e.read(t, harnessCodex)
-	if strings.Count(string(b), "[marketplaces.kenaz]") != 1 {
+	if strings.Count(string(b), "[marketplaces."+tMk+"]") != 1 {
 		t.Fatalf("duplicate registration:\n%s", b)
 	}
 	cs := doctorBundle(e.opts)
@@ -361,6 +364,7 @@ func TestBundleUpgradeReregisters(t *testing.T) {
 }
 
 func TestBundleOpenCode(t *testing.T) {
+	skipOpenCode(t)
 	e, f, broot := bundleEnv(t, true)
 	e.opts.KenazBin, e.opts.AdapterDir = "/elsewhere/kenaz", ""
 	if err := Apply(e.opts, harnessOpenCode); err != nil {
@@ -387,11 +391,11 @@ func TestBundleOpenCode(t *testing.T) {
 }
 
 func TestCodexRegistrationParse(t *testing.T) {
-	src, en := codexRegistration("model = \"x\"\n[marketplaces.kenaz]\nsource_type = \"local\"\nsource = \"/a b/c\"\n\n[plugins.\"kenaz@kenaz\"]\nenabled = true\n")
+	src, en := codexRegistration("model = \"x\"\n[marketplaces." + tMk + "]\nsource_type = \"local\"\nsource = \"/a b/c\"\n\n[plugins.\"" + tID + "\"]\nenabled = true\n")
 	if src != "/a b/c" || !en {
 		t.Fatalf("%q %v", src, en)
 	}
-	if src, _ := codexRegistration("[marketplaces.kenaz]\nsource_type = \"git\"\nsource = \"https://x\"\n"); src != "?" {
+	if src, _ := codexRegistration("[marketplaces." + tMk + "]\nsource_type = \"git\"\nsource = \"https://x\"\n"); src != "?" {
 		t.Fatalf("remote: %q", src)
 	}
 	if src, en := codexRegistration("[otel]\n"); src != "" || en {
@@ -515,9 +519,9 @@ func TestRegistersThroughInstallCurrent(t *testing.T) {
 	if err := os.Rename(b, vb); err != nil {
 		t.Fatal(err)
 	}
-	exe := "kenaz"
+	exe := tBin
 	if runtime.GOOS == "windows" {
-		exe = "kenaz.exe"
+		exe = tBin + ".exe"
 	}
 	if err := os.Symlink(filepath.Join("versions", "B"), filepath.Join(install, "current")); err != nil {
 		t.Skip("symlinks unavailable:", err)

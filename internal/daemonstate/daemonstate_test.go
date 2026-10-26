@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 func resolver(env map[string]string, goos string) Resolver {
@@ -12,34 +14,46 @@ func resolver(env map[string]string, goos string) Resolver {
 }
 
 func TestEnv(t *testing.T) {
+	def := variant.Current.DefaultEnv
 	cases := map[string]string{
-		"":                         "prod",
+		"":                         def,
 		"dev":                      "dev",
 		"stage":                    "stage",
-		"${user_config.fleet_env}": "prod",
-		"bogus":                    "prod",
+		"${user_config.fleet_env}": def,
+		"bogus":                    "error",
+	}
+	// A known env the build does not connect to is an error, as it is for
+	// config.ResolveEnv (the staff dev build refuses prod).
+	if !variant.Current.Allowed("prod") {
+		cases["prod"] = "error"
+	} else {
+		cases["prod"] = "prod"
 	}
 	for in, want := range cases {
-		if got := resolver(map[string]string{"KENAZ_ENV": in}, "linux").Env(); got != want {
-			t.Errorf("Env(%q) = %q, want %q", in, got, want)
+		got, err := resolver(map[string]string{variant.Shared.EnvVar: in}, "linux").Env()
+		if err != nil {
+			got = "error"
 		}
+		if got != want {
+			t.Errorf("Env(%q) = %q (%v), want %q", in, got, err, want)
+		}
+	}
+	// Every env variable selects it, in order, like config.ResolveEnv.
+	if got, _ := resolver(map[string]string{"CLAUDE_PLUGIN_OPTION_FLEET_ENV": "stage"}, "linux").Env(); got != "stage" {
+		t.Errorf("plugin option: %q", got)
 	}
 }
 
+// The state directory is ~/.kenaz/plugin/<env> on every platform and for
+// every build, or $KENAZ_HOME/plugin/<env>.
 func TestStateDir(t *testing.T) {
-	cases := []struct {
-		goos string
-		env  map[string]string
-		want string
-	}{
-		{"darwin", nil, "/home/u/Library/Application Support/kameas/kenaz/state/dev"},
-		{"linux", nil, "/home/u/.local/state/kameas/kenaz/dev"},
-		{"linux", map[string]string{"XDG_STATE_HOME": "/x"}, "/x/kameas/kenaz/dev"},
-	}
-	for _, c := range cases {
-		if got := resolver(c.env, c.goos).StateDir("dev"); got != filepath.FromSlash(c.want) {
-			t.Errorf("%s: got %q want %q", c.goos, got, c.want)
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		if got, want := resolver(map[string]string{"XDG_STATE_HOME": "/x", "LocalAppData": "/l"}, goos).StateDir("dev"), filepath.FromSlash("/home/u/.kenaz/plugin/dev"); got != want {
+			t.Errorf("%s: got %q want %q", goos, got, want)
 		}
+	}
+	if got, want := resolver(map[string]string{variant.Shared.HomeVar: "/kh"}, "linux").StateDir("prod"), filepath.FromSlash("/kh/plugin/prod"); got != want {
+		t.Errorf("KENAZ_HOME: got %q want %q", got, want)
 	}
 }
 
@@ -66,20 +80,5 @@ func TestSessionHash(t *testing.T) {
 	h := SessionHash("abc")
 	if len(h) != 32 || h == "abc" || h != SessionHash("abc") || h == SessionHash("abd") {
 		t.Fatalf("bad hash %q", h)
-	}
-}
-
-// the Windows state directory is %LocalAppData%\kameas\kenaz\state\<env>,
-// the same place config.DefaultPaths uses.
-func TestStateDirWindows(t *testing.T) {
-	r := Resolver{Home: filepath.Join("C:", "Users", "u"), GOOS: "windows", Getenv: func(k string) string {
-		if k == "LocalAppData" {
-			return filepath.Join("C:", "Users", "u", "AppData", "Local")
-		}
-		return ""
-	}}
-	want := filepath.Join("C:", "Users", "u", "AppData", "Local", "kameas", "kenaz", "state", "prod")
-	if got := r.StateDir("prod"); got != want {
-		t.Fatalf("got %s want %s", got, want)
 	}
 }

@@ -33,6 +33,42 @@ type Marker struct {
 	InstalledAt    time.Time `json:"installed_at"`
 	TranslatedFrom string    `json:"translated_from,omitempty"`
 	Stripped       []string  `json:"stripped,omitempty"`
+	// Env is the Fleet environment whose relay installed the skill. The
+	// skill folders are shared by every environment (and build) on the
+	// device; each relay manages only its own environment's skills.
+	// Markers written before this field are prod's.
+	Env string `json:"env,omitempty"`
+}
+
+// FleetEnv is the Fleet environment that owns the skill.
+func (m Marker) FleetEnv() string {
+	if m.Env == "" {
+		return prodEnv
+	}
+	return m.Env
+}
+
+const prodEnv = "prod"
+
+// DirPrefixFor prefixes the managed skill directories of Fleet
+// environment env: DirPrefix for prod (unchanged from earlier releases, so
+// nothing moves), and "kameas-<env>-" otherwise, so a dev skill never takes
+// the name of the prod skill with the same slug.
+func DirPrefixFor(env string) string {
+	if env == "" || env == prodEnv {
+		return DirPrefix
+	}
+	return DirPrefix + env + "-"
+}
+
+// scratchPrefix names env's temporary and replaced directories during a
+// swap (kind "tmp" or "old"). Each environment's are distinct, so one
+// relay's cleanup never removes another's swap in progress.
+func scratchPrefix(env, kind string) string {
+	if env == "" || env == prodEnv {
+		return ".kameas-" + kind + "-"
+	}
+	return ".kameas-" + env + "-" + kind + "-"
 }
 
 const markerSchema = 1

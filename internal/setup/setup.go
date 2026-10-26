@@ -131,7 +131,9 @@ func defaultOptions(env string, stdout, stderr io.Writer, resolve StateDirResolv
 		return Options{}, err
 	}
 	if env == "" && resolve == nil {
-		env = r.Env()
+		if env, err = r.Env(); err != nil {
+			return Options{}, err
+		}
 	}
 	claudeDir := os.Getenv("CLAUDE_CONFIG_DIR")
 	if claudeDir == "" {
@@ -243,11 +245,22 @@ and replaces the GitHub marketplace; --no-bundle never registers a bundle.
 Setup starts the Kenaz relay if it is not running.
 `
 
+// usageLocalOnly replaces usageMarketplace in a build that has no public
+// marketplace.
+const usageLocalOnly = `
+Plugin source (Claude Code, Codex): {bin} registers the plugin of the
+bundle it runs from by absolute path (--bundle DIR: that bundle's).
+Setup starts the {bin} relay if it is not running.
+`
+
 // Usage is the setup help for this build (OpenCode only when enabled).
 func Usage() string {
 	u := usageBase
 	if features.OpenCode {
 		u = usageOpenCode
+	}
+	if variant.Current.MarketplaceRepo == "" {
+		u = strings.Replace(u, usageMarketplace, usageLocalOnly, 1)
 	}
 	return strings.NewReplacer("{bin}", variant.Current.Binary, "{marketplace}", variant.Current.Marketplace, "{repo}", variant.Current.MarketplaceRepo).Replace(u)
 }
@@ -292,7 +305,7 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	traces := fl.Bool("traces", false, "Claude Code only: also export traces (beta)")
 	undo := fl.Bool("undo", false, "restore what setup changed")
 	env := fl.String("env", "", "Kameas Fleet environment ("+variant.Current.EnvChoices(", ")+")")
-	port := fl.Int("port", variant.Current.RelayPorts[0], "print-managed: relay port to pin fleet-wide")
+	port := fl.Int("port", variant.Shared.RelayPorts[0], "print-managed: relay port to pin fleet-wide")
 	raw := fl.Bool("raw", false, "print-managed: print only the file content")
 	bundleDir := fl.String("bundle", "", "register a self-contained release bundle (default: the bundle this kenaz runs from, if any)")
 	noBundle := fl.Bool("no-bundle", false, "ignore the bundle this kenaz runs from and use kenaz from PATH")
@@ -323,6 +336,12 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		}
 		if h == harnessOpenCode {
 			fmt.Fprintf(stderr, "%[1]s setup: print-managed is not available for OpenCode yet; run `%[1]s setup opencode` for each user\n", variant.Current.Binary)
+			return exitUsage
+		}
+		if variant.Current.MarketplaceRepo == "" {
+			// Managed configuration installs the published plugin fleet-wide;
+			// this build has none.
+			fmt.Fprintf(stderr, "%s setup: print-managed is not available in this build; it is never deployed fleet-wide\n", variant.Current.Binary)
 			return exitUsage
 		}
 		return printManaged(stdout, h, *port, *raw)
@@ -663,6 +682,9 @@ func (o Options) pruneRendered(keep string) {
 	if err != nil {
 		return
 	}
+	// loadState rebased every recorded path onto this state directory,
+	// including one recorded through the link a moved state directory left
+	// behind, so plain path comparison sees every copy in use.
 	inUse := map[string]bool{keep: true}
 	for _, fs := range []*FileState{state.Claude, state.Codex} {
 		if fs != nil && fs.Bundle != nil {

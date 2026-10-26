@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // These goldens pin what the public build does with its identity: the CLI
@@ -53,9 +55,10 @@ func TestGoldenCLI(t *testing.T) {
 
 func TestGoldenSetup(t *testing.T) {
 	m := newMachine(t)
-	l := m.layoutFor(publicConfigDir)
-	m.prepare(l, "prod", 4318)
-	bin := m.installBundle("kenaz", built.kenaz, publicTree(t))
+	id := variant.Current
+	l := m.layout()
+	m.prepare(l, id.DefaultEnv, variant.Shared.RelayPorts[0])
+	bin := m.installBundle(id.BundleName, built.kenaz, pluginTree(t, id))
 	all := func(string) bool { return true }
 
 	var b strings.Builder
@@ -80,5 +83,5 @@ func TestGoldenSetup(t *testing.T) {
 	golden(t, "setup-undo", b.String())
 }
 
-// goldenDir holds one set of goldens per platform.
-var goldenDir = filepath.Join("kenaz", runtime.GOOS)
+// goldenDir holds one set of goldens per build variant and platform.
+var goldenDir = filepath.Join(variant.Current.Name, runtime.GOOS)

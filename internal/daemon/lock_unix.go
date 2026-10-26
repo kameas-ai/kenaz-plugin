@@ -8,9 +8,9 @@ import (
 	"syscall"
 )
 
-// tryLock takes an exclusive, non-blocking flock on path. The lock is tied
+// TryLock takes an exclusive, non-blocking flock on path. The lock is tied
 // to the open file description, so it is released if the process dies.
-func tryLock(path string) (release func(), err error) {
+func TryLock(path string) (release func(), err error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err

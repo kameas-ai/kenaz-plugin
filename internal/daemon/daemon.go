@@ -34,7 +34,7 @@ var ErrAlreadyRunning = errors.New("kenaz daemon already running")
 
 // DefaultPorts is the bind preference: the OTLP/HTTP default, a
 // fixed fallback, then ephemeral.
-var DefaultPorts = variant.Current.Ports()
+var DefaultPorts = variant.Shared.Ports()
 
 // Timing defaults.
 const (
@@ -196,7 +196,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := os.MkdirAll(d.opt.StateDir, 0o700); err != nil {
 		return err
 	}
-	release, err := tryLock(filepath.Join(d.opt.StateDir, LockFile))
+	release, err := TryLock(filepath.Join(d.opt.StateDir, LockFile))
 	if err != nil {
 		return err
 	}
@@ -219,6 +219,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		Version:   d.opt.Version,
 		StartedAt: now,
 		Nonce:     nonce,
+		Variant:   recordedVariant(),
 	}
 	d.lastActivity = now
 	d.started = true

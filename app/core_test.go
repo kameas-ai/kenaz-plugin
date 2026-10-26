@@ -21,6 +21,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/fleetapi/stub"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 const (
@@ -97,7 +98,7 @@ func (h *harness) env(ctx context.Context, out, errb *bytes.Buffer) app.Env {
 	return app.Env{
 		Provider: h.p, Stdout: out, Stderr: errb, Ctx: ctx,
 		Getenv: func(k string) string {
-			return map[string]string{"KENAZ_HOME": h.home, "KENAZ_ENV": "dev"}[k]
+			return map[string]string{variant.Shared.HomeVar: h.home, variant.Shared.EnvVar: "dev"}[k]
 		},
 		KeyStore:    h.ks,
 		OpenBrowser: func(string) error { return nil },
@@ -112,7 +113,7 @@ func (h *harness) run(t *testing.T, args ...string) (int, string, string) {
 	return code, out.String(), errb.String()
 }
 
-func (h *harness) state() string { return filepath.Join(h.home, "state", "dev") }
+func (h *harness) state() string { return filepath.Join(h.home, "plugin", "dev") }
 
 func TestStatusJSONUnofficial(t *testing.T) {
 	h := newHarness(t, stub.New())
@@ -351,14 +352,14 @@ func TestEarlyAccessRefusalShownInLoginStatusSetup(t *testing.T) {
 func TestStartupReportsBrokenRegistration(t *testing.T) {
 	h := newHarness(t, stub.New())
 	os.MkdirAll(h.state(), 0o700)
-	gone := filepath.Join(h.home, "opt", "homebrew", "Caskroom", "kenaz", "0.5.0", "kenaz_0.5.0_darwin_arm64")
-	st := `{"version":1,"claude":{"path":"x","written_sha256":"","created_container":false,"keys":{},
+	gone := filepath.Join(h.home, "opt", "homebrew", "Caskroom", variant.Current.CaskToken, "0.5.0", "kenaz_0.5.0_darwin_arm64")
+	st := `{"version":1,"variant":"` + variant.Current.Name + `","claude":{"path":"x","written_sha256":"","created_container":false,"keys":{},
 		"bundle":{"root":` + strconv.Quote(gone) + `,"version":"0.5.0","rendered":"r","digest":"d"}}}`
 	if err := os.WriteFile(filepath.Join(h.state(), "setup-state.json"), []byte(st), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, _, errb := h.run(t, "status", "--json")
-	if !strings.Contains(errb, "Claude Code points at a kenaz that no longer exists") || !strings.Contains(errb, "kenaz init") {
+	if !strings.Contains(errb, "Claude Code points at a "+variant.Current.Binary+" that no longer exists") || !strings.Contains(errb, "`"+variant.Current.Binary+" init`") {
 		t.Fatalf("status stderr: %q", errb)
 	}
 	for _, args := range [][]string{{"version"}, {"hook", "session-end"}} {

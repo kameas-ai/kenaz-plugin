@@ -92,9 +92,21 @@ type Result struct {
 }
 
 // Materializer writes skills into harness roots under the ownership rules.
+// Env is the Fleet environment it manages ("" is prod): it installs into
+// DirPrefixFor(Env) directories and lists, replaces and removes only
+// skills whose marker names Env, so relays of different environments
+// sharing ~/.claude/skills never touch each other's.
 type Materializer struct {
 	Roots []Root
+	Env   string
 	Now   func() time.Time
+}
+
+func (m *Materializer) env() string {
+	if m.Env == "" {
+		return prodEnv
+	}
+	return m.Env
 }
 
 func (m *Materializer) now() time.Time {
@@ -234,6 +246,7 @@ func (m *Materializer) Install(it Item) Result {
 	marker := Marker{
 		CatalogID: it.CatalogID, Kind: it.Kind, Slug: p.slug, Version: it.Version,
 		SHA256: p.sha, Source: it.Source, InstalledAt: m.now().UTC(), Stripped: p.stripped,
+		Env: m.env(),
 	}
 	if p.translated {
 		marker.TranslatedFrom = "slashcmd"
@@ -242,7 +255,7 @@ func (m *Materializer) Install(it Item) Result {
 	// root never leaves the item half-installed.
 	dirs := make([]string, len(m.Roots))
 	for i, r := range m.Roots {
-		dir, ok, err := targetDir(r.Dir, p.slug, it.CatalogID)
+		dir, ok, err := m.targetDir(r.Dir, p.slug, it.CatalogID)
 		if err != nil {
 			res.Detail = DetailWriteFailed
 			return res
@@ -255,11 +268,11 @@ func (m *Materializer) Install(it Item) Result {
 	}
 	for i, r := range m.Roots {
 		dir := dirs[i]
-		if cur, err := ReadMarker(dir); err == nil && cur.SHA256 == p.sha && cur.Version == it.Version && cur.Source == it.Source {
+		if cur, err := ReadMarker(dir); err == nil && cur.SHA256 == p.sha && cur.Version == it.Version && cur.Source == it.Source && cur.Env == marker.Env {
 			res.Dirs = append(res.Dirs, dir)
 			continue // already current
 		}
-		if err := writeAtomic(r.Dir, dir, p.skill.Files, marker); err != nil {
+		if err := m.writeAtomic(r.Dir, dir, p.skill.Files, marker); err != nil {
 			res.Detail = DetailWriteFailed
 			return res
 		}
@@ -275,9 +288,11 @@ func (m *Materializer) Install(it Item) Result {
 
 // targetDir picks the directory for slug in root. ok=false means an
 // unmarked directory occupies the name (name_conflict). A marked directory
-// owned by another catalog item gets a -<6 hex of catalog id> suffix.
-func targetDir(root, slug, catalogID string) (string, bool, error) {
-	base := filepath.Join(root, DirPrefix+slug)
+// owned by another catalog item, or by another Fleet environment, gets a
+// -<6 hex of catalog id> suffix.
+func (m *Materializer) targetDir(root, slug, catalogID string) (string, bool, error) {
+	mine := func(mk Marker) bool { return mk.CatalogID == catalogID && mk.FleetEnv() == m.env() }
+	base := filepath.Join(root, DirPrefixFor(m.env())+slug)
 	fi, err := os.Lstat(base)
 	if errors.Is(err, os.ErrNotExist) {
 		return base, true, nil
@@ -292,7 +307,7 @@ func targetDir(root, slug, catalogID string) (string, bool, error) {
 	if err != nil {
 		return "", false, nil // unmarked: never touch
 	}
-	if cur.CatalogID == catalogID {
+	if mine(cur) {
 		return base, true, nil
 	}
 	alt := base + "-" + shortID(catalogID)
@@ -303,7 +318,7 @@ func targetDir(root, slug, catalogID string) (string, bool, error) {
 	if err != nil || !fi.IsDir() {
 		return "", false, err
 	}
-	if cur, err := ReadMarker(alt); err == nil && cur.CatalogID == catalogID {
+	if cur, err := ReadMarker(alt); err == nil && mine(cur) {
 		return alt, true, nil
 	}
 	return "", false, nil
@@ -322,11 +337,11 @@ func randSuffix() string {
 
 // writeAtomic builds the skill in a temp sibling and swaps it into dir.
 // Only regular files are created (mode 0644; never executable).
-func writeAtomic(root, dir string, files map[string]string, mk Marker) error {
+func (m *Materializer) writeAtomic(root, dir string, files map[string]string, mk Marker) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return err
 	}
-	tmp := filepath.Join(root, ".kameas-tmp-"+randSuffix())
+	tmp := filepath.Join(root, scratchPrefix(m.env(), "tmp")+randSuffix())
 	if err := os.Mkdir(tmp, 0o755); err != nil {
 		return err
 	}
@@ -368,11 +383,11 @@ func writeAtomic(root, dir string, files map[string]string, mk Marker) error {
 	}
 	var old string
 	if _, err := os.Lstat(dir); err == nil {
-		if _, err := ReadMarker(dir); err != nil {
+		if cur, err := ReadMarker(dir); err != nil || cur.FleetEnv() != m.env() {
 			cleanup()
-			return errNoMarker // re-checked: never replace an unmarked dir
+			return errNoMarker // re-checked: never replace an unmarked or other env's dir
 		}
-		old = filepath.Join(root, ".kameas-old-"+randSuffix())
+		old = filepath.Join(root, scratchPrefix(m.env(), "old")+randSuffix())
 		if err := os.Rename(dir, old); err != nil {
 			cleanup()
 			return err
@@ -398,9 +413,11 @@ type Owned struct {
 	Marker Marker
 }
 
-// Owned lists every marked kameas-* directory in the roots and removes
-// leftover temp/old directories from interrupted swaps.
+// Owned lists every marked kameas-* directory of m's Fleet environment in
+// the roots and removes that environment's leftover temp/old directories
+// from interrupted swaps. Other environments' skills are not listed.
 func (m *Materializer) Owned() ([]Owned, error) {
+	tmp, old := scratchPrefix(m.env(), "tmp"), scratchPrefix(m.env(), "old")
 	var out []Owned
 	for _, r := range m.Roots {
 		ents, err := os.ReadDir(r.Dir)
@@ -412,7 +429,7 @@ func (m *Materializer) Owned() ([]Owned, error) {
 		}
 		for _, e := range ents {
 			name := e.Name()
-			if strings.HasPrefix(name, ".kameas-tmp-") || strings.HasPrefix(name, ".kameas-old-") {
+			if strings.HasPrefix(name, tmp) || strings.HasPrefix(name, old) {
 				_ = os.RemoveAll(filepath.Join(r.Dir, name))
 				continue
 			}
@@ -421,7 +438,7 @@ func (m *Materializer) Owned() ([]Owned, error) {
 			}
 			dir := filepath.Join(r.Dir, name)
 			mk, err := ReadMarker(dir)
-			if err != nil {
+			if err != nil || mk.FleetEnv() != m.env() {
 				continue
 			}
 			out = append(out, Owned{Root: r, Dir: dir, Marker: mk})
@@ -442,7 +459,7 @@ func (m *Materializer) Remove(catalogID string) (int, error) {
 		if o.Marker.CatalogID != catalogID {
 			continue
 		}
-		if err := removeOwned(o.Dir); err != nil {
+		if err := m.removeOwned(o.Dir); err != nil {
 			return n, err
 		}
 		n++
@@ -450,12 +467,13 @@ func (m *Materializer) Remove(catalogID string) (int, error) {
 	return n, nil
 }
 
-// removeOwned deletes dir only if it still carries a valid marker.
-func removeOwned(dir string) error {
-	if _, err := ReadMarker(dir); err != nil {
+// removeOwned deletes dir only if it still carries a valid marker of m's
+// Fleet environment.
+func (m *Materializer) removeOwned(dir string) error {
+	if mk, err := ReadMarker(dir); err != nil || mk.FleetEnv() != m.env() {
 		return errNoMarker
 	}
-	tomb := filepath.Join(filepath.Dir(dir), ".kameas-old-"+randSuffix())
+	tomb := filepath.Join(filepath.Dir(dir), scratchPrefix(m.env(), "old")+randSuffix())
 	if err := os.Rename(dir, tomb); err != nil {
 		return err
 	}

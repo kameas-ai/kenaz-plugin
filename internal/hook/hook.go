@@ -103,6 +103,9 @@ type Deps struct {
 	Getenv        func(string) string
 	StartDeadline time.Duration
 	EndDeadline   time.Duration
+	// Tag, when set, prefixes the session-start context (the staff dev
+	// build's "[kenaz-dev · dev]").
+	Tag string
 }
 
 // input is the subset of the hook stdin payload both harnesses send.
@@ -214,6 +217,9 @@ func sessionStart(ctx context.Context, stdin io.Reader, stdout io.Writer, deps D
 			text += "\n\n"
 		}
 		text += index
+	}
+	if text != "" && deps.Tag != "" {
+		text = deps.Tag + " " + text
 	}
 	// reloadSkills is a Claude Code field; only send it when we are sure
 	// we are talking to Claude Code.

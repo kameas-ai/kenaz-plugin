@@ -114,6 +114,18 @@ idfail "plugin id" 'const p = "kenaz@kenaz"'
 idfail "cookie" 'const c = "kenaz_approvals_csrf"'
 idfail "env var" 'const e = "KENAZ_ENV"'
 idfail "relay port" 'var p = []int{4318}'
+# Generated from both variant tables and the shared one (issue #34 F3).
+idfail "dev binary name" 'var b = "kenaz-dev"'
+idfail "dev plugin id" 'const p = "kenaz-dev@kenaz-dev"'
+idfail "dev display name" 'const n = "Kenaz (dev) approvals"'
+idfail "dev env cookie" 'const c = "kenaz_dev_approvals_csrf"'
+idfail "shared root" 'var r = filepath.Join(home, ".kenaz")'
+idfail "home env var" 'const e = "KENAZ_HOME"'
+idfail "backup suffix" 'const s = "x.kenaz-backup"'
+idfail "dev tmp suffix" 'const s = ".kenaz-dev-tmp"'
+idfail "fish file" 'const f = "kenaz-dev.fish"'
+idfail "PATH marker" 'const m = "# >>> kenaz PATH >>>"'
+idfail "dev cask" 'const c = "Caskroom/kenaz-dev"'
 fresh; mkdir -p "$tmp/r/internal/x" "$tmp/r/internal/variant"
 printf 'package x\n\n// the "kenaz" marketplace on 4318\nconst p = "@kameas/kenaz-opencode"\n' > "$tmp/r/internal/x/x.go"
 printf 'package variant\n\nvar b = "kenaz"\n' > "$tmp/r/internal/variant/v.go"

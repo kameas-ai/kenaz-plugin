@@ -6,10 +6,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
-
-	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Store persists, per Fleet user, the notice version the member accepted
@@ -32,23 +31,6 @@ type storeFile struct {
 
 // NewStore returns a Store backed by path (created on first write).
 func NewStore(path string) *Store { return &Store{path: path} }
-
-// DefaultStorePath is $KENAZ_STATE_DIR/consent.json, or the build's
-// consent directory in the user config dir (variant.Identity.ConsentDir).
-// TODO: move to internal/config's $STATE.
-func DefaultStorePath() (string, error) {
-	if d := os.Getenv(variant.Current.StateDirVar); d != "" {
-		return filepath.Join(d, "consent.json"), nil
-	}
-	d, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	if variant.Current.ConsentDir == "" {
-		return filepath.Join(d, "kameas", variant.Current.ConfigDir, "consent.json"), nil
-	}
-	return filepath.Join(d, variant.Current.ConsentDir, "consent.json"), nil
-}
 
 // Accepted returns the stored version for userID, or "".
 func (s *Store) Accepted(userID string) string {
@@ -201,6 +183,11 @@ func (s *Store) write(f storeFile) error {
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		return err
+	}
+	// Windows cannot fsync a directory (Access is denied), and its
+	// rename is durable without it.
+	if runtime.GOOS == "windows" {
+		return nil
 	}
 	d, err := os.Open(filepath.Dir(s.path))
 	if err != nil {

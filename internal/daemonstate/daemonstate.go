@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,6 +50,9 @@ type State struct {
 	Version   string    `json:"version"`
 	StartedAt time.Time `json:"started_at"`
 	Nonce     string    `json:"nonce"`
+	// Variant is the build running the relay ("" for releases before
+	// builds recorded it, which were all kenaz).
+	Variant string `json:"variant,omitempty"`
 }
 
 // Healthz is the body of GET /healthz.
@@ -81,41 +85,38 @@ func System() (Resolver, error) {
 	return Resolver{Home: home, GOOS: runtime.GOOS, Getenv: os.Getenv}, nil
 }
 
-// Env returns the selected environment: the build's env variable
-// (KENAZ_ENV) when it names an environment the build allows, otherwise
-// its default (prod). Codex passes the plugin's
-// ${user_config...} placeholders through unexpanded, so a value that still
-// starts with "${" is ignored.
-func (r Resolver) Env() string {
-	v := strings.TrimSpace(r.Getenv(variant.Current.EnvVar))
-	if v == "" || strings.HasPrefix(v, "${") || !variant.Current.Allowed(v) {
-		return variant.Current.DefaultEnv
+// Env returns the selected environment: the first of the env variables
+// (variant.Shared.EnvVars) that is set, or the build's default. Codex
+// passes the plugin's ${user_config...} placeholders through unexpanded, so
+// a value that still starts with "${" is skipped. Like config.ResolveEnv,
+// an unknown environment, or one this build does not connect to (the
+// staff dev build refuses prod), is an error, never a silent fallback.
+func (r Resolver) Env() (string, error) {
+	for _, name := range variant.Shared.EnvVars {
+		v := strings.ToLower(strings.TrimSpace(r.Getenv(name)))
+		if v == "" || strings.HasPrefix(v, "${") {
+			continue
+		}
+		if !slices.Contains(Environments, v) {
+			return "", fmt.Errorf("unknown Fleet env %q from %s (want %s)", v, name, variant.Current.EnvChoices("|"))
+		}
+		if !variant.Current.Allowed(v) {
+			return "", fmt.Errorf("%s connects only to %s Fleet (%s=%s)", variant.Current.Binary, variant.Current.EnvChoices(" or "), name, v)
+		}
+		return v, nil
 	}
-	return v
+	return variant.Current.DefaultEnv, nil
 }
 
-// StateDir is $STATE for env:
-//
-//	macOS:   ~/Library/Application Support/kameas/kenaz/state/<env>
-//	Windows: %LocalAppData%\kameas\kenaz\state\<env>
-//	other:   ${XDG_STATE_HOME:-~/.local/state}/kameas/kenaz/<env>
+// StateDir is $STATE for env, the same on every platform and for every
+// build: ~/.kenaz/plugin/<env>, or $KENAZ_HOME/plugin/<env> (see
+// config.DefaultPaths, which the commands use; this is the fallback for
+// callers without one).
 func (r Resolver) StateDir(env string) string {
-	switch r.GOOS {
-	case "darwin":
-		return filepath.Join(r.Home, "Library", "Application Support", "kameas", variant.Current.ConfigDir, "state", env)
-	case "windows":
-		base := r.Getenv("LocalAppData")
-		if base == "" {
-			base = filepath.Join(r.Home, "AppData", "Local")
-		}
-		return filepath.Join(base, "kameas", variant.Current.ConfigDir, "state", env)
-	default:
-		base := r.Getenv("XDG_STATE_HOME")
-		if base == "" {
-			base = filepath.Join(r.Home, ".local", "state")
-		}
-		return filepath.Join(base, "kameas", variant.Current.ConfigDir, env)
+	if h := r.Getenv(variant.Shared.HomeVar); h != "" {
+		return filepath.Join(h, variant.Shared.ProductDir, env)
 	}
+	return filepath.Join(r.Home, variant.Shared.RootDir, variant.Shared.ProductDir, env)
 }
 
 // Read loads daemon.json from stateDir.

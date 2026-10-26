@@ -71,7 +71,11 @@ func runStatus(env Env, args []string) int {
 		return ExitOK
 	}
 	w := env.Stdout
-	fmt.Fprintf(w, "%s %s — %s build (%s)\n", variant.Current.DisplayName, Version, st.Flavor, flavorLine(env.Provider))
+	if variant.Current.StaffOnly {
+		fmt.Fprintf(w, "%s %s — %s dev build (%s) · Fleet %s · %s\n", variant.Current.DisplayName, Version, st.Flavor, flavorLine(env.Provider), st.Env, staffOnlyNote)
+	} else {
+		fmt.Fprintf(w, "%s %s — %s build (%s)\n", variant.Current.DisplayName, Version, st.Flavor, flavorLine(env.Provider))
+	}
 	fmt.Fprintf(w, "  environment:  %s\n", st.Env)
 	fmt.Fprintf(w, "  session:      %s\n", strings.ReplaceAll(st.Session, "_", " "))
 	if st.Tier != "" {

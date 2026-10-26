@@ -162,6 +162,7 @@ func installApprovals(opt *daemon.Options, key []byte) (func(*daemon.Daemon), er
 	var d *daemon.Daemon
 	m, err := approvals.New(approvals.Options{
 		StoreKey: key,
+		Env:      string(opt.Env),
 		Dir:      approvalsDir(opt.StateDir),
 		Identity: sessionIdentity(opt.Provider),
 		Verifier: verifierFor(opt.Provider, opt.Env),

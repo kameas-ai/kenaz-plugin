@@ -151,7 +151,7 @@ func (l *Lane) Purge() error {
 	}
 	var errs []error
 	for _, o := range owned {
-		errs = append(errs, removeOwned(o.Dir))
+		errs = append(errs, l.Syncer.Mat.removeOwned(o.Dir))
 	}
 	errs = append(errs, l.Syncer.Store.Reset())
 	if len(owned) > 0 {

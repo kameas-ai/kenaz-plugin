@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -32,8 +34,8 @@ func TestProfileFor(t *testing.T) {
 		{Zsh, "linux", env(map[string]string{"ZDOTDIR": "/z"}), "/z/.zshrc"},
 		{Bash, "darwin", none, "/h/.bash_profile"},
 		{Bash, "linux", none, "/h/.bashrc"},
-		{Fish, "linux", none, "/h/.config/fish/conf.d/kenaz.fish"},
-		{Fish, "darwin", env(map[string]string{"XDG_CONFIG_HOME": "/x"}), "/x/fish/conf.d/kenaz.fish"},
+		{Fish, "linux", none, "/h/.config/fish/conf.d/" + variant.Current.Binary + ".fish"},
+		{Fish, "darwin", env(map[string]string{"XDG_CONFIG_HOME": "/x"}), "/x/fish/conf.d/" + variant.Current.Binary + ".fish"},
 	}
 	for _, c := range cases {
 		if got := ProfileFor(c.sh, c.goos, "/h", c.env, func(string) bool { return false }); filepath.ToSlash(got) != c.want {

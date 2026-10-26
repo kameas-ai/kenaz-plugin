@@ -154,7 +154,7 @@ func (s *Syncer) Sync(ctx context.Context) (Report, error) {
 		if keep[o.Marker.CatalogID] {
 			continue
 		}
-		if err := removeOwned(o.Dir); err != nil {
+		if err := s.Mat.removeOwned(o.Dir); err != nil {
 			s.log().Warn("skills: remove failed", "err", err.Error())
 			continue
 		}
@@ -292,7 +292,7 @@ func (s *Syncer) dropAccount() error {
 	}
 	var errs []error
 	for _, o := range owned {
-		errs = append(errs, removeOwned(o.Dir))
+		errs = append(errs, s.Mat.removeOwned(o.Dir))
 	}
 	errs = append(errs, s.Store.Reset())
 	if len(owned) > 0 {

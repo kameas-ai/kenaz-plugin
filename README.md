@@ -16,6 +16,28 @@ What Kenaz for Claude Code and Codex reports about your sessions is decided by o
 
 Release binaries are official builds that include a proprietary module and are licensed under the Kameas Client Software License. The source in this repository is Apache-2.0 and can be built without that module, but such builds cannot connect to Kameas Fleet.
 
+## Before you install: the `kenaz` program
+
+The plugin runs the `kenaz` program on your computer, so install that first. One line does it:
+
+- macOS and Linux: `curl -fsSL https://downloads.kameas.ai/kenaz-plugin/install.sh | sh`
+- Windows (PowerShell): `irm https://downloads.kameas.ai/kenaz-plugin/install.ps1 | iex`
+
+Then run `kenaz init`, as the installer tells you. Other ways to install are on https://kenaz.kameas.ai/. You also need an account in a Kameas Fleet organization that has joined the Kenaz early-access program.
+
+## Privacy Policy
+
+Our Privacy Policy is at https://kenaz.kameas.ai/privacy.html, and the full list of what Kenaz can send is at https://kenaz.kameas.ai/telemetry. In short:
+
+- **Where data goes:** only to your organization's Kameas Fleet, run by Kameas AI, Inc. Kenaz sends nothing to any other company (see "Your AI tool" below). The `kenaz` program sends nothing to the companies that make your AI tools.
+- **Signing in and your device:** when you sign in, Kenaz registers this device with your organization's Fleet: an opaque device ID, a display name you control, the operating system, architecture and software version. Before you sign in, nothing is sent.
+- **Usage telemetry, only the classes you turn on:** session counts and timing, tool kinds, error categories, model names, token counts and estimated cost, linked to your account and device. Every class is off until you turn it on (`kenaz optin`). It comes from your AI tool's own OpenTelemetry export, which `kenaz setup` points at the `kenaz` program on your computer, not from the plugin's hooks or tools. Prompts, AI responses, tool inputs and outputs, code, file contents and file paths are never sent.
+- **Memory:** notes are kept on your device. They are sent to Kameas Fleet, for your account alone, only if you turn on memory sync, which is off until you turn it on and shows its own notice first. Your organization's administrators and Kameas staff have no view of synced notes.
+- **Skills and team context:** searches, and skills or context you open, are sent to your Fleet as requests. Content is sent only when you publish a skill or share a note, and only after you approve the exact content on the local approval page (see [Approving writes](#approving-writes)).
+- **Your AI tool:** anything Kenaz gives your AI tool during a session (a memory note, a skill, team context, or teammates' names where your administrator allows it) becomes part of that session and is handled by the company that makes the tool, like the rest of your conversation.
+
+For the usage, memory, skills and context data above, your organization is the controller and Kameas processes it on its behalf. Kameas is the controller for account and sign-in security data, as the Privacy Policy explains. Questions: dpo@kameas.ai.
+
 ## Not the Kameas Fleet admin CLI
 
 `kenaz` is the end-user component of Kenaz for Claude Code and Codex: the plugin and the local program it runs. It is not the Kameas Fleet admin CLI (`fleet-admin`), which is a staff-only tool for operating the Kameas Fleet service. `kenaz` never uses AWS credentials. It signs in only with your own Kameas account (`kenaz login`) and talks only to your organization's Kameas Fleet.
@@ -90,13 +112,25 @@ After an upgrade, the hosts run the new `kenaz` with the previous version's plug
 
 ### Where Kenaz keeps its files
 
-| | Configuration (`config.toml`) | State (relay, queue, memory, credentials files) |
-|---|---|---|
-| macOS | `~/Library/Application Support/kameas/kenaz` | `~/Library/Application Support/kameas/kenaz/state` |
-| Linux | `$XDG_CONFIG_HOME/kameas/kenaz` | `$XDG_STATE_HOME/kameas/kenaz` |
-| Windows | `%AppData%\kameas\kenaz` | `%LocalAppData%\kameas\kenaz\state` |
+Kenaz keeps its files in `~/.kenaz/plugin` on every platform (`%USERPROFILE%\.kenaz\plugin` on Windows), next to the Kenaz desktop app's `~/.kenaz/harness`:
 
-`KENAZ_HOME` overrides both. On Windows the state stays on this machine (`%LocalAppData%` never roams with a roaming profile). Releases up to 0.4.x kept it in `%AppData%\kameas\kenaz\state`; the first `kenaz` command of a newer release moves it there. If two `kenaz` processes start at once, both end up on the new location. If another `kenaz` process (such as a running relay) still has files open in the old location, `kenaz` keeps using it and tries again next time. Run `kenaz setup claude` and `kenaz setup codex` once after the move if you installed from an archive, so the hosts point at the plugin copy's new location.
+| | |
+|---|---|
+| `~/.kenaz/plugin/config.toml` | Configuration |
+| `~/.kenaz/plugin/<env>/` | One Kameas Fleet environment's state (`prod`, `stage`, `dev`): the relay, the queue, setup and skills |
+| `~/.kenaz/plugin/memory/`, `credentials/` | Memory, and the credentials files on a machine with no OS keychain |
+
+`KENAZ_HOME` replaces `~/.kenaz` (the archive installer uses it too, for `$KENAZ_HOME/install`).
+
+**Moving from an earlier release.** Releases up to 0.6.x kept these files in `~/Library/Application Support/kameas/kenaz` (macOS), `$XDG_CONFIG_HOME/kameas/kenaz` and `$XDG_STATE_HOME/kameas/kenaz` (Linux), `%AppData%\kameas\kenaz` and `%LocalAppData%\kameas\kenaz\state` (Windows), or `$KENAZ_HOME/config` and `$KENAZ_HOME/state`. `KENAZ_HOME` now means the root that holds `plugin/` (and the installer's `install/`).
+
+- **Nothing moves on its own.** After an upgrade, everything keeps working from the old location.
+- **To move,** close Claude Code, Codex and Claude Desktop, then run `kenaz init` (or `kenaz migrate`). It moves the state and `config.toml` with one rename each. If anything is in the way (an app still running, a file open on Windows, another volume, missing permissions), nothing changes and the old location stays in use. Nothing is ever copied or deleted.
+- It leaves a link at the old location (a junction on Windows where symlinks aren't allowed), so the apps keep loading the plugin from the path setup registered, and a `MOVED.txt` file that says where the files went. `kenaz init` also registers the apps from the new location; after `kenaz migrate`, run `kenaz init`.
+- If `~/.kenaz/plugin` already has its own files (for example from a newer build), nothing is merged: `~/.kenaz/plugin` is used, and `kenaz migrate` and `kenaz doctor` list the old files, which you can delete.
+- `kenaz doctor` says when files are still used from the old location. `kenaz status`, `kenaz doctor` and `kenaz login` say when an app still uses the plugin from there.
+
+Downgrading to 0.6.x or earlier after moving isn't supported.
 
 ## OpenCode (preview)
 
@@ -115,7 +149,7 @@ Differences from Claude Code and Codex: there is no session-start banner or memo
 
 `kenaz login` opens your browser to sign in. Sign-in redirects back to a one-time listener on `127.0.0.1` (a random port) in the `kenaz` process. If no browser can be opened (for example on a machine with no display), or with `kenaz login --no-browser`, `kenaz` prints the sign-in link instead and keeps waiting for the redirect.
 
-Sign-in tokens and the key that encrypts queued uploads are kept in the OS keychain: the macOS Keychain, the Windows Credential Manager, or the Secret Service on Linux. On a machine with no usable OS keychain (such as a Linux VM with no Secret Service), `kenaz` keeps them as files instead, in a `credentials` directory under its state directory (`~/.local/state/kameas/kenaz/credentials` by default on Linux, or `$KENAZ_HOME/state/credentials`). The directory is created with mode 0700 and each file with mode 0600, and `kenaz` refuses to read a credentials file that other users can read. `kenaz logout` deletes these files. `kenaz doctor` and `kenaz status` show which store is in use (`credential store: OS keychain` or `credential store: files (no OS keychain)`).
+Sign-in tokens and the key that encrypts queued uploads are kept in the OS keychain: the macOS Keychain, the Windows Credential Manager, or the Secret Service on Linux. On a machine with no usable OS keychain (such as a Linux VM with no Secret Service), `kenaz` keeps them as files instead, in `~/.kenaz/plugin/credentials` (or `$KENAZ_HOME/plugin/credentials`). The directory is created with mode 0700 and each file with mode 0600, and `kenaz` refuses to read a credentials file that other users can read. `kenaz logout` deletes these files. `kenaz doctor` and `kenaz status` show which store is in use (`credential store: OS keychain` or `credential store: files (no OS keychain)`).
 
 The first sign-in or relay start records the choice in `credentials/STORE`, and `kenaz` uses the recorded store from then on, without checking again. If the recorded store is the OS keychain and it can't be reached, commands stop with `OS keychain unavailable; try again or run kenaz logout to reset`; they never switch to files on their own, which would sign you out. `kenaz logout` removes the record, so the next sign-in chooses again. `kenaz doctor` shows the recorded store and whether a fresh check agrees with it. The harness hooks and `kenaz mcp` never check for a keychain (they have to start quickly). Until a store is recorded, they treat the device as signed out.
 

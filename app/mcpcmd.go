@@ -31,12 +31,18 @@ type daemonLink struct {
 	spawn    daemon.SpawnFunc
 	id       string
 	log      *slog.Logger
+	// conflict is set when another build's relay uses the environment:
+	// the link never connects or spawns, and reports it.
+	conflict error
 
 	mu sync.Mutex
 	c  *daemon.Client
 }
 
 func (l *daemonLink) client(ctx context.Context) *daemon.Client {
+	if l.conflict != nil {
+		return nil
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.c != nil {
@@ -59,6 +65,9 @@ func (l *daemonLink) client(ctx context.Context) *daemon.Client {
 // Status implements mcp.StatusSource.
 func (l *daemonLink) Status(ctx context.Context) (daemon.Status, error) {
 	c := l.client(ctx)
+	if l.conflict != nil {
+		return daemon.Status{}, l.conflict
+	}
 	if c == nil {
 		return daemon.Status{}, daemon.ErrNotRunning
 	}
@@ -81,10 +90,18 @@ func runMCP(env Env, args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
-	r, err := env.resolve(*envName)
+	r, err := env.resolveState(*envName)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
+	}
+	// Another build is using this environment: serve anyway (a failure
+	// never fails the MCP handshake), with no relay and with every Fleet
+	// tool saying why. On-device memory has no environment and works.
+	provider := env.Provider
+	if r.Conflict != nil {
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+r.Conflict.Error())
+		provider = conflictProvider(provider, r.Conflict)
 	}
 	rot := &logx.Rotator{Path: filepath.Join(r.StateDir, "logs", "mcp.log")}
 	defer rot.Close()
@@ -93,7 +110,7 @@ func runMCP(env Env, args []string) int {
 	idb := make([]byte, 8)
 	rand.Read(idb)
 	spawn := r.spawner(env)
-	link := &daemonLink{stateDir: r.StateDir, spawn: spawn, id: "mcp-" + hex.EncodeToString(idb), log: log}
+	link := &daemonLink{stateDir: r.StateDir, spawn: spawn, id: "mcp-" + hex.EncodeToString(idb), log: log, conflict: r.Conflict}
 
 	ctx, cancel := context.WithCancel(env.Ctx)
 	// The pinger logs through rot. Stop it and wait for it before rot is
@@ -121,8 +138,10 @@ func runMCP(env Env, args []string) int {
 		}
 	}()
 
-	groups := append(append([]mcp.Group(nil), mcpGroups...), memoryGroup(env))
-	srv := mcp.NewServer(Version, mcp.Deps{Provider: env.Provider, Env: r.Env, Status: link, StateDir: r.StateDir, Approvals: approvalsClient(link.client)}, groups...)
+	menv := env
+	menv.Provider = provider
+	groups := append(append([]mcp.Group(nil), mcpGroups...), memoryGroup(menv))
+	srv := mcp.NewServer(Version, mcp.Deps{Provider: provider, Env: r.Env, Status: link, StateDir: r.StateDir, Approvals: approvalsClient(link.client)}, groups...)
 	serve := env.ServeMCP
 	if serve == nil {
 		serve = mcp.ServeStdio

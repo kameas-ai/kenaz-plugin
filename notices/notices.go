@@ -40,6 +40,15 @@ const (
 	// AgentTelemetryV2SmallID: analytics floor built, org of 2–4 members (adds
 	// the small-organization sentence).
 	AgentTelemetryV2SmallID = "agent-telemetry/v2-small"
+	// AgentTelemetryV3ID and AgentTelemetryV3SmallID replace v2 and
+	// v2-small (2026-10-25 revision): the closing sentence names
+	// "your AI tools" instead of two products. Description only: nothing new
+	// is sent and the audience is unchanged, so an opt-in recorded under v2
+	// stands under v3, and one under v2-small stands under v3-small
+	// (AgentTelemetryAccepted). v2 and v2-small shipped in v0.6.0 and stay
+	// embedded, unchanged, for the record.
+	AgentTelemetryV3ID      = "agent-telemetry/v3"
+	AgentTelemetryV3SmallID = "agent-telemetry/v3-small"
 )
 
 // Placeholders in braces are filled by internal/consent:
@@ -52,6 +61,10 @@ var (
 	agentTelemetryV2 string
 	//go:embed agent-telemetry/v2-small.md
 	agentTelemetryV2Small string
+	//go:embed agent-telemetry/v3.md
+	agentTelemetryV3 string
+	//go:embed agent-telemetry/v3-small.md
+	agentTelemetryV3Small string
 )
 
 // AgentTelemetry picks the edition that is true for the Fleet the member is
@@ -66,11 +79,29 @@ func AgentTelemetry(floorBuilt bool, orgSize string) Edition {
 	}
 	switch orgSize {
 	case OrgSizeStandard:
-		return Edition{AgentTelemetryV2ID, agentTelemetryV2}
+		return Edition{AgentTelemetryV3ID, agentTelemetryV3}
 	case OrgSizeSmall:
-		return Edition{AgentTelemetryV2SmallID, agentTelemetryV2Small}
+		return Edition{AgentTelemetryV3SmallID, agentTelemetryV3Small}
 	default: // unknown, or sole: the member's data is shown to them unsuppressed
 		return Edition{AgentTelemetryV1ID, AgentTelemetryV1}
+	}
+}
+
+// AgentTelemetryAccepted lists the editions whose opt-ins still stand while
+// current is the edition shown: current itself, then any earlier edition
+// that described the same data to the same audience in other words. An
+// opt-in under any of them is not re-confirmed. Editions that differ in what
+// they promise (v1 and v2/v3 differ in "Who sees it"; the -small editions
+// add the small-organization sentence) are never equivalent, so moving
+// between them still re-displays the notice.
+func AgentTelemetryAccepted(current string) []string {
+	switch current {
+	case AgentTelemetryV3ID:
+		return []string{AgentTelemetryV3ID, AgentTelemetryV2ID}
+	case AgentTelemetryV3SmallID:
+		return []string{AgentTelemetryV3SmallID, AgentTelemetryV2SmallID}
+	default:
+		return []string{current}
 	}
 }
 
@@ -86,9 +117,16 @@ func AgentTelemetry(floorBuilt bool, orgSize string) Edition {
 // kept), and that a note used in a session goes to the AI tool's provider.
 // Nothing new is sent, so enablements recorded under v1 stand without
 // re-consent; v1 stays embedded for the record.
+//
+// v3 (2026-10-25 revision) replaces the list of saving tools
+// with "a short label for the app that saved it (for example claude-code,
+// codex or cli)", so the notice stays true for every Supported Tool. v2
+// shipped in v0.6.0, so it is not edited in place. Nothing new is sent:
+// enablements under v1 and v2 stand.
 const (
 	MemorySyncV1ID = "memory-sync/v1"
 	MemorySyncV2ID = "memory-sync/v2"
+	MemorySyncV3ID = "memory-sync/v3"
 )
 
 var (
@@ -96,14 +134,16 @@ var (
 	MemorySyncV1 string
 	//go:embed memory-sync/v2.md
 	MemorySyncV2 string
+	//go:embed memory-sync/v3.md
+	MemorySyncV3 string
 )
 
 // MemorySync returns the current Memory Sync Notice edition: the one shown
 // and recorded when a user turns memory sync on.
-func MemorySync() Edition { return Edition{MemorySyncV2ID, MemorySyncV2} }
+func MemorySync() Edition { return Edition{MemorySyncV3ID, MemorySyncV3} }
 
 // MemorySyncAccepted lists the editions whose enablements still stand: the
 // current edition and every earlier edition that changed only wording, not
 // what is sent. A store enabled under any of them keeps syncing without a
 // re-prompt.
-func MemorySyncAccepted() []string { return []string{MemorySyncV2ID, MemorySyncV1ID} }
+func MemorySyncAccepted() []string { return []string{MemorySyncV3ID, MemorySyncV2ID, MemorySyncV1ID} }

@@ -14,6 +14,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Build metadata set at link time by the release pipeline:
@@ -58,10 +59,25 @@ type resolved struct {
 	Source   config.Source
 	Paths    config.Paths
 	StateDir string
+	// Conflict is set when another build's relay is using the
+	// environment (only one build at a time can).
+	Conflict error
 }
 
-// resolve applies the env precedence and creates the state directory.
+// resolve applies the env precedence and creates the state directory. It
+// refuses an environment another build is using (Conflict).
 func (e Env) resolve(flagEnv string) (resolved, error) {
+	r, err := e.resolveState(flagEnv)
+	if err == nil && r.Conflict != nil {
+		return resolved{}, r.Conflict
+	}
+	return r, err
+}
+
+// resolveState is resolve, reporting another build's use of the
+// environment in Conflict instead of failing (mcp serves anyway; doctor
+// diagnoses it).
+func (e Env) resolveState(flagEnv string) (resolved, error) {
 	paths, err := e.paths()
 	if err != nil {
 		return resolved{}, err
@@ -78,7 +94,26 @@ func (e Env) resolve(flagEnv string) (resolved, error) {
 	if err != nil {
 		return resolved{}, err
 	}
-	return resolved{Env: env, Source: src, Paths: paths, StateDir: dir}, nil
+	return resolved{Env: env, Source: src, Paths: paths, StateDir: dir, Conflict: otherBuildRelay(dir)}, nil
+}
+
+// otherBuildRelay refuses a Fleet environment whose relay another build
+// is running. Every build keeps an environment's state in the same
+// directory, and only one build at a time can use it: the relay signs in,
+// queues and syncs skills with its own build's Fleet connection.
+// daemon.json names the build, so this costs a file read, plus a health
+// check only when the file names another build.
+func otherBuildRelay(stateDir string) error {
+	in, err := daemon.ReadInfo(stateDir)
+	if err != nil || in.Build() == variant.Current.Name {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if daemon.Probe(ctx, in) != nil {
+		return nil // not running: the next relay of this build takes over
+	}
+	return &daemon.OtherBuildError{Variant: in.Build(), PID: in.PID}
 }
 
 // spawner returns the func that starts the on-demand relay daemon for r

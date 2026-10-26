@@ -20,7 +20,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/memory"
 )
 
-func (h *harness) memoryDB() string { return filepath.Join(h.home, "state", "memory", "memory.db") }
+func (h *harness) memoryDB() string { return filepath.Join(h.home, "plugin", "memory", "memory.db") }
 
 // mcpCall runs `kenaz mcp` with an in-memory client and calls one tool.
 func (h *harness) mcpCall(t *testing.T, tool string, args map[string]any) (map[string]any, bool) {
@@ -170,7 +170,7 @@ func TestMemoryDisableEnable(t *testing.T) {
 	if _, err := os.Stat(db); err != nil {
 		t.Fatal("disable deleted the store")
 	}
-	cfg, _ := os.ReadFile(filepath.Join(h.home, "config", "config.toml"))
+	cfg, _ := os.ReadFile(filepath.Join(h.home, "plugin", "config.toml"))
 	if !strings.Contains(string(cfg), `memory = "off"`) {
 		t.Fatalf("config: %q", cfg)
 	}

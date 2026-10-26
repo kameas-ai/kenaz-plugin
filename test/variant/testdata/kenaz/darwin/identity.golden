@@ -1,39 +1,47 @@
+variant: kenaz
 keychain service: kenaz-plugin
 relay ports: [4318 47318 0]
 env vars: [KENAZ_ENV CLAUDE_PLUGIN_OPTION_FLEET_ENV FLEET_PLUGIN_ENV]
 mcp server: kenaz
 mcp host env var: KENAZ_MCP_HOST
 official repo: kameas-ai/kenaz-plugin
-relay state darwin prod: /h/Library/Application Support/kameas/kenaz/state/prod
-relay state darwin stage: /h/Library/Application Support/kameas/kenaz/state/stage
-relay state darwin dev: /h/Library/Application Support/kameas/kenaz/state/dev
+approvals csrf cookie prod: kenaz_approvals_csrf
+approvals csrf cookie stage: kenaz_stage_approvals_csrf
+approvals csrf cookie dev: kenaz_dev_approvals_csrf
+relay state darwin prod: /h/.kenaz/plugin/prod
+relay state darwin stage: /h/.kenaz/plugin/stage
+relay state darwin dev: /h/.kenaz/plugin/dev
 fish profile darwin: /h/.config/fish/conf.d/kenaz.fish
-relay state linux prod: /h/.local/state/kameas/kenaz/prod
-relay state linux stage: /h/.local/state/kameas/kenaz/stage
-relay state linux dev: /h/.local/state/kameas/kenaz/dev
+relay state linux prod: /h/.kenaz/plugin/prod
+relay state linux stage: /h/.kenaz/plugin/stage
+relay state linux dev: /h/.kenaz/plugin/dev
 fish profile linux: /h/.config/fish/conf.d/kenaz.fish
-relay state windows prod: C:\L/kameas/kenaz/state/prod
-relay state windows stage: C:\L/kameas/kenaz/state/stage
-relay state windows dev: C:\L/kameas/kenaz/state/dev
+relay state windows prod: /h/.kenaz/plugin/prod
+relay state windows stage: /h/.kenaz/plugin/stage
+relay state windows dev: /h/.kenaz/plugin/dev
 fish profile windows: /h/.config/fish/conf.d/kenaz.fish
 relay env =: prod
 relay env KENAZ_ENV=dev: dev
 relay env KENAZ_ENV=stage: stage
-relay env KENAZ_ENV=bogus: prod
+relay env KENAZ_ENV=prod: prod
+relay env KENAZ_ENV=bogus: error: unknown Fleet env "bogus" from KENAZ_ENV (want prod|stage|dev)
 path block: 
 # >>> kenaz PATH >>>
 case ":$PATH:" in *':/d:'*) ;; *) export PATH='/d':"$PATH" ;; esac
 # <<< kenaz PATH <<<
 
-config dir: Library/Application Support/kameas/kenaz
-state root: Library/Application Support/kameas/kenaz/state
-consent store: Library/Application Support/kenaz-plugin/consent.json
-KENAZ_HOME config dir: kh/config
-KENAZ_HOME state root: kh/state
+config dir: .kenaz/plugin
+state root: .kenaz/plugin
+consent store: .kenaz/plugin/prod/consent.json
+KENAZ_HOME config dir: kh/plugin
+KENAZ_HOME state root: kh/plugin
 resolve flag="" ="" file="": prod default <nil>
 resolve flag="dev" ="" file="": dev flag <nil>
+resolve flag="prod" ="" file="": prod flag <nil>
 resolve flag="" KENAZ_ENV="stage" file="": stage env <nil>
+resolve flag="" KENAZ_ENV="prod" file="": prod env <nil>
 resolve flag="" CLAUDE_PLUGIN_OPTION_FLEET_ENV="dev" file="": dev env <nil>
 resolve flag="" FLEET_PLUGIN_ENV="dev" file="": dev env <nil>
 resolve flag="" ="" file="stage": stage config <nil>
+resolve flag="" ="" file="prod": prod config <nil>
 resolve flag="bogus" ="" file="":   unknown Fleet env "bogus" from flag (want prod|stage|dev)

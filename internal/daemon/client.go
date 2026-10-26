@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Client talks to a running daemon over loopback, authenticated with the
@@ -25,6 +26,18 @@ type Client struct {
 
 // Connect reads daemon.json and verifies the daemon with Probe.
 func Connect(ctx context.Context, stateDir string) (*Client, error) {
+	c, err := ConnectAny(ctx, stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if v := c.Info.Build(); v != variant.Current.Name {
+		return nil, &OtherBuildError{Variant: v, PID: c.Info.PID}
+	}
+	return c, nil
+}
+
+// ConnectAny is Connect for a relay of any build (to stop one).
+func ConnectAny(ctx context.Context, stateDir string) (*Client, error) {
 	in, err := ReadInfo(stateDir)
 	if err != nil {
 		return nil, err
@@ -120,9 +133,15 @@ type SpawnFunc func() error
 // needed and waiting up to wait for it. Concurrent callers may each
 // spawn; the lockfile guarantees only one daemon survives, and every
 // caller connects to it.
+//
+// Another build's relay in stateDir is an *OtherBuildError: nothing is
+// spawned (it would not get the lock).
 func EnsureRunning(ctx context.Context, stateDir string, spawn SpawnFunc, wait time.Duration) (*Client, error) {
+	var other *OtherBuildError
 	if c, err := Connect(ctx, stateDir); err == nil {
 		return c, nil
+	} else if errors.As(err, &other) {
+		return nil, err
 	}
 	if spawn == nil {
 		return nil, ErrNotRunning
@@ -134,6 +153,8 @@ func EnsureRunning(ctx context.Context, stateDir string, spawn SpawnFunc, wait t
 	for {
 		if c, err := Connect(ctx, stateDir); err == nil {
 			return c, nil
+		} else if errors.As(err, &other) {
+			return nil, err
 		}
 		if time.Now().After(deadline) {
 			return nil, ErrNotRunning

@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Info is $STATE/daemon.json (mode 0600). Nonce authenticates the MCP
@@ -25,6 +27,39 @@ type Info struct {
 	Version   string    `json:"version"`
 	StartedAt time.Time `json:"started_at"`
 	Nonce     string    `json:"nonce"`
+	// Variant is the build running the relay (variant.Identity.Name; ""
+	// in files written before builds recorded it, which were all kenaz).
+	// Every build uses the same state directory for a Fleet environment,
+	// so this is how a client tells another build's relay from its own.
+	Variant string `json:"variant,omitempty"`
+}
+
+// Build is the name of the build that runs the relay.
+func (in Info) Build() string {
+	if in.Variant == "" {
+		return variant.Kenaz.Name
+	}
+	return in.Variant
+}
+
+// recordedVariant is what daemon.json records as the build: "" for kenaz,
+// so the public build's file reads as it always has.
+func recordedVariant() string {
+	if variant.Current.Name == variant.Kenaz.Name {
+		return ""
+	}
+	return variant.Current.Name
+}
+
+// OtherBuildError means the environment's relay is another build's (one
+// build at a time runs a Fleet environment's relay; see Connect).
+type OtherBuildError struct {
+	Variant string // the relay's build
+	PID     int
+}
+
+func (e *OtherBuildError) Error() string {
+	return fmt.Sprintf("%[1]s is using this Fleet environment on this device (its relay, pid %[2]d, is running), and only one build at a time can. Use %[1]s for it, or quit the apps that run %[1]s and try again", e.Variant, e.PID)
 }
 
 // File names inside the state directory.

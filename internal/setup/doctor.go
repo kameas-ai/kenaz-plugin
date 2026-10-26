@@ -202,10 +202,42 @@ func BrokenRegistrations(stateDir string) []string {
 		}
 		if missing {
 			out = append(out, fmt.Sprintf("the Kenaz plugin in %[1]s points at a %[3]s that no longer exists (it was registered from %[2]s). Run `%[3]s init` to fix it.", h.label(), fs.Bundle.Root, variant.Current.Binary))
+			continue
+		}
+		// The state directory moved (to ~/.kenaz/plugin): the host still
+		// loads the plugin files from the old location, through the link
+		// left there or not at all.
+		if reg := fs.Bundle.registered(); !within(stateDir, reg) {
+			out = append(out, fmt.Sprintf("the Kenaz plugin in %[1]s still uses its files from %[2]s, where an earlier version kept them. Run `%[3]s init` to fix it.", h.label(), filepath.Dir(reg), variant.Current.Binary))
 		}
 	}
 	return out
 }
+
+// Registrations returns, from the setup state in stateDir, the path each
+// Claude Code ("claude") or Codex ("codex") plugin registration loads the
+// plugin from, as recorded, whichever build wrote it. It only reads files;
+// a missing or unreadable record has none.
+func Registrations(stateDir string) map[string]string {
+	out := map[string]string{}
+	b, err := os.ReadFile(filepath.Join(stateDir, stateFile))
+	if err != nil {
+		return out
+	}
+	var s State
+	if json.Unmarshal(b, &s) != nil {
+		return out
+	}
+	for host, fs := range map[string]*FileState{"claude": s.Claude, "codex": s.Codex} {
+		if fs != nil && fs.Bundle != nil && fs.Bundle.Rendered != "" {
+			out[host] = fs.Bundle.Rendered
+		}
+	}
+	return out
+}
+
+// Within reports whether p is dir or inside it (lexically).
+func Within(dir, p string) bool { return within(dir, p) }
 
 // healthz verifies the relay with the daemon's HMAC challenge-response; a
 // foreign listener on the port fails it.
@@ -505,4 +537,10 @@ func doctorOpenCode(ctx context.Context, o Options, run Runner) []Check {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// within reports whether p is inside dir.
+func within(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }

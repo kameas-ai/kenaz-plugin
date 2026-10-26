@@ -30,8 +30,6 @@ const (
 	ControlStatus  = "/control/approvals/" // + request id
 )
 
-var csrfCookie = variant.Current.ApprovalsCSRFCookie
-
 const (
 	csrfHeader = "X-Kenaz-CSRF"
 	csrfTTL    = 30 * time.Minute
@@ -150,6 +148,11 @@ func (m *Manager) guard(f func(http.ResponseWriter, *http.Request, string), api,
 	})
 }
 
+// csrfCookie is the page's CSRF cookie name. Cookies on localhost are not
+// scoped by port, so it names the relay's Fleet environment (relays of
+// different environments run side by side).
+func (m *Manager) csrfCookie() string { return variant.Shared.ApprovalsCSRFCookieFor(m.opt.Env) }
+
 func (m *Manager) issueCSRF() (string, error) {
 	b, err := random32()
 	if err != nil {
@@ -164,7 +167,7 @@ func (m *Manager) issueCSRF() (string, error) {
 
 func (m *Manager) checkCSRF(r *http.Request) bool {
 	h := r.Header.Get(csrfHeader)
-	c, err := r.Cookie(csrfCookie)
+	c, err := r.Cookie(m.csrfCookie())
 	if h == "" || err != nil || subtle.ConstantTimeCompare([]byte(h), []byte(c.Value)) != 1 {
 		return false
 	}
@@ -188,7 +191,7 @@ func (m *Manager) servePage(w http.ResponseWriter, r *http.Request, _ string) {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: tok, Path: PagePrefix, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(csrfTTL / time.Second)})
+	http.SetCookie(w, &http.Cookie{Name: m.csrfCookie(), Value: tok, Path: PagePrefix, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(csrfTTL / time.Second)})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, struct{ CSRF string }{tok}); err != nil {
@@ -591,7 +594,9 @@ func writeErr(w http.ResponseWriter, err error) {
 
 // ---- enrollment browser binding ----
 
-var enrollCookiePrefix = variant.Current.EnrollCookiePrefix
+// enrollCookiePrefix names an enrollment ceremony's cookie; the random
+// ceremony id after it keeps relays apart.
+var enrollCookiePrefix = variant.Shared.EnrollCookiePrefix
 
 func setEnrollCookie(w http.ResponseWriter, eid, secret string) {
 	http.SetCookie(w, &http.Cookie{Name: enrollCookiePrefix + eid, Value: secret, Path: PagePrefix, HttpOnly: true,

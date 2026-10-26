@@ -17,6 +17,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/fixtures"
 	"github.com/kameas-ai/kenaz-plugin/internal/forward"
 	"github.com/kameas-ai/kenaz-plugin/internal/setup"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // laneReport assembles the status fields the telemetry lane contributes,
@@ -144,7 +145,7 @@ func TestHostSetupStates(t *testing.T) {
 	settings := filepath.Join(dir, "settings.json")
 	os.WriteFile(settings, []byte(`{"env":{}}`+"\n"), 0o600)
 	sum := sha256Hex([]byte(`{"env":{}}` + "\n"))
-	os.WriteFile(filepath.Join(dir, "setup-state.json"), []byte(`{"version":1,"claude":{"path":`+jsonString(settings)+`,"original_absent":true,"written_sha256":"`+sum+`","created_container":true,"keys":{}}}`), 0o600)
+	os.WriteFile(filepath.Join(dir, "setup-state.json"), []byte(`{"version":1,"variant":"`+variant.Current.Name+`","claude":{"path":`+jsonString(settings)+`,"original_absent":true,"written_sha256":"`+sum+`","created_container":true,"keys":{}}}`), 0o600)
 	if g := get(); g["claude-code"] != setup.HostConfigured || g["codex"] != setup.HostNotConfigured {
 		t.Fatalf("configured: %v", g)
 	}

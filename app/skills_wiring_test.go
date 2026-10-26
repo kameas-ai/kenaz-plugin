@@ -55,7 +55,7 @@ func TestSkillsLogoutPurgeAndReload(t *testing.T) {
 		t.Fatal("reload should be reported once per change")
 	}
 
-	if err := purgeSkills(stub.New(), stateDir); err != nil {
+	if err := purgeSkills(stub.New(), fleetapi.EnvProd, stateDir); err != nil {
 		t.Fatalf("purge: %v", err)
 	}
 	owned, err := mat.Owned()

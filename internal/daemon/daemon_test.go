@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
 	"github.com/kameas-ai/kenaz-plugin/internal/logx"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // fakeProvider is an "official" provider with controllable session and
@@ -363,5 +365,43 @@ func TestEarlyAccessRefusalInStatus(t *testing.T) {
 	defer lane.mu.Unlock()
 	if lane.purged {
 		t.Fatal("lanes must not be purged on an early-access refusal")
+	}
+}
+
+// Every build uses the same state directory for a Fleet environment, so a
+// relay another build runs there is refused by Connect (with its name) and
+// never replaced by EnsureRunning; ConnectAny still reaches it (to stop
+// it).
+func TestOtherBuildRelayRefused(t *testing.T) {
+	dir := t.TempDir()
+	startDaemon(t, testOpts(t, newFake(true), dir))
+	in, err := ReadInfo(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.Build() != variant.Current.Name || (variant.Current.Name == variant.Kenaz.Name) != (in.Variant == "") {
+		t.Fatalf("daemon.json variant %q", in.Variant)
+	}
+	other := variant.KenazDev.Name
+	if other == variant.Current.Name {
+		other = variant.Kenaz.Name
+	}
+	in.Variant = other
+	if other == variant.Kenaz.Name {
+		in.Variant = "" // how kenaz records itself
+	}
+	if err := WriteInfo(dir, in); err != nil {
+		t.Fatal(err)
+	}
+	var ob *OtherBuildError
+	if _, err := Connect(context.Background(), dir); !errors.As(err, &ob) || ob.Variant != other || !strings.Contains(err.Error(), other+" is using this Fleet environment") {
+		t.Fatalf("Connect: %v", err)
+	}
+	spawned := false
+	if _, err := EnsureRunning(context.Background(), dir, func() error { spawned = true; return nil }, time.Second); !errors.As(err, &ob) || spawned {
+		t.Fatalf("EnsureRunning: %v spawned=%v", err, spawned)
+	}
+	if _, err := ConnectAny(context.Background(), dir); err != nil {
+		t.Fatalf("ConnectAny: %v", err)
 	}
 }

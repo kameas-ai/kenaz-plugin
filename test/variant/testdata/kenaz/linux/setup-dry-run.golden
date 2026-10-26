@@ -2,7 +2,7 @@ $ setup claude --dry-run
 exit 0
 --- stdout
 Setup will register the Kenaz plugin from $ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM:
-  claude plugin marketplace add $HOME/.local/state/kameas/kenaz/prod/setup/bundle/$VERSION_$PLATFORM
+  claude plugin marketplace add $HOME/.kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM
   claude plugin install kenaz@kenaz
 --- $HOME/.claude/settings.json
 +++ $HOME/.claude/settings.json (after kenaz setup)
@@ -27,7 +27,7 @@ $ setup codex --dry-run
 exit 0
 --- stdout
 Setup will register the Kenaz plugin from $ROOT/Kenaz Bundles/kenaz_$VERSION_$PLATFORM:
-  codex plugin marketplace add $HOME/.local/state/kameas/kenaz/prod/setup/bundle/$VERSION_$PLATFORM
+  codex plugin marketplace add $HOME/.kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM
   codex plugin add kenaz@kenaz
 --- $HOME/.codex/config.toml
 +++ $HOME/.codex/config.toml (after kenaz setup)

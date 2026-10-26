@@ -276,3 +276,19 @@ func TestSessionStartMemoryStdinNeverCloses(t *testing.T) {
 		t.Fatalf("took %v, out %q", time.Since(t0), out.String())
 	}
 }
+
+// The staff build's tag prefixes the whole session-start context, also
+// when only the memory index is shown (issue #34 F6).
+func TestSessionStartTag(t *testing.T) {
+	idx := "Kenaz memory index for this project:\n- t [abc, 2026-10-20]"
+	tag := "[kenaz-dev · dev]"
+	if v := startWith(t, `{}`, Deps{Memory: &fakeMemory{index: idx}, Tag: tag, Getenv: claudeEnv}); hso(v)["additionalContext"] != tag+" "+idx {
+		t.Fatalf("memory only: %v", v)
+	}
+	if v := startWith(t, `{}`, Deps{Banners: banners{"Org paused"}, Memory: &fakeMemory{index: idx}, Tag: tag, Getenv: codexEnv}); hso(v)["additionalContext"] != tag+" Kameas Fleet: Org paused\n\n"+idx {
+		t.Fatalf("banner and memory: %v", v)
+	}
+	if v := startWith(t, `{}`, Deps{Memory: &fakeMemory{}, Tag: tag, Getenv: claudeEnv}); v != nil {
+		t.Fatalf("a tag alone produced %v", v)
+	}
+}

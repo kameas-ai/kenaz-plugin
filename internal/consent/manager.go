@@ -536,10 +536,14 @@ func knownClass(c fleetapi.TelemetryClass) bool {
 }
 
 // reconfirmLocked reports whether any opted-in class was accepted under a
-// different notice version. Fleet's recorded version wins. Before notice_version
+// notice version that does not stand for the current edition (see
+// notices.AgentTelemetryAccepted). Fleet's recorded version wins. Before notice_version
 // ships, Fleet returns "", so the locally stored acceptance is used.
 func (m *Manager) reconfirmLocked() bool {
-	want := m.noticeVersionLocked()
+	accepted := map[string]bool{}
+	for _, id := range notices.AgentTelemetryAccepted(m.noticeEditionLocked().ID) {
+		accepted[NoticeVersion(id, m.o.ProjectionVersion)] = true
+	}
 	local := ""
 	if m.o.Store != nil {
 		local = m.o.Store.Accepted(m.session.UserID)
@@ -552,7 +556,7 @@ func (m *Manager) reconfirmLocked() bool {
 		if got == "" {
 			got = local
 		}
-		if got != want {
+		if !accepted[got] {
 			return true
 		}
 	}

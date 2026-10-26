@@ -201,7 +201,7 @@ func TestMemorySyncUnavailableInStubBuild(t *testing.T) {
 	if memoryRemote(stub.New()) != nil || memorySyncAvailable(stub.New()) {
 		t.Fatal("stub build claims memory sync")
 	}
-	if notices.MemorySync().ID != "memory-sync/v2" {
+	if notices.MemorySync().ID != "memory-sync/v3" {
 		t.Fatal("notice edition")
 	}
 }

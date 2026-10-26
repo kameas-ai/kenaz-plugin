@@ -58,7 +58,8 @@ type Env struct {
 	ServeMCP      func(context.Context, *sdk.Server) error    // nil: stdio
 	Now           func() time.Time                            // nil: time.Now
 
-	cred *credStore // set once by RunEnv
+	cred   *credStore   // set once by RunEnv
+	layout *layoutState // set once by RunEnv
 }
 
 func (e Env) now() time.Time {
@@ -79,6 +80,7 @@ var commands = map[string]Command{
 	"init":     {"Set everything up: PATH, sign-in, and every app found", runInit},
 	"login":    {"Sign in to Kameas Fleet", runLogin},
 	"logout":   {"Sign out and purge local queued data", runLogout},
+	"migrate":  {"Move files from an earlier release to ~/.kenaz/plugin (close your AI apps first)", runMigrate},
 	"memory":   {"Manage memories (on this device; optional sync to your Kameas Fleet account)", runMemory},
 	"status":   {"Show sign-in, telemetry and consent state (--json)", runStatus},
 	"optin":    {"Choose which usage data to share (shows the notice)", runOptin},
@@ -127,6 +129,11 @@ func RunEnv(env Env, args []string) int {
 		fmt.Fprintf(stderr, variant.Current.Binary+": unknown command %q\n\n", args[0])
 		usage(stderr)
 		return ExitUsage
+	}
+	env.layout = &layoutState{cmd: args[0]}
+	env.Provider = guardSessionEnv(env.Provider)
+	if code, refused := env.refuseEnv(args[0], args[1:]); refused {
+		return code
 	}
 	if registrationCheckCommands[args[0]] {
 		env.warnBrokenRegistrations()
