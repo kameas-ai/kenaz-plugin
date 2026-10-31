@@ -2,6 +2,7 @@ package fleetapi
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -75,6 +76,57 @@ type FileCredentialStore interface {
 	// absolute path to an owner-only (0700) directory, instead of the OS
 	// keychain.
 	UseFiles(dir string) error
+}
+
+// SessionReloader is optionally implemented by an Auth (callers check with
+// a type assertion, or call ReloadSession). Session may answer from state
+// the implementation loaded once per process; a long-lived process (the
+// relay) calls ReloadSession when another process may have signed in or
+// out, so it sees the stored session rather than the one it loaded at
+// start.
+//
+// ReloadSession re-reads the stored session without network I/O. When
+// the store holds the same sign-in as the active session, the active
+// session is kept as it is (no new token client, no lost refresh state);
+// when it holds none, the active session is cleared; when it holds a
+// different one, that one becomes active. It never sends anything.
+type SessionReloader interface {
+	ReloadSession(ctx context.Context) error
+}
+
+// ErrReloadUnsupported is returned by ReloadSession for an Auth that
+// cannot reload its session in place. A caller then restarts the process
+// that holds the stale session instead.
+var ErrReloadUnsupported = errors.New("fleetapi: session reload not supported")
+
+// ReloadSession calls a's ReloadSession, or returns ErrReloadUnsupported
+// when a does not implement SessionReloader.
+func ReloadSession(ctx context.Context, a Auth) error {
+	if r, ok := a.(SessionReloader); ok {
+		return r.ReloadSession(ctx)
+	}
+	return ErrReloadUnsupported
+}
+
+// SessionReloaderNow is optionally implemented by an Auth that also
+// implements SessionReloader. ReloadSession is meant for periodic checks
+// and may answer cheaply (from a session marker, or with a back-off error
+// after the store could not be read); ReloadSessionNow is the reload a
+// caller asks for after another process signed in or out (`kenaz login`
+// notifying the relay). It always reads the stored session and ignores any
+// back-off. Like ReloadSession, it never sends anything.
+type SessionReloaderNow interface {
+	ReloadSessionNow(ctx context.Context) error
+}
+
+// ReloadSessionNow calls a's ReloadSessionNow when a implements
+// SessionReloaderNow, otherwise ReloadSession (and so ErrReloadUnsupported
+// when a implements neither).
+func ReloadSessionNow(ctx context.Context, a Auth) error {
+	if r, ok := a.(SessionReloaderNow); ok {
+		return r.ReloadSessionNow(ctx)
+	}
+	return ReloadSession(ctx, a)
 }
 
 // TokenSource supplies short-lived access tokens from outside the

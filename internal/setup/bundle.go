@@ -125,6 +125,18 @@ type marketplace struct {
 	// Installed is whether kenaz@kenaz is installed at all, enabled or
 	// not (a user who disabled it still has it installed).
 	Installed bool
+	// Ref is the branch, tag or commit a remote source is pinned to (""
+	// when it follows the default branch). Pin is the full commit it is
+	// pinned to, "" when Ref is not a commit (a branch or tag can move).
+	Ref, Pin string
+	// Off is whether kenaz@kenaz is explicitly turned off (false in
+	// enabledPlugins, enabled = false in Codex). Not listed is not off: a
+	// managed enabledPlugins setup cannot read may enable it.
+	Off bool
+	// Inline is a Claude Code "settings" source: a catalog declared in a
+	// settings file (typically managed settings), which setup never
+	// replaces or duplicates.
+	Inline bool
 }
 
 // official reports whether m is the public GitHub marketplace,
@@ -162,12 +174,28 @@ func isOfficialSource(src string) bool {
 	return strings.EqualFold(repo, OfficialRepo)
 }
 
-// claudeSource is a Claude Code marketplace source object.
+// claudeSource is a Claude Code marketplace source object. Plugins is the
+// inline catalog of a "settings" source (what print-managed deploys).
 type claudeSource struct {
+	Source  string `json:"source"`
+	Path    string `json:"path"`
+	Repo    string `json:"repo"`
+	URL     string `json:"url"`
+	Ref     string `json:"ref"`
+	Plugins []struct {
+		Name   string          `json:"name"`
+		Source json.RawMessage `json:"source"`
+	} `json:"plugins"`
+}
+
+// claudePluginSource is a git-based plugin source (github, url,
+// git-subdir) with its ref and sha.
+type claudePluginSource struct {
 	Source string `json:"source"`
-	Path   string `json:"path"`
 	Repo   string `json:"repo"`
 	URL    string `json:"url"`
+	Ref    string `json:"ref"`
+	SHA    string `json:"sha"`
 }
 
 func (s claudeSource) marketplace() marketplace {
@@ -176,9 +204,35 @@ func (s claudeSource) marketplace() marketplace {
 	case "directory":
 		m.Path = s.Path
 	case "github":
-		m.Remote = s.Repo
+		// ref is a branch or tag name, never a commit pin, even when it
+		// looks like one.
+		m.Remote, m.Ref = s.Repo, s.Ref
+	case "settings":
+		// An inline catalog (managed settings, or a user's settings.json):
+		// Claude Code allows one "kenaz" marketplace, and setup never adds
+		// a second or removes this one. It is the GitHub plugin when its
+		// kenaz entry fetches the public repository, and pinned only by
+		// that entry's sha (Claude Code checks out sha when it is set).
+		// known_marketplaces.json may record the source without its
+		// plugins; then it is inline but not recognized as official.
+		m.Inline = true
+		m.Remote = "settings"
+		for _, p := range s.Plugins {
+			var ps claudePluginSource
+			if p.Name != variant.Current.Plugin || json.Unmarshal(p.Source, &ps) != nil {
+				continue
+			}
+			m.Remote = ps.Repo
+			if m.Remote == "" {
+				m.Remote = ps.URL
+			}
+			m.Ref = ps.Ref
+			if isCommit(ps.SHA) {
+				m.Ref, m.Pin = ps.SHA, strings.ToLower(ps.SHA)
+			}
+		}
 	default:
-		m.Remote = s.URL
+		m.Remote, m.Ref = s.URL, s.Ref
 		if m.Remote == "" {
 			m.Remote = s.Source
 		}
@@ -223,6 +277,7 @@ func (o Options) kenazMarketplace(h harness) marketplace {
 		}
 		raw, listed := s.Enabled[bundlePluginID]
 		m.Enabled = listed && string(raw) == "true"
+		m.Off = listed && string(raw) == "false"
 		m.Installed = listed || o.claudeInstalled()
 		return m
 	}
@@ -264,7 +319,7 @@ var (
 
 func codexMarketplace(text string) marketplace {
 	section := ""
-	src, typ, enabled := "", "", false
+	src, typ, ref, enabled := "", "", "", false
 	sawMk, sawPl := false, false
 	for _, line := range strings.Split(text, "\n") {
 		t := strings.TrimSpace(line)
@@ -291,6 +346,8 @@ func codexMarketplace(text string) marketplace {
 					src = v
 				case "source_type":
 					typ = v
+				case "ref":
+					ref = v
 				}
 			}
 		case "pl":
@@ -302,12 +359,17 @@ func codexMarketplace(text string) marketplace {
 	// Codex keeps an installed plugin's [plugins."id"] table with
 	// enabled = false when it is turned off.
 	if !sawMk {
-		return marketplace{Enabled: enabled, Installed: sawPl}
+		return marketplace{Enabled: enabled, Installed: sawPl, Off: sawPl && !enabled}
 	}
 	if typ != "local" {
-		return marketplace{Present: true, Remote: src, Enabled: enabled, Installed: sawPl}
+		m := marketplace{Present: true, Remote: src, Ref: ref, Enabled: enabled, Installed: sawPl, Off: sawPl && !enabled}
+		if isCommit(ref) {
+			// A claim only: releasePin checks what Codex checked out.
+			m.Pin = strings.ToLower(ref)
+		}
+		return m
 	}
-	return marketplace{Present: true, Path: src, Enabled: enabled, Installed: sawPl}
+	return marketplace{Present: true, Path: src, Enabled: enabled, Installed: sawPl, Off: sawPl && !enabled}
 }
 
 // hostRunner runs host CLIs with a timeout long enough for a plugin copy.

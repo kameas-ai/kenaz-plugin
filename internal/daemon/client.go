@@ -117,6 +117,28 @@ func (c *Client) Kick(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/control/kick", nil)
 }
 
+// SessionChangedPath is the control endpoint `kenaz login` calls after a
+// sign-in, so a running relay reloads the stored session at once.
+const SessionChangedPath = "/control/session-changed"
+
+// SessionChangedReply is the answer of SessionChangedPath.
+type SessionChangedReply struct {
+	// Reloaded is false when the relay cannot take the new session in
+	// place; the caller restarts it.
+	Reloaded bool `json:"reloaded"`
+}
+
+// SessionChanged tells the relay the stored session changed. It reports
+// whether the relay reloaded it in place; an error (for example a relay
+// from a release without the endpoint) means it did not.
+func (c *Client) SessionChanged(ctx context.Context) (bool, error) {
+	var r SessionChangedReply
+	if err := c.DoJSON(ctx, http.MethodPost, SessionChangedPath, nil, &r); err != nil {
+		return false, err
+	}
+	return r.Reloaded, nil
+}
+
 // Shutdown stops the daemon; purge also drops queued data (logout).
 func (c *Client) Shutdown(ctx context.Context, purge bool) error {
 	p := "/control/shutdown"

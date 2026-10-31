@@ -123,7 +123,7 @@ func TestInitFullFlow(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", w, s)
 		}
 	}
-	if strings.Contains(s, "chat extension") {
+	if strings.Contains(s, "Claude Desktop (chat)") || strings.Contains(s, "desktop extension") {
 		t.Error("Claude Desktop chat mentioned with the feature off")
 	}
 
@@ -267,9 +267,9 @@ func TestInitClaudeDesktopChatSwitch(t *testing.T) {
 			switch {
 			case !on && strings.Contains(s, "Claude Desktop (chat)"):
 				t.Fatalf("off but mentioned:\n%s", s)
-			case on && present && !strings.Contains(s, "Claude Desktop (chat): Claude Desktop found; the Kenaz chat extension is not available yet."):
+			case on && present && !strings.Contains(s, "Claude Desktop (chat): Claude Desktop found; to use Kenaz in chat, install the Kenaz desktop extension: https://docs.kameas.ai/docs/kenaz-plugin/claude-desktop"):
 				t.Fatalf("on, present:\n%s", s)
-			case on && !present && !strings.Contains(s, "Claude Desktop (chat): Claude Desktop not found; the Kenaz chat extension is not available yet."):
+			case on && !present && !strings.Contains(s, "Claude Desktop (chat): Claude Desktop not found; to use Kenaz in chat, install the Kenaz desktop extension: https://docs.kameas.ai/docs/kenaz-plugin/claude-desktop"):
 				t.Fatalf("on, absent:\n%s", s)
 			}
 			if strings.Contains(s, "ChatGPT (chat)") {

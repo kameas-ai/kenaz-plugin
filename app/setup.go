@@ -15,7 +15,7 @@ import (
 // runSetup is `kenaz setup`. State paths come from the
 // config resolver so setup reads the same daemon.json the daemon
 // writes. If the running daemon reports that Fleet refused this org
-// (early access), setup says so on stderr; the local
+// (its plan does not include the plugin), setup says so on stderr; the local
 // setup result and exit code are unchanged.
 func runSetup(env Env, args []string) int {
 	return runSetupWith(env, args, setup.Hooks{})
@@ -41,11 +41,15 @@ func runSetupWith(env Env, args []string, hk setup.Hooks) int {
 		}
 		return res.spawner(env)()
 	}
+	// The signed release this binary was built from: setup adopts a GitHub
+	// marketplace only when it is pinned to this commit, and print-managed
+	// pins the plugin to it.
+	hk.Release = setup.Release{Version: Version, Commit: BuildCommit}
 	code := setup.CommandHooks(env.Ctx, args, env.Stdout, env.Stderr, hk)
 	if daemonDir != "" {
 		if c := connectDaemon(env.Ctx, daemonDir); c != nil {
-			if st, err := c.Status(env.Ctx); err == nil && st.Enroll == string(enroll.StateEarlyAccess) {
-				fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+fleetapi.EarlyAccessMessage)
+			if st, err := c.Status(env.Ctx); err == nil && st.Enroll == string(enroll.StatePlanRequired) {
+				fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+fleetapi.PlanRequiredMessage)
 			}
 		}
 	}

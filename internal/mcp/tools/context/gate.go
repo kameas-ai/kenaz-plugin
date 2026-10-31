@@ -14,9 +14,13 @@ import (
 
 // Error codes returned in ToolError.Code.
 const (
-	CodeNotSignedIn        = "not_signed_in"
-	CodeUnofficialBuild    = "unofficial_build"
-	CodeTierRequired       = "tier_required"
+	CodeNotSignedIn     = "not_signed_in"
+	CodeUnofficialBuild = "unofficial_build"
+	CodeTierRequired    = "tier_required"
+	// CodePlanRequired: the organization's plan does not include the
+	// plugin at all (Fleet answered capability_not_in_tier).
+	// A per-feature capability_not_in_tier refusal is CodeTierRequired.
+	CodePlanRequired       = "plan_required"
 	CodeRoleRequired       = "role_required"
 	CodeOrgPaused          = "org_paused"
 	CodeLockdown           = "lockdown"
@@ -162,6 +166,12 @@ func tierRequired(need string) *ToolError {
 	return &ToolError{Code: CodeTierRequired, Need: need, Message: "This needs the Kameas Fleet " + plan + " plan.", Remedy: "Ask your Kameas Fleet administrator about upgrading."}
 }
 
+// featureNotInPlan is a per-feature capability_not_in_tier refusal. It is
+// never the whole-plugin plan-required text.
+func featureNotInPlan(capability string) *ToolError {
+	return &ToolError{Code: CodeTierRequired, Need: fleetapi.SafeCapability(capability), Message: fleetapi.TierLimitText(capability), Remedy: "Ask your Kameas Fleet administrator about upgrading."}
+}
+
 // MapError turns a fleetapi error into a ToolError. It never includes
 // request or response content: Fleet's free-text message and details are
 // never shown, only its machine reason code.
@@ -177,6 +187,12 @@ func MapError(err error) *ToolError {
 	}
 	if cat, ok := fleetapi.OrgPaused(err); ok {
 		return orgPaused(cat)
+	}
+	if fleetapi.PlanRequired(err) {
+		return &ToolError{Code: CodePlanRequired, Message: fleetapi.PlanRequiredMessage}
+	}
+	if capability, ok := fleetapi.TierLimit(err); ok {
+		return featureNotInPlan(capability)
 	}
 	var ae *fleetapi.APIError
 	if errors.As(err, &ae) {

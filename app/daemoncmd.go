@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/logx"
@@ -19,6 +20,10 @@ import (
 // func that registers HTTP handlers (e.g. d.Handle("POST /v1/logs",
 // d.RequireSession(h))) on the constructed daemon. Hooks must not block.
 type DaemonHook func(opt *daemon.Options) (mount func(*daemon.Daemon), err error)
+
+// sessionCheckEvery is how often a running relay re-reads the stored
+// session (zero: the daemon default). Tests shorten it.
+var sessionCheckEvery time.Duration
 
 // daemonHooks is extended by app wiring.
 var daemonHooks []DaemonHook
@@ -49,7 +54,7 @@ func runDaemon(env Env, args []string) int {
 
 	opt := daemon.Options{
 		Provider: env.Provider, Env: r.Env, StateDir: r.StateDir, Version: Version,
-		Logger: log,
+		Logger: log, SessionCheckPeriod: sessionCheckEvery,
 	}
 	// Spool key from the OS keychain or, on a device without one, from an
 	// owner-only file (see withCredentialStore). If neither works the

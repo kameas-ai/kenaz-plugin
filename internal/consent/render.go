@@ -37,9 +37,9 @@ func WriteText(w io.Writer, s OrgState) {
 		}
 		fmt.Fprintf(w, "  %-12s %s%s\n", ci.Label, v, note)
 	}
-	if s.EarlyAccess {
-		fmt.Fprintln(w, fleetapi.EarlyAccessMessage)
-		fmt.Fprintln(w, EarlyAccessNothingKept)
+	if s.PlanRequired {
+		fmt.Fprintln(w, fleetapi.PlanRequiredMessage)
+		fmt.Fprintln(w, PlanRequiredNothingKept)
 	} else if !s.AnyOn() {
 		fmt.Fprintln(w, "Nothing is shared until you opt in: run `kenaz optin`.")
 	}
@@ -65,8 +65,8 @@ func WriteText(w io.Writer, s OrgState) {
 		fmt.Fprintf(w, "Queued on this device: %d bytes (oldest %ds)\n", s.Spool.Bytes, s.Spool.OldestAgeSec)
 	}
 	d := s.Drops
-	if d.OptOut+d.PII+d.TTL+d.Invalid+d.EarlyAccess > 0 {
-		fmt.Fprintf(w, "Dropped on this device: %d not opted in, %d privacy filter, %d expired, %d invalid, %d not in early access\n", d.OptOut, d.PII, d.TTL, d.Invalid, d.EarlyAccess)
+	if d.OptOut+d.PII+d.TTL+d.Invalid+d.PlanRequired > 0 {
+		fmt.Fprintf(w, "Dropped on this device: %d not opted in, %d privacy filter, %d expired, %d invalid, %d plan does not include Kenaz\n", d.OptOut, d.PII, d.TTL, d.Invalid, d.PlanRequired)
 	}
 }
 
@@ -102,8 +102,8 @@ func SessionStartContext(s OrgState) string {
 	switch {
 	case !s.SignedIn:
 		return "" // signed-out sessions stay silent; nothing is sent
-	case s.EarlyAccess:
-		lines = append(lines, fleetapi.EarlyAccessMessage+" "+EarlyAccessNothingKept)
+	case s.PlanRequired:
+		lines = append(lines, fleetapi.PlanRequiredMessage+" "+PlanRequiredNothingKept)
 	case s.NoticeReconfirm:
 		lines = append(lines, "What Kenaz shares has changed, so sharing is off until the user reviews it (`kenaz optin`).")
 	case !s.AnyOn():

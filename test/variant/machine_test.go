@@ -88,6 +88,15 @@ func TestMain(m *testing.M) {
 		built.err = goBuild(filepath.Join(built.hosts, exe("codex")), "./test/variant/fakehost")
 	}
 	code := m.Run()
+	// Guard: every machine stops its relays in its cleanup. Anything
+	// still running from this run's builds or test directories escaped it;
+	// stop it and fail the run.
+	if left := sweepRelays(leftRoots()); len(left) > 0 {
+		fmt.Fprintf(os.Stderr, "FAIL: tests left %d relay(s) running (stopped now):\n  %s\n", len(left), strings.Join(left, "\n  "))
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.RemoveAll(dir)
 	os.Exit(code)
 }
@@ -117,6 +126,10 @@ func newMachine(t *testing.T) *machine {
 	if err := os.MkdirAll(m.home, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// Commands such as setup start a relay that outlives them. Registered
+	// after t.TempDir, so it runs before the directory is removed.
+	recordMachine(root)
+	t.Cleanup(m.stopRelays)
 	return m
 }
 

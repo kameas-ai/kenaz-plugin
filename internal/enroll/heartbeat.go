@@ -20,10 +20,10 @@ const (
 	StateSignedOut State = "signed_out" // no session; waiting for login
 	StateRemoved   State = "removed"    // an admin removed this node: lanes stop
 	StateError     State = "error"      // transient failure; retried
-	// StateEarlyAccess: Fleet refused the enroll because the org is not in
-	// the early-access program. Retried at the normal interval (or on a
+	// StatePlanRequired: Fleet refused the enroll because the org's plan does
+	// not include the plugin. Retried at the normal interval (or on a
 	// kick), so admission is picked up without a new login.
-	StateEarlyAccess State = "early_access_required"
+	StatePlanRequired State = "plan_required"
 )
 
 // Defaults.
@@ -106,9 +106,9 @@ func (h *Heartbeat) Once(ctx context.Context) (State, error) {
 	case isRemoved(err):
 		h.set(StateRemoved, fleetapi.EnrollResult{})
 		return StateRemoved, err
-	case fleetapi.EarlyAccessRequired(err):
-		h.set(StateEarlyAccess, fleetapi.EnrollResult{})
-		return StateEarlyAccess, err
+	case fleetapi.PlanRequired(err):
+		h.set(StatePlanRequired, fleetapi.EnrollResult{})
+		return StatePlanRequired, err
 	default:
 		h.set(StateError, fleetapi.EnrollResult{})
 		return StateError, err

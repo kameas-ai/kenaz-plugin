@@ -9,10 +9,16 @@ package features
 // it.
 var OpenCode = openCodeBuild
 
-// ClaudeDesktopChat reports whether `kenaz init` mentions the Claude
-// Desktop chat extension (.mcpb) at all. It is off in shipped builds: the
-// extension is not available yet and needs legal coverage before it is
-// advertised, so shipped builds say nothing about Claude Desktop chat.
-// Build with -tags kenaz_claude_desktop_chat to turn it on. Tests may set
-// it.
+// ClaudeDesktopChat reports whether this build ships alongside the Kenaz
+// desktop extension (.mcpb) for chat in the Claude desktop app: `kenaz init`
+// then points to it, and the Supported Tools hosts include the Claude
+// desktop app's chat. The official release compiles with
+// -tags kenaz_claude_desktop_chat exactly when it builds the .mcpb; other
+// builds say nothing about chat in the Claude desktop app. Tests may set it.
 var ClaudeDesktopChat = claudeDesktopChatBuild
+
+// Cowork reports whether this build lists Cowork as a Supported Tools host.
+// It is off in shipped builds until the Claude directory listing is live;
+// build with -tags kenaz_cowork to turn it on. It is independent of
+// ClaudeDesktopChat. Tests may set it.
+var Cowork = coworkBuild

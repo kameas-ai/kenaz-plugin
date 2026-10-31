@@ -53,6 +53,19 @@ func (a envAuth) Session(ctx context.Context) (fleetapi.Session, error) {
 	return s, err
 }
 
+// ReloadSession passes the reload through to the wrapped Auth, so the
+// relay of a build with the guard can still pick up a new sign-in.
+func (a envAuth) ReloadSession(ctx context.Context) error {
+	return fleetapi.ReloadSession(ctx, a.Auth)
+}
+
+// ReloadSessionNow passes the explicit reload through the same way, so the
+// relay's session-changed notice reaches the wrapped Auth's
+// ReloadSessionNow (or its ReloadSession when it has none).
+func (a envAuth) ReloadSessionNow(ctx context.Context) error {
+	return fleetapi.ReloadSessionNow(ctx, a.Auth)
+}
+
 type envAuthVerifier struct {
 	envAuth
 	v fleetapi.IdentityVerifier

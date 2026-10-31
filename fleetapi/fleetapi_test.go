@@ -64,19 +64,96 @@ func TestEnvValid(t *testing.T) {
 	}
 }
 
-// Early access: the wire code and the approved text.
-func TestEarlyAccessRequired(t *testing.T) {
-	if fleetapi.CodeEarlyAccessRequired != "fleet_plugin_early_access_required" {
-		t.Fatalf("code = %q", fleetapi.CodeEarlyAccessRequired)
+// Plan required: the wire codes and the approved text.
+func TestPlanRequired(t *testing.T) {
+	if fleetapi.CodeCapabilityNotInTier != "capability_not_in_tier" {
+		t.Fatalf("code = %q", fleetapi.CodeCapabilityNotInTier)
 	}
-	if fleetapi.EarlyAccessMessage != "Kenaz for Claude Code and Codex is in early access. Contact sales@kameas.ai to join." {
-		t.Fatalf("message changed without legal: %q", fleetapi.EarlyAccessMessage)
+	if fleetapi.CodeLegacyEarlyAccessRequired != "fleet_plugin_early_access_required" {
+		t.Fatalf("legacy code = %q", fleetapi.CodeLegacyEarlyAccessRequired)
 	}
-	err := &fleetapi.APIError{Status: 403, Code: fleetapi.CodeEarlyAccessRequired}
-	if !fleetapi.EarlyAccessRequired(errors.Join(errors.New("wrap"), err)) {
-		t.Fatal("wrapped early-access error not recognised")
+	if fleetapi.PlanRequiredMessage != "Kenaz for Claude Code and Codex needs a Kameas Fleet plan that includes it. Ask your organization's Kameas Fleet administrator." {
+		t.Fatalf("message changed: %q", fleetapi.PlanRequiredMessage)
 	}
-	if fleetapi.EarlyAccessRequired(&fleetapi.APIError{Status: 403, Code: fleetapi.CodeOrgPaused}) || fleetapi.EarlyAccessRequired(errors.New("x")) {
-		t.Fatal("other errors reported as early access")
+	if strings.Contains(strings.ToLower(fleetapi.PlanRequiredMessage), "early access") {
+		t.Fatal("the plan-required text must not mention early access")
+	}
+	if fleetapi.PluginCapability != "fleet_plugin" {
+		t.Fatalf("plugin capability = %q", fleetapi.PluginCapability)
+	}
+	for name, err := range map[string]*fleetapi.APIError{
+		"whole plugin": {Status: 403, Code: fleetapi.CodeCapabilityNotInTier, Details: map[string]string{"capability": fleetapi.PluginCapability}},
+		"legacy":       {Status: 403, Code: fleetapi.CodeLegacyEarlyAccessRequired},
+	} {
+		if !fleetapi.PlanRequired(errors.Join(errors.New("wrap"), err)) {
+			t.Fatalf("wrapped %s not recognised", name)
+		}
+		if _, ok := fleetapi.TierLimit(err); ok {
+			t.Fatalf("%s reported as a per-feature tier limit", name)
+		}
+	}
+	if fleetapi.PlanRequired(&fleetapi.APIError{Status: 403, Code: fleetapi.CodeOrgPaused}) || fleetapi.PlanRequired(errors.New("x")) {
+		t.Fatal("other errors reported as plan required")
+	}
+}
+
+// Every capability_not_in_tier that does not name the plugin capability is
+// a per-feature limit, not the whole-plugin refusal.
+func TestTierLimit(t *testing.T) {
+	cases := map[string]struct {
+		details map[string]string
+		want    string
+	}{
+		"other capability": {map[string]string{"capability": "org_graph_sharing"}, "org_graph_sharing"},
+		"no capability":    {nil, ""},
+		"empty capability": {map[string]string{"capability": ""}, ""},
+	}
+	for name, c := range cases {
+		err := errors.Join(errors.New("wrap"), &fleetapi.APIError{Status: 403, Code: fleetapi.CodeCapabilityNotInTier, Details: c.details})
+		if fleetapi.PlanRequired(err) {
+			t.Errorf("%s: reported as plan required", name)
+		}
+		got, ok := fleetapi.TierLimit(err)
+		if !ok || got != c.want {
+			t.Errorf("%s: TierLimit = %q, %v", name, got, ok)
+		}
+	}
+	if _, ok := fleetapi.TierLimit(&fleetapi.APIError{Status: 403, Code: fleetapi.CodeOrgPaused}); ok {
+		t.Error("org pause reported as a tier limit")
+	}
+	if _, ok := fleetapi.TierLimit(errors.New("x")); ok {
+		t.Error("plain error reported as a tier limit")
+	}
+}
+
+func TestTierLimitText(t *testing.T) {
+	const base = "Your organization's Kameas Fleet plan doesn't include this feature."
+	if fleetapi.TierLimitMessage != base {
+		t.Fatalf("message changed: %q", fleetapi.TierLimitMessage)
+	}
+	if got := fleetapi.TierLimitText("org_graph_sharing"); got != base+" (feature: org_graph_sharing)" {
+		t.Fatalf("named = %q", got)
+	}
+	for _, bad := range []string{"", "Org", "9abc", "has space", "a-b", "x\x07", strings.Repeat("a", 65), "<b>hi</b>"} {
+		if got := fleetapi.TierLimitText(bad); got != base {
+			t.Errorf("%q: %q", bad, got)
+		}
+	}
+	if got := fleetapi.TierLimitText(strings.Repeat("a", 64)); got == base {
+		t.Error("64-char name must be shown")
+	}
+}
+
+// The renamed exports stay as deprecated aliases.
+func TestDeprecatedAliases(t *testing.T) {
+	if fleetapi.CodeEarlyAccessRequired != fleetapi.CodeLegacyEarlyAccessRequired {
+		t.Fatal("CodeEarlyAccessRequired alias")
+	}
+	if fleetapi.EarlyAccessMessage != fleetapi.PlanRequiredMessage {
+		t.Fatal("EarlyAccessMessage alias")
+	}
+	if !fleetapi.EarlyAccessRequired(&fleetapi.APIError{Code: fleetapi.CodeLegacyEarlyAccessRequired}) ||
+		fleetapi.EarlyAccessRequired(&fleetapi.APIError{Code: fleetapi.CodeCapabilityNotInTier}) {
+		t.Fatal("EarlyAccessRequired alias")
 	}
 }

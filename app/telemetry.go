@@ -38,7 +38,7 @@ const telemetryLaneName = "telemetry"
 
 // Spool record tags inside the telemetry lane. Earlier builds wrote 'B'
 // and 'R' records, which could hold data Fleet refused for an organization
-// outside early access; those are discarded unsent.
+// whose plan did not include the plugin; those are discarded unsent.
 const (
 	// tagBatch: u64be(earliest event unix nanos) || JSON fleetapi.ProjectedBatch,
 	// written by earlier builds without an owner: dropped unsent.
@@ -177,13 +177,13 @@ func newTelemetryLane(env Env, opt *daemon.Options) (*telemetryLane, error) {
 		Now: func() time.Time { return laneNow() },
 	})
 	// Enroll outcomes are admission signals too: enrolled is an admitted
-	// response, early_access_required a refusal.
+	// response, plan_required a refusal.
 	opt.EnrollObservers = append(opt.EnrollObservers, func(s enroll.State) {
 		switch s {
 		case enroll.StateEnrolled:
 			l.cm.ObserveEnrolled()
-		case enroll.StateEarlyAccess:
-			l.cm.ObserveEarlyAccessRefused()
+		case enroll.StatePlanRequired:
+			l.cm.ObservePlanRequired()
 		default:
 			return
 		}
@@ -556,7 +556,7 @@ func (l *telemetryLane) send(ctx context.Context, q queued) bool {
 		l.cm.CountDrop("invalid")
 		return true // nothing to retry
 	case forward.Refused:
-		// Not in early access: drop it and everything queued (the consent
+		// Plan does not include the plugin: drop it and everything queued (the consent
 		// manager purges the lane).
 		l.dropped.Add(int64(b.Records))
 		l.cm.ObserveUploadError(res.Err)
@@ -795,7 +795,7 @@ func uploadErrCategory(res forward.Result) string {
 	case forward.Hold:
 		return daemon.ErrCatOrgPaused
 	case forward.Refused:
-		return daemon.ErrCatEarlyAccess
+		return daemon.ErrCatPlanRequired
 	case forward.Quarantine:
 		return daemon.ErrCatRejected
 	}
@@ -864,7 +864,7 @@ func (l *telemetryLane) ContributeStatus(s *daemon.Status) {
 		// Signed in, but consent could not be read from Fleet yet
 		// (starting up, offline): nothing is sent until it is.
 		r.State = daemon.ReportingConsentUnknown
-	case st.EarlyAccess:
+	case st.PlanRequired:
 		r.State = daemon.ReportingNotAdmitted
 	case r.Consent == daemon.ConsentReconfirm:
 		r.State = daemon.ReportingReconfirm

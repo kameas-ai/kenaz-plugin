@@ -32,7 +32,7 @@ var reportingText = map[string]string{
 	daemon.ReportingRelayStopped:    "not running: the relay is stopped (it starts with your next session)",
 	daemon.ReportingNotSignedIn:     "off: not signed in (run `kenaz login`)",
 	daemon.ReportingConsentUnknown:  "off: signed in, but your sharing choice could not be read from Kameas Fleet yet",
-	daemon.ReportingNotAdmitted:     "off: your organization is not in early access",
+	daemon.ReportingNotAdmitted:     "off: your organization's Kameas Fleet plan does not include Kenaz for Claude Code and Codex",
 	daemon.ReportingNoConsent:       "off: you have not opted in (run `kenaz optin`)",
 	daemon.ReportingReconfirm:       "off: review what is shared (run `kenaz optin`)",
 	daemon.ReportingHeld:            "held",

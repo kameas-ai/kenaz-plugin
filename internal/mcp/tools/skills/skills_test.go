@@ -440,3 +440,32 @@ func TestInstallUnderClaudeDesktopCapsSkillText(t *testing.T) {
 		t.Fatalf("message = %q", msg)
 	}
 }
+
+// A plan-required refusal (current or older servers' code) is shown with
+// the plugin's own text, never Fleet's message.
+func TestFriendlyPlanRequired(t *testing.T) {
+	for _, code := range []string{fleetapi.CodeCapabilityNotInTier, fleetapi.CodeLegacyEarlyAccessRequired} {
+		err := friendly(&fleetapi.APIError{Status: 403, Code: code, Message: "fleet text", Details: map[string]string{"capability": fleetapi.PluginCapability}})
+		if err == nil || err.Error() != fleetapi.PlanRequiredMessage {
+			t.Fatalf("%s: %v", code, err)
+		}
+	}
+}
+
+// A per-feature capability_not_in_tier is shown with the per-feature text,
+// never the whole-plugin plan-required text or Fleet's message.
+func TestFriendlyTierLimit(t *testing.T) {
+	cases := map[string]struct {
+		details map[string]string
+		want    string
+	}{
+		"named": {map[string]string{"capability": "org_graph_sharing"}, fleetapi.TierLimitMessage + " (feature: org_graph_sharing)"},
+		"none":  {nil, fleetapi.TierLimitMessage},
+	}
+	for name, c := range cases {
+		err := friendly(&fleetapi.APIError{Status: 403, Code: fleetapi.CodeCapabilityNotInTier, Message: "fleet text", Details: c.details})
+		if err == nil || err.Error() != c.want {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}

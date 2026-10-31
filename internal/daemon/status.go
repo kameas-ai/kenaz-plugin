@@ -74,13 +74,13 @@ const (
 // Upload error categories in Reporting.LastError. Categories only: never a
 // server message, payload or identifier.
 const (
-	ErrCatNetwork     = "network"
-	ErrCatAuth        = "auth"
-	ErrCatRateLimited = "rate_limited"
-	ErrCatServer      = "server"
-	ErrCatRejected    = "rejected"
-	ErrCatOrgPaused   = "org_paused"
-	ErrCatEarlyAccess = "early_access"
+	ErrCatNetwork      = "network"
+	ErrCatAuth         = "auth"
+	ErrCatRateLimited  = "rate_limited"
+	ErrCatServer       = "server"
+	ErrCatRejected     = "rejected"
+	ErrCatOrgPaused    = "org_paused"
+	ErrCatPlanRequired = "plan_required"
 )
 
 // Reporting summarizes telemetry delivery. Counts, times and categories

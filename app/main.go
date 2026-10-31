@@ -160,6 +160,16 @@ func providerErr(env Env, err error) int {
 		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUnofficial
 	}
+	if fleetapi.PlanRequired(err) {
+		// The plugin owns this text; Fleet's message is never shown.
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+fleetapi.PlanRequiredMessage)
+		return ExitError
+	}
+	if capability, ok := fleetapi.TierLimit(err); ok {
+		// One feature is not in the plan; the plugin itself is.
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+fleetapi.TierLimitText(capability))
+		return ExitError
+	}
 	fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 	return ExitError
 }

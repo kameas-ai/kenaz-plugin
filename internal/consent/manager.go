@@ -24,7 +24,7 @@ const (
 	ActionSend Action = iota
 	// ActionHold: spool and forward when the hold clears (approval, pause,
 	// lockdown). The spool's TTL still applies. An organization
-	// outside early access is never a hold: its records are dropped.
+	// whose plan does not include the plugin is never a hold: its records are dropped.
 	ActionHold
 	// ActionDrop: discard on the device and count it. Never spooled.
 	ActionDrop
@@ -47,9 +47,9 @@ const (
 	ReasonUnavailable     = "unavailable"
 	ReasonUnknownClass    = "unknown_class"
 	ReasonNoticeReconfirm = "notice_reconfirm"
-	// ReasonEarlyAccess: the organization is not (or not yet known to be)
-	// admitted to early access. Nothing is kept.
-	ReasonEarlyAccess = "early_access"
+	// ReasonPlanRequired: the organization's plan does not include the plugin
+	// (or it is not yet known to). Nothing is kept.
+	ReasonPlanRequired = "plan_required"
 )
 
 // Decision is the gate's answer for one record.
@@ -121,10 +121,10 @@ type Manager struct {
 	approvals   []fleetapi.Approval
 	pauseLatch  bool
 	pauseDetail string
-	// earlyAccess: Fleet last refused this org's plugin requests with 403
-	// fleet_plugin_early_access_required (pending approvals, enroll or an
+	// planRequired: Fleet last refused this org's plugin requests because
+	// its plan does not include the plugin (pending approvals, enroll or an
 	// upload). Every record is dropped and nothing is kept on the device.
-	earlyAccess bool
+	planRequired bool
 	// admittedOrg / admittedAt: the org Fleet last admitted and the moment
 	// this device first saw it do so. Only records generated from then on
 	// are sent. Zero while the org is not admitted or not yet known to be.
@@ -208,15 +208,15 @@ func (m *Manager) Refresh(ctx context.Context) error {
 		m.ObserveUploadError(err)
 		return err
 	}
-	// Outside the early-access program Fleet refuses pending-approvals (it
+	// While the plan does not include the plugin, Fleet refuses pending-approvals (it
 	// still answers /me, capabilities and the opt-ins). Keep refreshing the
 	// opt-ins so a withdrawal is applied and purged locally. Nothing
 	// is collected or kept until the org is admitted; a successful answer
 	// here is an admitted response.
-	earlyAccess := false
+	planRequired := false
 	appr, err := p.Pollers().PendingApprovals(ctx)
-	if fleetapi.EarlyAccessRequired(err) {
-		appr, err, earlyAccess = nil, nil, true
+	if fleetapi.PlanRequired(err) {
+		appr, err, planRequired = nil, nil, true
 	}
 	if err != nil {
 		m.ObserveUploadError(err)
@@ -242,7 +242,7 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	nowOn := onSet(next)
 	m.mu.Unlock()
 
-	if earlyAccess {
+	if planRequired {
 		m.notAdmitted()
 	} else {
 		m.admitted(sess.OrgID)
@@ -367,15 +367,15 @@ func (m *Manager) ObserveEnrolled() {
 	}
 }
 
-// ObserveEarlyAccessRefused feeds an early-access refusal of the enroll
+// ObservePlanRequired feeds a plan-required refusal of the enroll
 // (heartbeat) in.
-func (m *Manager) ObserveEarlyAccessRefused() { m.notAdmitted() }
+func (m *Manager) ObservePlanRequired() { m.notAdmitted() }
 
 // notAdmitted records that Fleet refuses the org: drop everything from now
 // on and discard anything already queued on the device.
 func (m *Manager) notAdmitted() {
 	m.mu.Lock()
-	m.earlyAccess = true
+	m.planRequired = true
 	org := m.admittedOrg
 	if org == "" {
 		org = m.session.OrgID
@@ -400,13 +400,13 @@ func (m *Manager) admitted(org string) {
 	now := m.o.Now()
 	m.mu.Lock()
 	if m.admittedOrg == org && !m.admittedAt.IsZero() {
-		m.earlyAccess = false
+		m.planRequired = false
 		m.mu.Unlock()
 		return
 	}
 	// A refusal seen by this process ends any earlier admission, even if
 	// clearing the stored moment failed.
-	refused := m.earlyAccess
+	refused := m.planRequired
 	m.mu.Unlock()
 
 	at := time.Time{}
@@ -427,7 +427,7 @@ func (m *Manager) admitted(org string) {
 		at = now // CLI: display only
 	}
 	m.mu.Lock()
-	m.earlyAccess = false
+	m.planRequired = false
 	m.admittedOrg, m.admittedAt = org, at
 	m.mu.Unlock()
 }
@@ -446,7 +446,7 @@ func (m *Manager) Admission() (since time.Time, ok bool) {
 
 // admittedLocked reports whether the signed-in org is admitted.
 func (m *Manager) admittedLocked() bool {
-	return !m.earlyAccess && !m.admittedAt.IsZero() && m.admittedOrg == m.session.OrgID
+	return !m.planRequired && !m.admittedAt.IsZero() && m.admittedOrg == m.session.OrgID
 }
 
 func onSet(m map[fleetapi.TelemetryClass]fleetapi.OptInState) map[fleetapi.TelemetryClass]bool {
@@ -517,8 +517,8 @@ func (m *Manager) Decide(c fleetapi.TelemetryClass) Decision {
 		return Decision{ActionDrop, ReasonNoticeReconfirm}
 	}
 	if !m.admittedLocked() {
-		m.drops.EarlyAccess++
-		return Decision{ActionDrop, ReasonEarlyAccess}
+		m.drops.PlanRequired++
+		return Decision{ActionDrop, ReasonPlanRequired}
 	}
 	if h := m.holdsLocked(); len(h) > 0 {
 		return Decision{ActionHold, h[0].Reason}
@@ -592,7 +592,7 @@ func (m *Manager) ObserveUploadError(err error) {
 		m.mu.Unlock()
 		return
 	}
-	if fleetapi.EarlyAccessRequired(err) {
+	if fleetapi.PlanRequired(err) {
 		m.notAdmitted()
 		return
 	}
@@ -662,12 +662,12 @@ func (m *Manager) RunLockdownWatch(ctx context.Context) error {
 	for ctx.Err() == nil {
 		s, changed, err := pl.LockdownWait(ctx)
 		if err != nil {
-			m.ObserveUploadError(err)
+			var wait time.Duration
+			wait, backoff = m.lockdownWaitFailed(err, backoff)
 			select {
 			case <-ctx.Done():
-			case <-time.After(backoff):
+			case <-time.After(wait):
 			}
-			backoff = min(backoff*2, time.Minute)
 			continue
 		}
 		backoff = time.Second
@@ -676,6 +676,22 @@ func (m *Manager) RunLockdownWatch(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// lockdownWaitMaxBackoff caps the wait between failed lockdown polls.
+const lockdownWaitMaxBackoff = time.Minute
+
+// lockdownWaitFailed handles a failed lockdown poll and returns how long
+// to wait before the next one and the backoff after that. A per-feature tier limit (the plan includes
+// the plugin but not the lockdown feature) is not a plan-required refusal:
+// it ends no admission and purges nothing; the watch keeps polling at the
+// maximum backoff. Every other error is observed as an upload error.
+func (m *Manager) lockdownWaitFailed(err error, backoff time.Duration) (wait, next time.Duration) {
+	if _, ok := fleetapi.TierLimit(err); ok {
+		return lockdownWaitMaxBackoff, lockdownWaitMaxBackoff
+	}
+	m.ObserveUploadError(err)
+	return backoff, min(backoff*2, lockdownWaitMaxBackoff)
 }
 
 // SetOptIns writes the member's own selection. It is called only
@@ -687,7 +703,7 @@ func (m *Manager) SetOptIns(ctx context.Context, sel map[fleetapi.TelemetryClass
 	signedIn := m.signedIn
 	userID := m.session.UserID
 	states := m.optins
-	earlyAccess := m.earlyAccess
+	planRequired := m.planRequired
 	m.mu.Unlock()
 	if !signedIn {
 		return fleetapi.ErrNotSignedIn
@@ -708,9 +724,9 @@ func (m *Manager) SetOptIns(ctx context.Context, sel map[fleetapi.TelemetryClass
 	if len(req.Updates) == 0 {
 		return nil
 	}
-	// Outside early access a member may opt out (always) but not in.
-	if anyOn && earlyAccess {
-		return &fleetapi.APIError{Status: http.StatusForbidden, Code: fleetapi.CodeEarlyAccessRequired, Message: fleetapi.EarlyAccessMessage}
+	// While the plan does not include the plugin, a member may opt out (always) but not in.
+	if anyOn && planRequired {
+		return &fleetapi.APIError{Status: http.StatusForbidden, Code: fleetapi.CodeCapabilityNotInTier, Message: fleetapi.PlanRequiredMessage, Details: map[string]string{"capability": fleetapi.PluginCapability}}
 	}
 	if anyOn {
 		req.NoticeVersion = m.NoticeVersion()
@@ -770,7 +786,7 @@ func (m *Manager) State() OrgState {
 		}
 	}
 	st.NoticeReconfirm = m.reconfirmLocked()
-	st.EarlyAccess = m.earlyAccess
+	st.PlanRequired = m.planRequired
 	if m.admittedLocked() {
 		st.AdmittedAt = m.admittedAt
 	}

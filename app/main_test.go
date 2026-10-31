@@ -9,11 +9,15 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/app"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi/stub"
+	"github.com/kameas-ai/kenaz-plugin/internal/spool"
 )
 
 func run(args ...string) (int, string, string) {
 	var out, errb bytes.Buffer
-	code := app.Run(context.Background(), stub.New(), args, &out, &errb)
+	// No relay is started (a detached one would outlive the test) and the
+	// OS keychain is never used.
+	code := app.RunEnv(app.Env{Provider: stub.New(), Stdout: &out, Stderr: &errb, Ctx: context.Background(),
+		KeyStore: &spool.Memory{}, Spawn: func(string, fleetapi.Env) error { return nil }}, args)
 	return code, out.String(), errb.String()
 }
 

@@ -372,6 +372,10 @@ func TestFleetErrorsMapped(t *testing.T) {
 		"not provisioned": {&fleetapi.APIError{Status: 403, Code: "user_not_provisioned"}, CodeNotSignedIn},
 		"expired":         {&fleetapi.APIError{Status: 401}, CodeNotSignedIn},
 		"other":           {&fleetapi.APIError{Status: 500, Code: "boom"}, CodeFleetError},
+		"plan required":   {&fleetapi.APIError{Status: 403, Code: fleetapi.CodeCapabilityNotInTier, Details: map[string]string{"capability": fleetapi.PluginCapability}}, CodePlanRequired},
+		"legacy refusal":  {&fleetapi.APIError{Status: 403, Code: fleetapi.CodeLegacyEarlyAccessRequired}, CodePlanRequired},
+		"feature limit":   {&fleetapi.APIError{Status: 403, Code: fleetapi.CodeCapabilityNotInTier, Details: map[string]string{"capability": CapOrgGraphSharing}}, CodeTierRequired},
+		"unnamed limit":   {&fleetapi.APIError{Status: 403, Code: fleetapi.CodeCapabilityNotInTier}, CodeTierRequired},
 	}
 	for name, c := range cases {
 		f := newFake("team", "member", platform)
@@ -381,6 +385,9 @@ func TestFleetErrorsMapped(t *testing.T) {
 		call(t, cs, ToolSearch, map[string]any{"query": "q"}, &out)
 		if out.Error == nil || out.Error.Code != c.code {
 			t.Errorf("%s: %+v", name, out.Error)
+		}
+		if c.code == CodePlanRequired && (out.Error.Message != fleetapi.PlanRequiredMessage || out.Error.Remedy != "") {
+			t.Errorf("%s: message %q remedy %q", name, out.Error.Message, out.Error.Remedy)
 		}
 	}
 	// Sign-in failure on /me stops before any content call.
@@ -439,5 +446,34 @@ func TestExecutorsRecheckAccount(t *testing.T) {
 	}
 	if _, err := RenderShare(nil)([]byte(`{"id":"x","team_id":"t","classification":"org_shared","load_policy":"always","kind":"fact"}`)); err == nil {
 		t.Fatal("rendered a payload the executor would refuse")
+	}
+}
+
+// A per-feature capability_not_in_tier shows the per-feature text, never
+// the whole-plugin plan-required text.
+func TestMapErrorPerFeatureTierLimit(t *testing.T) {
+	cases := map[string]struct {
+		details map[string]string
+		need    string
+		msg     string
+	}{
+		"named":  {map[string]string{"capability": CapOrgGraphSharing}, CapOrgGraphSharing, fleetapi.TierLimitMessage + " (feature: org_graph_sharing)"},
+		"none":   {nil, "", fleetapi.TierLimitMessage},
+		"unsafe": {map[string]string{"capability": "Org Graph <b>"}, "", fleetapi.TierLimitMessage},
+	}
+	for name, c := range cases {
+		f := newFake("team", "member", platform)
+		f.opErr = &fleetapi.APIError{Status: 403, Code: fleetapi.CodeCapabilityNotInTier, Message: "fleet text", Details: c.details}
+		cs := session(t, f, nil, "")
+		var out SearchOutput
+		call(t, cs, ToolSearch, map[string]any{"query": "q"}, &out)
+		e := out.Error
+		if e == nil || e.Code != CodeTierRequired || e.Need != c.need || e.Message != c.msg {
+			t.Errorf("%s: %+v", name, e)
+			continue
+		}
+		if e.Message == fleetapi.PlanRequiredMessage || strings.Contains(e.Message, "fleet text") {
+			t.Errorf("%s: message %q", name, e.Message)
+		}
 	}
 }

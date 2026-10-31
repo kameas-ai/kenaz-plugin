@@ -8,7 +8,12 @@
 # docs page renders; $SUPPORTED_TOOLS_URL overrides it) and checks it against the hosts this build supports
 # (internal/supported.Hosts), using the same test as `make test` runs on the
 # vendored copy. Run it from the root of this repository with the build tags
-# of the release ($TAGS), as the official release workflow does.
+# of the release ($TAGS), as the official release workflow does. Here the
+# list must match the build exactly: rows for feature-gated hosts
+# (internal/supported.GatedHosts: the Claude desktop app's chat, tag
+# kenaz_claude_desktop_chat, and Cowork, tag kenaz_cowork) must be listed
+# with the feature's tag and must not be without it. (The
+# vendored-copy check in `make test` is lenient about gated rows.)
 #
 # The vendored copy (internal/supported/testdata/supported-tools.json) must
 # also equal the live list, so a docs change cannot land without this repo

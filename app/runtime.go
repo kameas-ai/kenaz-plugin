@@ -122,8 +122,13 @@ func (r resolved) spawner(env Env) func() error {
 	if env.Spawn != nil {
 		return func() error { return env.Spawn(r.StateDir, r.Env) }
 	}
-	return daemon.SpawnSelf(r.StateDir, r.Env)
+	return spawnSelf(r.StateDir, r.Env)
 }
+
+// spawnSelf starts the detached relay. This package's tests replace it so
+// a test that forgets Env.Spawn fails instead of starting a relay that
+// outlives it.
+var spawnSelf = daemon.SpawnSelf
 
 // connectDaemon returns a client for a healthy daemon, or nil.
 func connectDaemon(ctx context.Context, stateDir string) *daemon.Client {

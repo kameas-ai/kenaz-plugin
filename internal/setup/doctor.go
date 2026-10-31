@@ -87,17 +87,31 @@ func doctorBundle(o Options) []Check {
 		return nil
 	}
 	var cs []Check
+	// The verified bundle this kenaz runs from, if any: a pinned Codex
+	// checkout must carry exactly its plugin tree.
+	var verified *Bundle
+	if o.BundleRoot != "" {
+		verified, _ = LoadBundle(o.BundleRoot)
+	}
 	for _, h := range []harness{harnessClaude, harnessCodex} {
 		fs := state.get(h)
 		if fs != nil && fs.Adopted != nil {
 			mk := o.kenazMarketplace(h)
+			pinned, why := false, ""
+			if mk.official() {
+				pinned, why = o.releasePin(h, mk, verified)
+			}
 			switch {
-			case !mk.official() || !mk.Enabled:
+			case h == harnessClaude && mk.Inline && !pinned:
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin marketplace is declared inline (managed or user settings) and is not pinned to this release's commit; deploy the extraKnownMarketplaces entry from this release's `%s setup print-managed claude`", variant.Current.Binary)})
+			case !mk.official() || (!mk.Enabled && !mk.Inline):
 				cs = append(cs, Check{h.label(), "warn", "the Kenaz plugin from GitHub is no longer registered or enabled; re-run setup"})
+			case !pinned:
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin from GitHub %s; run `%s init` from a release download to use its verified copy", why, variant.Current.Binary)})
 			case o.KenazOnPath != nil && !o.KenazOnPath():
 				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin from GitHub starts %[1]s from PATH, and %[1]s is not on PATH; run `%[1]s init`", variant.Current.Binary)})
 			default:
-				cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin from GitHub (%s), launching %s from PATH", OfficialRepo, variant.Current.Binary)})
+				cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin from GitHub (%s) pinned to %s, launching %s from PATH", OfficialRepo, mk.Pin, variant.Current.Binary)})
 			}
 			continue
 		}

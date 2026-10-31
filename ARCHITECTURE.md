@@ -53,6 +53,10 @@ Both must pass `fleetapi/fleetapitest`. `fleetapi/allowlist` is the closed set o
 - **`app/telemetry.go` is the only place the daemon, the telemetry pipeline and consent meet.** The daemon hosts the OTLP receiver on the daemon's chosen port.
   - `POST /v1/{logs,traces,metrics}` sits behind `RequireSession`.
   - `POST /control/session-end` sits behind the nonce bearer and is hash-only (`canon.LocalSessionHash`). The receiver's own `/internal/session-end` stays disabled.
+- **Session changes reach a running relay.** The provider may load the stored session once per process, so a relay that started signed out would not see a sign-in made by another process.
+  - `kenaz login` calls `POST /control/session-changed` (nonce bearer). The relay reloads the stored session through the optional `fleetapi.SessionReloader`, then enrolls and re-runs the consent refresh at once. A relay that cannot reload in place (a provider without the interface, a release without the endpoint, a removed node) answers or fails so that login restarts it instead.
+  - As a safety net the relay re-reads the stored session every minute and does the same refresh when it changed, so a sign-in or sign-out whose notice never arrived is still picked up.
+  - `kenaz logout` stops a running relay with a purge (`POST /control/shutdown?purge=1`). The reload itself never sends anything: uploads still need sign-in and the member's own opt-in.
 - **Consent gate:** `consentDecider` adapts `consent.Manager` to `gate.Decider` from a cached `OrgState`, so the gate does no I/O. The send rule: the member is signed in and has personally opted in under the current notice.
 - **Spool:** held records (tag `R`) and unsent batches (tag `B`) share the encrypted spool lane `telemetry`. Drain re-gates held records and resends batches.
 - **Hooks:** they use the daemon client (HMAC challenge-response). Setup resolves `$STATE` through the config package so setup, hook and daemon agree on `daemon.json`.
@@ -70,6 +74,20 @@ record keeps the rendered path and digest; `--undo` runs the host's
 uninstall and marketplace removal before restoring the config file (byte
 for byte when setup's own write was untouched). The repository's `plugin/`
 keeps bare `kenaz` launch commands for PATH installs.
+
+**Release pinning** (`internal/setup/pin.go`): the plugin is pinned to a
+signed release, never auto-updated from a branch. The
+app passes setup its release (`app.Version`, `app.BuildCommit`). Setup adopts
+a GitHub `kenaz` marketplace only when it is pinned to that exact commit
+(Codex `ref = "<commit>"`; Claude Code's inline `settings` catalog with a
+plugin `sha`); one on the default branch, a branch or a tag is replaced by the
+verified bundle copy with a warning, and doctor flags an adopted one that is
+not pinned. `print-managed` pins to the release too: Claude Code gets an
+inline catalog whose `git-subdir` plugin source carries `ref` (the tag) and
+`sha` (the commit), with `autoUpdate: false`, because github/git marketplace
+sources take a ref but no commit; Codex gets a `[marketplaces.kenaz]` block
+with `ref = "<commit>"`. A build with no release commit refuses
+`print-managed` unless given `--release` and `--commit`.
 
 ## OpenCode adapter
 

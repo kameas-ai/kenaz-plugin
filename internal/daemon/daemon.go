@@ -40,8 +40,12 @@ var DefaultPorts = variant.Shared.Ports()
 const (
 	DefaultIdleTimeout      = 15 * time.Minute
 	DefaultCapabilityPeriod = 5 * time.Minute
-	clientTTL               = 3 * time.Minute
-	idleCheckPeriod         = time.Minute
+	// DefaultSessionCheckPeriod is how often the relay re-reads the stored
+	// session, so it notices a sign-in or sign-out by another process even
+	// when that process could not tell it.
+	DefaultSessionCheckPeriod = time.Minute
+	clientTTL                 = 3 * time.Minute
+	idleCheckPeriod           = time.Minute
 )
 
 // Options configures a daemon.
@@ -62,13 +66,15 @@ type Options struct {
 	HeartbeatInterval time.Duration
 	// CapabilityPeriod overrides 5 min (tests).
 	CapabilityPeriod time.Duration
+	// SessionCheckPeriod overrides DefaultSessionCheckPeriod (tests).
+	SessionCheckPeriod time.Duration
 
 	Spool        *spool.Spool
 	Lanes        []Lane
 	Contributors []StatusContributor
 	// EnrollObservers are told each new enroll state (for example, the
 	// telemetry lane treats enrolled as an admitted response and
-	// early_access_required as a refusal).
+	// plan_required as a refusal).
 	EnrollObservers []func(enroll.State)
 	// KickObservers run on every Kick (for example after `kenaz login`),
 	// so lanes re-read the session at once instead of on their next tick.
@@ -82,6 +88,8 @@ type Daemon struct {
 	clk  clock.Clock
 	mux  *http.ServeMux
 	kick chan struct{}
+	// capKick wakes the capability poller (a kick refreshes both).
+	capKick chan struct{}
 
 	mu           sync.Mutex
 	info         Info
@@ -93,7 +101,10 @@ type Daemon struct {
 	me           *fleetapi.MeInfo
 	removed      bool
 	started      bool
-	shutdown     chan string // reason
+	// sessKey identifies the session last seen (see sessionKey), so the
+	// session watch acts only on a change.
+	sessKey  string
+	shutdown chan string // reason
 }
 
 // New prepares a daemon. Mount extra handlers with Handle before Run.
@@ -113,6 +124,9 @@ func New(opt Options) *Daemon {
 	if opt.CapabilityPeriod <= 0 {
 		opt.CapabilityPeriod = DefaultCapabilityPeriod
 	}
+	if opt.SessionCheckPeriod <= 0 {
+		opt.SessionCheckPeriod = DefaultSessionCheckPeriod
+	}
 	if opt.Host.GOOS == "" {
 		opt.Host = enroll.LocalHost()
 	}
@@ -122,6 +136,7 @@ func New(opt Options) *Daemon {
 		clk:      opt.Clock,
 		mux:      http.NewServeMux(),
 		kick:     make(chan struct{}, 1),
+		capKick:  make(chan struct{}, 1),
 		clients:  map[string]time.Time{},
 		shutdown: make(chan string, 1),
 	}
@@ -130,6 +145,7 @@ func New(opt Options) *Daemon {
 	d.mux.Handle("POST /control/clients/{id}", d.authed(d.handleClientPing))
 	d.mux.Handle("DELETE /control/clients/{id}", d.authed(d.handleClientBye))
 	d.mux.Handle("POST /control/kick", d.authed(d.handleKick))
+	d.mux.Handle("POST "+SessionChangedPath, d.authed(d.handleSessionChanged))
 	d.mux.Handle("POST /control/shutdown", d.authed(d.handleShutdown))
 	return d
 }
@@ -167,6 +183,10 @@ func (d *Daemon) Touch() {
 func (d *Daemon) Kick() {
 	select {
 	case d.kick <- struct{}{}:
+	default:
+	}
+	select {
+	case d.capKick <- struct{}{}:
 	default:
 	}
 	for _, o := range d.opt.KickObservers {
@@ -238,10 +258,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()
 
+	d.setSessionKey(d.sessionKey(ctx))
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() { defer wg.Done(); d.runHeartbeat(ctx) }()
 	go func() { defer wg.Done(); d.runCapabilities(ctx) }()
+	go func() { defer wg.Done(); d.runSessionWatch(ctx) }()
 	for _, l := range d.opt.Lanes {
 		if err := l.Start(ctx); err != nil {
 			d.log.Warn("lane start failed", "lane", l.Name(), "err", err.Error())
@@ -366,13 +388,124 @@ func (d *Daemon) runCapabilities(ctx context.Context) {
 				d.me = &me
 			}
 			d.mu.Unlock()
+		} else if errors.Is(err, fleetapi.ErrNotSignedIn) {
+			// Signed out: forget the previous account's org and tier.
+			d.mu.Lock()
+			d.caps, d.me = fleetapi.Capabilities{}, nil
+			d.mu.Unlock()
 		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-d.clk.After(d.opt.CapabilityPeriod):
+		case <-d.capKick:
 		}
 	}
+}
+
+// SessionChanged re-reads the stored session after another process signed
+// in or out (`kenaz login` calls it through the control API), then re-runs
+// everything that depends on the session at once: enroll and the lanes'
+// consent refresh. Nothing is sent by the reload itself; the lanes re-check
+// sign-in and the member's own opt-in before anything is uploaded.
+//
+// It reports false when the relay cannot take the new session in place:
+// the provider cannot reload, the reload failed, or an admin removed this
+// node (its heartbeat has stopped). The caller then restarts the relay, which starts from the
+// stored session.
+func (d *Daemon) SessionChanged(ctx context.Context) bool {
+	if d.isRemoved() {
+		return false
+	}
+	// The explicit reload: it always reads the store and ignores the
+	// periodic reload's back-off, so a sign-in just written is seen now.
+	err := fleetapi.ReloadSessionNow(ctx, d.opt.Provider.Auth())
+	if errors.Is(err, fleetapi.ErrReloadUnsupported) {
+		return false
+	}
+	if err != nil {
+		// The relay may still hold the old session: report that it did
+		// not take the new one, so the caller restarts it from the store.
+		d.log.Warn("session reload failed", "err", err.Error())
+		return false
+	}
+	d.setSessionKey(d.sessionKey(ctx))
+	d.log.Info("session reloaded")
+	d.Kick()
+	return true
+}
+
+// runSessionWatch is the safety net for SessionChanged: every
+// SessionCheckPeriod it re-reads the stored session and, when it differs
+// from the one last seen (a sign-in or sign-out whose notice never
+// arrived), kicks the same refresh. A removed node stops instead, so the
+// next start enrolls the new session from scratch. Providers that cannot
+// reload in place end the watch at once.
+//
+// The watch uses the periodic ReloadSession, which may back off after the
+// store could not be read and return an error for each check meanwhile.
+// A failed check never ends the watch; only the first failure after a
+// success is logged at warn, and the repeats at debug, so a locked
+// keychain does not log a warning every minute.
+func (d *Daemon) runSessionWatch(ctx context.Context) {
+	failing := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-d.clk.After(d.opt.SessionCheckPeriod):
+		}
+		err := fleetapi.ReloadSession(ctx, d.opt.Provider.Auth())
+		if errors.Is(err, fleetapi.ErrReloadUnsupported) {
+			return
+		}
+		if err != nil {
+			if failing {
+				d.log.Debug("session reload still failing", "err", err.Error())
+			} else {
+				d.log.Warn("session reload failed", "err", err.Error())
+			}
+			failing = true
+			continue
+		}
+		if failing {
+			d.log.Info("session reload recovered")
+			failing = false
+		}
+		key := d.sessionKey(ctx)
+		d.mu.Lock()
+		changed := key != d.sessKey
+		d.sessKey = key
+		d.mu.Unlock()
+		if !changed {
+			continue
+		}
+		d.log.Info("stored session changed")
+		if d.isRemoved() {
+			select {
+			case d.shutdown <- "session_changed":
+			default:
+			}
+			return
+		}
+		d.Kick()
+	}
+}
+
+// sessionKey identifies the active session ("" when signed out). It is
+// compared in memory only and never logged.
+func (d *Daemon) sessionKey(ctx context.Context) string {
+	s, err := d.opt.Provider.Auth().Session(ctx)
+	if err != nil {
+		return ""
+	}
+	return string(s.Env) + "\x00" + s.UserID + "\x00" + s.OrgID
+}
+
+func (d *Daemon) setSessionKey(k string) {
+	d.mu.Lock()
+	d.sessKey = k
+	d.mu.Unlock()
 }
 
 // Status assembles the current status (also used in-process by tests).
@@ -399,9 +532,9 @@ func (d *Daemon) Status(ctx context.Context) Status {
 	if d.hb != nil {
 		st, _ := d.hb.State()
 		s.Enroll = string(st)
-		if st == enroll.StateEarlyAccess {
+		if st == enroll.StatePlanRequired {
 			// The plugin's own text, never Fleet's message.
-			s.Notes = append(s.Notes, fleetapi.EarlyAccessMessage, consent.EarlyAccessNothingKept)
+			s.Notes = append(s.Notes, fleetapi.PlanRequiredMessage, consent.PlanRequiredNothingKept)
 		}
 	}
 	if d.me != nil {
@@ -491,6 +624,10 @@ func (d *Daemon) handleClientBye(w http.ResponseWriter, r *http.Request) {
 func (d *Daemon) handleKick(w http.ResponseWriter, _ *http.Request) {
 	d.Kick()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (d *Daemon) handleSessionChanged(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, SessionChangedReply{Reloaded: d.SessionChanged(r.Context())})
 }
 
 // handleShutdown stops the daemon; ?purge=1 (logout) purges lanes and

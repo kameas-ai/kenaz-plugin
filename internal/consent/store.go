@@ -15,7 +15,7 @@ import (
 // on this device. Fleet's own record (notice_version) wins when
 // present. This local copy covers Fleets that predate it. It also records,
 // per organization, when this device first saw Fleet admit the organization
-// to early access. It holds no secrets and no telemetry.
+// (its plan includes the plugin). It holds no secrets and no telemetry.
 type Store struct {
 	path string
 	mu   sync.Mutex

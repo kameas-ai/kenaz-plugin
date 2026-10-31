@@ -27,6 +27,11 @@ exit 0
 kenaz 0.0.0-dev (unofficial build)
 --- stderr
 $ setup print-managed claude
+exit 64
+--- stdout
+--- stderr
+kenaz setup: print-managed pins the plugin to a signed release, and this build has no release commit (it is not an official release); pass --release vX.Y.Z --commit <full commit of that tag>
+$ setup print-managed claude --release v1.2.3 --commit 0123456789abcdef0123456789abcdef01234567
 exit 0
 --- stdout
 # Claude Code managed settings for Kenaz for Claude Code and Codex
@@ -46,6 +51,10 @@ exit 0
 #   launch environment, which wins over settings "env".
 # - If port 4318 is taken on some machines, the relay falls back to another
 #   port and "kenaz doctor" reports the mismatch.
+# - The plugin is pinned to release v1.2.3, commit 0123456789abcdef0123456789abcdef01234567,
+#   with autoUpdate off. Deploy the snippet of each new release to upgrade;
+#   do not register the GitHub marketplace without a pin, which follows the
+#   repository's default branch.
 #
 # Each user also needs the kenaz binary on their PATH (the plugin runs it
 # directly; install it with your package manager of choice or your MDM; see the
@@ -57,10 +66,23 @@ exit 0
 {
   "extraKnownMarketplaces": {
     "kenaz": {
-      "autoUpdate": true,
+      "autoUpdate": false,
       "source": {
-        "repo": "kameas-ai/kenaz-plugin",
-        "source": "github"
+        "name": "kenaz",
+        "plugins": [
+          {
+            "description": "Kenaz, a Kameas AI product. Connects AI tools such as Claude Code and Codex to your organization's Kameas Fleet: shared skills, team context, your private memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
+            "name": "kenaz",
+            "source": {
+              "path": "plugin",
+              "ref": "v1.2.3",
+              "sha": "0123456789abcdef0123456789abcdef01234567",
+              "source": "git-subdir",
+              "url": "https://github.com/kameas-ai/kenaz-plugin.git"
+            }
+          }
+        ],
+        "source": "settings"
       }
     }
   },
@@ -81,7 +103,7 @@ exit 0
   }
 }
 --- stderr
-$ setup print-managed codex
+$ setup print-managed codex --release v1.2.3 --commit 0123456789abcdef0123456789abcdef01234567
 exit 0
 --- stdout
 # Codex managed configuration for Kenaz for Claude Code and Codex
@@ -93,10 +115,18 @@ exit 0
 #              (base64 of the block)
 # Merge with any [otel] settings you already manage.
 #
-# To install the plugin for everyone: in the ChatGPT admin console, import
-# the GitHub marketplace kameas-ai/kenaz-plugin and set kenaz to "Installed" for the
-# roles that should have it. Plugin hooks still need each user to trust
-# them once in Codex; telemetry works without them.
+# To install the plugin for everyone, register the marketplace pinned to
+# release v1.2.3 (commit 0123456789abcdef0123456789abcdef01234567) in the system config.toml
+# (/etc/codex/config.toml) or cloud-managed configuration, with the block
+# after the managed_config.toml one, and enable kenaz@kenaz for your users.
+# Codex checks out "ref" after cloning. That is not tamper-proof: Codex
+# runs "git checkout <ref>" without verifying the result, and git prefers a
+# branch named like the commit, so whoever controls the repository could
+# serve other content. Run "kenaz setup doctor" on a sample of machines: it
+# checks that Codex's checkout is the release commit. Do not use an
+# unpinned import of kameas-ai/kenaz-plugin: it follows the repository's default
+# branch. Plugin hooks still need each user to trust them once in Codex;
+# telemetry works without them.
 #
 # Each user also needs the kenaz binary on their PATH (the plugin runs it
 # directly; install it with your package manager of choice or your MDM; see the
@@ -111,6 +141,12 @@ trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", p
 metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/metrics", protocol = "binary" } }
 log_user_prompt = false
 tool_result = { max_bytes = 0 }
+
+----- config.toml (marketplace, pinned) -----
+[marketplaces.kenaz]
+source_type = "git"
+source = "https://github.com/kameas-ai/kenaz-plugin.git"
+ref = "0123456789abcdef0123456789abcdef01234567"
 --- stderr
 $ setup --help
 exit 64
@@ -119,14 +155,15 @@ exit 64
 usage:
   kenaz setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
   kenaz setup --undo claude|codex [--yes] [--dry-run] [--env E]
-  kenaz setup print-managed claude|codex [--port N] [--raw]
+  kenaz setup print-managed claude|codex [--port N] [--raw] [--release vX.Y.Z --commit SHA]
   kenaz setup doctor [--env E]
 
 To set up PATH, sign-in and every app at once, run kenaz init.
 
 Plugin source (Claude Code, Codex): a downloaded kenaz registers its own
-plugin by absolute path. If the "kenaz" marketplace from GitHub
-(kameas-ai/kenaz-plugin) is already registered, setup uses that instead,
-which starts kenaz from PATH. --bundle DIR registers that bundle's plugin
-and replaces the GitHub marketplace; --no-bundle never registers a bundle.
+verified plugin by absolute path. A "kenaz" marketplace from GitHub
+(kameas-ai/kenaz-plugin) is used instead only when it is pinned to this release's
+commit; one that follows a branch or tag is replaced, with a warning.
+--bundle DIR registers that bundle's plugin and replaces the GitHub
+marketplace; --no-bundle never registers a bundle.
 Setup starts the Kenaz relay if it is not running.

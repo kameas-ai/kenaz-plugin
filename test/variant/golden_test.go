@@ -45,7 +45,8 @@ func TestGoldenCLI(t *testing.T) {
 		{"--help"},
 		{"--version"},
 		{"setup", "print-managed", "claude"},
-		{"setup", "print-managed", "codex"},
+		{"setup", "print-managed", "claude", "--release", "v1.2.3", "--commit", "0123456789abcdef0123456789abcdef01234567"},
+		{"setup", "print-managed", "codex", "--release", "v1.2.3", "--commit", "0123456789abcdef0123456789abcdef01234567"},
 		{"setup", "--help"},
 	} {
 		b.WriteString(m.run(built.kenaz, nil, args...).render(m, args...))

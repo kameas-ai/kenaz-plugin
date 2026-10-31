@@ -1,7 +1,7 @@
 // Package forward posts projected batches to Kameas Fleet through
 // fleetapi.OTLPPoster: a token bucket keeps
 // under Fleet's per-(org, machine) rate, and each failure is classified as
-// hold (org paused), retry (transient), refused (org not in early access)
+// hold (org paused), retry (transient), refused (plan does not include the plugin)
 // or quarantine (repeated 4xx).
 // Payloads are never logged.
 package forward
@@ -32,8 +32,8 @@ const (
 	Retry
 	// Quarantine: Fleet rejected the batch as invalid; drop it and count.
 	Quarantine
-	// Refused: Fleet refused the batch because the organization is not in
-	// the early-access program. Drop it at once and keep nothing: nothing
+	// Refused: Fleet refused the batch because the organization's plan
+	// does not include the plugin. Drop it at once and keep nothing: nothing
 	// is collected or kept on the device until the organization is admitted.
 	Refused
 	// Stale: the batch's owning account is no longer the signed-in one
@@ -138,7 +138,7 @@ func (f *Forwarder) Send(ctx context.Context, owner fleetapi.ExpectedSession, b 
 	if _, paused := fleetapi.OrgPaused(err); paused {
 		return Result{Disposition: Hold, Err: err}
 	}
-	if fleetapi.EarlyAccessRequired(err) {
+	if fleetapi.PlanRequired(err) {
 		return Result{Disposition: Refused, Err: err}
 	}
 	var ae *fleetapi.APIError

@@ -41,6 +41,7 @@ func newEnv(t *testing.T, port int) *env {
 		Out:               e.out,
 		Err:               e.err,
 		Yes:               true,
+		Release:           testRelease,
 	}
 	e.setPort(t, port)
 	return e
@@ -373,14 +374,22 @@ func TestPortChangeAndBackupPruning(t *testing.T) {
 
 func TestManagedSnippets(t *testing.T) {
 	skipWithoutPublicMarketplace(t)
-	b, err := ManagedClaude(4318)
+	b, err := ManagedClaude(4318, testRelease)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var m struct {
 		ExtraKnownMarketplaces map[string]struct {
-			Source     map[string]string
-			AutoUpdate bool
+			Source struct {
+				Source  string
+				Name    string
+				Plugins []struct {
+					Name        string
+					Description string
+					Source      map[string]string
+				}
+			}
+			AutoUpdate *bool
 		}
 		EnabledPlugins map[string]bool
 		Env            map[string]string
@@ -389,8 +398,20 @@ func TestManagedSnippets(t *testing.T) {
 		t.Fatal(err)
 	}
 	mk := m.ExtraKnownMarketplaces["kenaz"]
-	if mk.Source["repo"] != "kameas-ai/kenaz-plugin" || mk.Source["source"] != "github" || !mk.AutoUpdate {
+	if mk.Source.Source != "settings" || mk.Source.Name != "kenaz" || len(mk.Source.Plugins) != 1 || mk.AutoUpdate == nil || *mk.AutoUpdate {
 		t.Fatalf("marketplace %+v", mk)
+	}
+	p := mk.Source.Plugins[0]
+	if p.Name != "kenaz" || p.Source["source"] != "git-subdir" || p.Source["url"] != "https://github.com/kameas-ai/kenaz-plugin.git" || p.Source["path"] != "plugin" || p.Source["ref"] != "v0.6.1" || p.Source["sha"] != testRelease.Commit || !strings.Contains(p.Description, "trademarks") {
+		t.Fatalf("plugin entry %+v", p)
+	}
+	// What setup reads back from the deployed snippet is the pinned GitHub
+	// plugin.
+	if got := claudeSourceOf(t, string(b)); !got.official() || !got.pinnedTo(testRelease.Commit) {
+		t.Fatalf("read back %+v", got)
+	}
+	if strings.Contains(string(b), `"autoUpdate": true`) {
+		t.Fatal("autoUpdate on")
 	}
 	if !m.EnabledPlugins["kenaz@kenaz"] {
 		t.Fatal("plugin not enabled")
@@ -412,14 +433,40 @@ func TestManagedSnippets(t *testing.T) {
 		t.Fatalf("codex snippet:\n%s", c)
 	}
 
+	if mc := codexMarketplace(ManagedCodexMarketplace(testRelease)); !mc.official() || !mc.pinnedTo(testRelease.Commit) {
+		t.Fatalf("codex marketplace %+v", mc)
+	}
+
 	var out bytes.Buffer
-	if code := printManaged(&out, harnessClaude, 4318, true); code != 0 || !bytes.Equal(out.Bytes(), b) {
+	if code := printManaged(&out, harnessClaude, 4318, true, testRelease); code != 0 || !bytes.Equal(out.Bytes(), b) {
 		t.Fatal("raw claude snippet differs")
 	}
 	out.Reset()
-	printManaged(&out, harnessClaude, 4318, false)
-	if !strings.Contains(out.String(), "2.1.217") || !strings.Contains(out.String(), "Claude Desktop") {
+	printManaged(&out, harnessClaude, 4318, false, testRelease)
+	if !strings.Contains(out.String(), "2.1.217") || !strings.Contains(out.String(), "Claude Desktop") || !strings.Contains(out.String(), testRelease.Commit) {
 		t.Fatal("notes missing")
+	}
+	out.Reset()
+	printManaged(&out, harnessCodex, 4318, false, testRelease)
+	if !strings.Contains(out.String(), `ref = "`+testRelease.Commit+`"`) || strings.Contains(out.String(), "admin console, import") {
+		t.Fatalf("codex output:\n%s", out.String())
+	}
+}
+
+func TestManagedRelease(t *testing.T) {
+	if r, err := managedRelease(testRelease, "", ""); err != nil || r != testRelease {
+		t.Fatalf("own release: %v %+v", err, r)
+	}
+	if _, err := managedRelease(Release{Version: "0.0.0-dev"}, "", ""); err == nil || !strings.Contains(err.Error(), "--release") {
+		t.Fatalf("dev build: %v", err)
+	}
+	if r, err := managedRelease(Release{}, "v1.2.3", strings.ToUpper(testRelease.Commit)); err != nil || r.Tag() != "v1.2.3" || r.Commit != testRelease.Commit {
+		t.Fatalf("flags: %v %+v", err, r)
+	}
+	for _, args := range [][2]string{{"v1.2.3", ""}, {"", testRelease.Commit}, {"main", testRelease.Commit}, {"v1.2.3", "abc123"}} {
+		if _, err := managedRelease(testRelease, args[0], args[1]); err == nil {
+			t.Errorf("%v accepted", args)
+		}
 	}
 }
 
@@ -434,7 +481,12 @@ func TestCommandParsing(t *testing.T) {
 		}
 		return
 	}
-	if code := Command(context.Background(), []string{"print-managed", "codex", "--raw", "--port", "47318"}, &out, &errb); code != 0 {
+	// An unofficial build has no release to pin to.
+	if code := Command(context.Background(), []string{"print-managed", "claude"}, &out, &errb); code != exitUsage || !strings.Contains(errb.String(), "--release vX.Y.Z --commit") {
+		t.Fatalf("unpinned print-managed: code %d: %s", code, errb.String())
+	}
+	out.Reset()
+	if code := Command(context.Background(), []string{"print-managed", "codex", "--raw", "--port", "47318", "--release", "v0.6.1", "--commit", testRelease.Commit}, &out, &errb); code != 0 {
 		t.Fatalf("code %d: %s", code, errb.String())
 	}
 	if !strings.HasPrefix(out.String(), "[otel]\n") || !strings.Contains(out.String(), ":47318/") {

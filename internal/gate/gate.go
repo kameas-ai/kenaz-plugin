@@ -31,7 +31,7 @@ type Decider interface {
 }
 
 // Admission is optionally implemented by a Decider whose organization may
-// be outside Fleet's early-access program. While the organization is not
+// have a plan that does not include the plugin. While the organization is not
 // admitted every record is dropped (never held). Once it is admitted, only
 // records generated at or after the admission moment may be sent.
 type Admission interface {
@@ -50,7 +50,7 @@ type Counters struct {
 	DroppedTier   int
 	DroppedOptOut int
 	// NotAdmitted counts records dropped because the organization is not
-	// in early access; BeforeAdmission counts records generated before it
+	// admitted (its plan does not include the plugin); BeforeAdmission counts records generated before it
 	// was admitted.
 	NotAdmitted     int
 	BeforeAdmission int
@@ -58,7 +58,7 @@ type Counters struct {
 }
 
 // AddNotAdmitted counts n items dropped before gating because the
-// organization is not admitted to early access.
+// organization is not admitted (its plan does not include the plugin).
 func (c *Counters) AddNotAdmitted(n int) {
 	c.mu.Lock()
 	c.NotAdmitted += n
@@ -103,7 +103,7 @@ type Outcome struct {
 
 // Apply gates records in this order:
 //  1. not signed in (or no personal opt-in) → drop all
-//  2. organization not admitted to early access → drop all; once admitted,
+//  2. organization not admitted (plan lacks the plugin) → drop all; once admitted,
 //     drop records generated before the admission moment
 //  3. hold condition → hold all
 //  4. tier lacks class → drop

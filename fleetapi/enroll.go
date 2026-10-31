@@ -86,7 +86,7 @@ type EnrollResult struct {
 // rate limit.
 type Enroller interface {
 	// Enroll posts body unchanged. A removed node yields an *APIError
-	// with Code CodeNodeRemoved; an org outside the early-access program
-	// yields an *APIError with Code CodeEarlyAccessRequired.
+	// with Code CodeNodeRemoved; an org whose plan does not include the
+	// plugin yields an *APIError that PlanRequired recognizes.
 	Enroll(ctx context.Context, body EnrollBody) (EnrollResult, error)
 }

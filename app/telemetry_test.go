@@ -166,7 +166,7 @@ func (p lanePoster) Post(ctx context.Context, b fleetapi.ProjectedBatch) (fleeta
 	}
 	p.f.attempts++
 	if p.f.postErr != nil {
-		if fleetapi.EarlyAccessRequired(p.f.postErr) {
+		if fleetapi.PlanRequired(p.f.postErr) {
 			p.f.approvalsErr = p.f.postErr // Fleet refuses the org everywhere
 		}
 		return fleetapi.ExportResult{}, p.f.postErr
@@ -417,19 +417,19 @@ func TestOptinRefusesPipedAnswers(t *testing.T) {
 	}
 }
 
-func earlyAccessRefusal() error {
-	return &fleetapi.APIError{Status: 403, Code: fleetapi.CodeEarlyAccessRequired, Message: "fleet text"}
+func planRefusal() error {
+	return &fleetapi.APIError{Status: 403, Code: fleetapi.CodeCapabilityNotInTier, Message: "fleet text", Details: map[string]string{"capability": fleetapi.PluginCapability}}
 }
 
 func (f *laneFleet) attemptCount() int { f.mu.Lock(); defer f.mu.Unlock(); return f.attempts }
 
 func admitted(l *telemetryLane) bool { _, ok := l.dec.AdmittedSince(); return ok }
 
-// A batch Fleet refuses because the org is not in early access is dropped
+// A batch Fleet refuses because the org's plan does not include the plugin is dropped
 // at once: nothing is kept on the device, and no further uploads are
 // attempted (nor anything collected) while the org is not admitted.
 func TestTelemetryLaneRefusedBatchNotPersisted(t *testing.T) {
-	f := &laneFleet{Provider: stub.New(), optedIn: true, postErr: earlyAccessRefusal()}
+	f := &laneFleet{Provider: stub.New(), optedIn: true, postErr: planRefusal()}
 	l, rx, _ := newTestLane(t, f)
 	if !waitFor(t, func() bool { return l.dec.SignedIn() && admitted(l) }) {
 		t.Fatal("lane never admitted")
@@ -438,7 +438,7 @@ func TestTelemetryLaneRefusedBatchNotPersisted(t *testing.T) {
 	if !waitFor(t, func() bool { return f.attemptCount() > 0 }) {
 		t.Fatal("no upload attempted")
 	}
-	if !waitFor(t, func() bool { return l.cm.State().EarlyAccess }) {
+	if !waitFor(t, func() bool { return l.cm.State().PlanRequired }) {
 		t.Fatal("refusal not recorded")
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -484,9 +484,9 @@ func TestTelemetryLaneEarlierBuildDataPurgedAtAdmission(t *testing.T) {
 // Events generated before the admission moment are never sent, even when
 // their session ends after admission.
 func TestTelemetryLanePreAdmissionEventsNeverSent(t *testing.T) {
-	f := &laneFleet{Provider: stub.New(), optedIn: true, approvalsErr: earlyAccessRefusal()}
+	f := &laneFleet{Provider: stub.New(), optedIn: true, approvalsErr: planRefusal()}
 	l, rx, _ := newTestLane(t, f)
-	if !waitFor(t, func() bool { return l.cm.State().EarlyAccess }) {
+	if !waitFor(t, func() bool { return l.cm.State().PlanRequired }) {
 		t.Fatal("refusal not observed")
 	}
 	// The fixture's events (fixtures.Base) are generated while refused.
@@ -602,9 +602,9 @@ func (f *laneFleet) postedEndedTokenIn(t *testing.T) (n int, tokens int64) {
 // must not carry the pre-admission part of the session to Fleet: its
 // aggregates (tokens, cost, duration) cover only events after admission.
 func TestTelemetryLaneSessionSpanningAdmission(t *testing.T) {
-	f := &laneFleet{Provider: stub.New(), optedIn: true, approvalsErr: earlyAccessRefusal()}
+	f := &laneFleet{Provider: stub.New(), optedIn: true, approvalsErr: planRefusal()}
 	l, rx, _ := newTestLane(t, f)
-	if !waitFor(t, func() bool { return l.cm.State().EarlyAccess }) {
+	if !waitFor(t, func() bool { return l.cm.State().PlanRequired }) {
 		t.Fatal("refusal not observed")
 	}
 	postLogs(t, rx, shiftedClaudeLogs(0)) // generated while refused
@@ -636,7 +636,7 @@ func TestTelemetryLaneNoSpoolWriteAfterRefusal(t *testing.T) {
 		t.Fatal("lane never admitted")
 	}
 	_ = l.dec.HoldReason() // warm the snapshot cache: admitted
-	l.cm.ObserveUploadError(earlyAccessRefusal())
+	l.cm.ObserveUploadError(planRefusal())
 	b := fleetapi.ProjectedBatch{Signal: fleetapi.SignalLogs, ContentType: fleetapi.ContentTypeProtobuf, Body: []byte{}, Records: 1}
 	l.spoolBatch(queued{b, fixtures.Base, sub1Owner})
 	l.holdRecords([]project.Record{{Class: "x", Time: fixtures.Base}}, "paused")
@@ -653,8 +653,8 @@ func TestTelemetryLaneRevokedOrgDrops(t *testing.T) {
 	if !waitFor(t, func() bool { return l.dec.SignedIn() && admitted(l) }) {
 		t.Fatal("lane never admitted")
 	}
-	f.set(func(f *laneFleet) { f.approvalsErr = earlyAccessRefusal() })
-	if !waitFor(t, func() bool { return l.cm.State().EarlyAccess && !admitted(l) }) {
+	f.set(func(f *laneFleet) { f.approvalsErr = planRefusal() })
+	if !waitFor(t, func() bool { return l.cm.State().PlanRequired && !admitted(l) }) {
 		t.Fatal("revocation not observed")
 	}
 	postClaudeSession(t, l, rx)

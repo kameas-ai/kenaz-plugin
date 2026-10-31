@@ -85,3 +85,66 @@ func TestConflictProviderAnswersEveryCall(t *testing.T) {
 		t.Error("memory lost")
 	}
 }
+
+// bothReloadsAuth counts each reload, to check what the guard passes on.
+type bothReloadsAuth struct {
+	sessionAuth
+	periodic, now *int
+}
+
+func (a bothReloadsAuth) ReloadSession(context.Context) error    { *a.periodic++; return nil }
+func (a bothReloadsAuth) ReloadSessionNow(context.Context) error { *a.now++; return nil }
+
+type periodicOnlyAuth struct {
+	sessionAuth
+	periodic *int
+}
+
+func (a periodicOnlyAuth) ReloadSession(context.Context) error { *a.periodic++; return nil }
+
+type authProvider struct {
+	fleetapi.Provider
+	a fleetapi.Auth
+}
+
+func (p authProvider) Auth() fleetapi.Auth { return p.a }
+
+// The guard passes both reloads through to the wrapped Auth, so the relay
+// finds ReloadSessionNow by type assertion and calls the wrapped one; an
+// Auth with only ReloadSession gets that from the explicit path too, and
+// one with neither still reports ErrReloadUnsupported.
+func TestEnvAuthPassesReloadsThrough(t *testing.T) {
+	ctx := context.Background()
+	var periodic, now int
+	inner := bothReloadsAuth{sessionAuth{stub.New().Auth(), fleetapi.EnvDev}, &periodic, &now}
+	a := envAuth{inner}
+	if _, ok := fleetapi.Auth(a).(fleetapi.SessionReloaderNow); !ok {
+		t.Fatal("envAuth does not implement SessionReloaderNow")
+	}
+	if err := fleetapi.ReloadSession(ctx, a); err != nil || periodic != 1 || now != 0 {
+		t.Fatalf("ReloadSession: %v periodic=%d now=%d", err, periodic, now)
+	}
+	if err := fleetapi.ReloadSessionNow(ctx, a); err != nil || periodic != 1 || now != 1 {
+		t.Fatalf("ReloadSessionNow: %v periodic=%d now=%d", err, periodic, now)
+	}
+
+	periodic = 0
+	only := envAuth{periodicOnlyAuth{sessionAuth{stub.New().Auth(), fleetapi.EnvDev}, &periodic}}
+	if err := fleetapi.ReloadSessionNow(ctx, only); err != nil || periodic != 1 {
+		t.Fatalf("fallback: %v periodic=%d", err, periodic)
+	}
+
+	none := envAuth{sessionAuth{stub.New().Auth(), fleetapi.EnvDev}}
+	if err := fleetapi.ReloadSessionNow(ctx, none); !errors.Is(err, fleetapi.ErrReloadUnsupported) {
+		t.Fatalf("no reload: %v", err)
+	}
+
+	// Through guardSessionEnv, in a build that wraps the provider.
+	if !allEnvsAllowed() {
+		now = 0
+		p := guardSessionEnv(authProvider{stub.New(), inner})
+		if err := fleetapi.ReloadSessionNow(ctx, p.Auth()); err != nil || now != 1 {
+			t.Fatalf("guarded ReloadSessionNow: %v now=%d", err, now)
+		}
+	}
+}

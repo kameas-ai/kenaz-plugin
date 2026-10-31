@@ -9,8 +9,8 @@
 //   - Claude Desktop, Code tab: its local sessions run Claude Code and read
 //     the same user settings (~/.claude/settings.json, enabledPlugins,
 //     extraKnownMarketplaces), so `kenaz setup claude` covers it.
-//   - Claude Desktop, chat: a desktop extension (.mcpb), not available yet;
-//     reported only when features.ClaudeDesktopChat is on.
+//   - Claude Desktop, chat: the Kenaz desktop extension (.mcpb), shipped by
+//     releases built with features.ClaudeDesktopChat; reported only then.
 //   - Codex CLI: `kenaz setup codex`.
 //   - Codex in the ChatGPT desktop app (and the Codex desktop app): they run
 //     the Codex app server with the same ~/.codex/config.toml, plugins and

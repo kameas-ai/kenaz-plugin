@@ -32,10 +32,12 @@ const (
 // official is a fake official provider; unimplemented methods hit the stub.
 type official struct {
 	fleetapi.Provider
-	signedIn    atomic.Bool
-	earlyAccess atomic.Bool // Fleet refuses enroll: org not in early access
-	mu          sync.Mutex
-	bodies      []string
+	signedIn atomic.Bool
+	// refuseCode, when set, is the code Fleet refuses enroll with because
+	// the org's plan does not include the plugin.
+	refuseCode atomic.Value
+	mu         sync.Mutex
+	bodies     []string
 }
 
 func (p *official) Flavor() fleetapi.Flavor     { return fleetapi.FlavorOfficial }
@@ -59,6 +61,10 @@ func (a auth) Session(context.Context) (fleetapi.Session, error) {
 }
 func (a auth) TokenStore() fleetapi.TokenStore { return nil }
 
+// ReloadSession: Session always reads the shared state, so there is
+// nothing to reload.
+func (a auth) ReloadSession(context.Context) error { return nil }
+
 type enr struct{ p *official }
 
 func (e enr) Enroll(_ context.Context, b fleetapi.EnrollBody) (fleetapi.EnrollResult, error) {
@@ -69,8 +75,8 @@ func (e enr) Enroll(_ context.Context, b fleetapi.EnrollBody) (fleetapi.EnrollRe
 	if !e.p.signedIn.Load() {
 		return fleetapi.EnrollResult{}, fleetapi.ErrNotSignedIn
 	}
-	if e.p.earlyAccess.Load() {
-		return fleetapi.EnrollResult{}, &fleetapi.APIError{Status: 403, Code: fleetapi.CodeEarlyAccessRequired, Message: "fleet text"}
+	if c, _ := e.p.refuseCode.Load().(string); c != "" {
+		return fleetapi.EnrollResult{}, &fleetapi.APIError{Status: 403, Code: c, Message: "fleet text", Details: map[string]string{"capability": fleetapi.PluginCapability}}
 	}
 	return fleetapi.EnrollResult{NodeID: b.NodeID, Tier: "team"}, nil
 }
@@ -297,12 +303,24 @@ func TestDaemonMCPEndToEnd(t *testing.T) {
 	})
 }
 
-// Early access: an org outside the program sees the approved text in
-// login (non-zero exit), status and setup.
-func TestEarlyAccessRefusalShownInLoginStatusSetup(t *testing.T) {
-	const msg = "Kenaz for Claude Code and Codex is in early access. Contact sales@kameas.ai to join."
+// Plan required: an org whose plan does not include the plugin sees the
+// approved text in login (non-zero exit), status and setup.
+func TestPlanRequiredRefusalShownInLoginStatusSetup(t *testing.T) {
+	testPlanRequiredRefusal(t, fleetapi.CodeCapabilityNotInTier)
+}
+
+// Older Fleet servers send their own refusal code for the same case. It
+// shows the same plan-required text and state; no early-access text ever
+// reaches the member.
+func TestLegacyRefusalShownAsPlanRequired(t *testing.T) {
+	testPlanRequiredRefusal(t, fleetapi.CodeLegacyEarlyAccessRequired)
+}
+
+func testPlanRequiredRefusal(t *testing.T, refuseCode string) {
+	const msg = "Kenaz for Claude Code and Codex needs a Kameas Fleet plan that includes it. Ask your organization's Kameas Fleet administrator."
+	const kept = "Nothing is being collected or held on this device until your organization's plan includes Kenaz for Claude Code and Codex."
 	p := &official{Provider: stub.New()}
-	p.earlyAccess.Store(true)
+	p.refuseCode.Store(refuseCode)
 	h := newHarness(t, p)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -328,11 +346,18 @@ func TestEarlyAccessRefusalShownInLoginStatusSetup(t *testing.T) {
 	if strings.Contains(errb, "fleet text") {
 		t.Fatal("login must show the plugin's text, not Fleet's message")
 	}
-	if code, out, _ := h.run(t, "status"); code != 0 || !strings.Contains(out, "early_access_required") || !strings.Contains(out, msg) {
+	code, out, _ = h.run(t, "status")
+	if code != 0 || !strings.Contains(out, "plan_required") || !strings.Contains(out, msg) || !strings.Contains(out, kept) {
 		t.Fatalf("status: exit=%d out=%s", code, out)
 	}
-	if _, _, errb := h.run(t, "setup", "doctor"); !strings.Contains(errb, msg) {
-		t.Fatalf("setup stderr = %s", errb)
+	_, sout, serr := h.run(t, "setup", "doctor")
+	if !strings.Contains(serr, msg) {
+		t.Fatalf("setup stderr = %s", serr)
+	}
+	for _, s := range []string{errb, out, sout, serr} {
+		if strings.Contains(strings.ToLower(s), "early access") || strings.Contains(s, "early_access") {
+			t.Fatalf("early-access text shown: %s", s)
+		}
 	}
 
 	if code, _, _ := h.run(t, "logout"); code != 0 {

@@ -3,6 +3,7 @@ package fleetapi
 import (
 	"errors"
 	"fmt"
+	"regexp"
 )
 
 // ErrUnofficialBuild is returned by every method of the stub provider.
@@ -24,22 +25,99 @@ const (
 	// CodeNodeRemoved means an admin removed this node. Stop heartbeating
 	// and require a fresh login.
 	CodeNodeRemoved = "node_removed"
-	// CodeEarlyAccessRequired (HTTP 403 on enroll and heartbeat) means the
-	// member's organization is not in the Kenaz for Claude Code and
-	// Codex early-access program. Show EarlyAccessMessage; keep heartbeating
-	// at the normal interval so admission is picked up.
-	CodeEarlyAccessRequired = "fleet_plugin_early_access_required"
+	// CodeLegacyEarlyAccessRequired is the refusal older Fleet servers
+	// send (HTTP 403 on enroll and heartbeat) for an organization whose
+	// plan does not include Kenaz for Claude Code and Codex. Current
+	// servers send CodeCapabilityNotInTier instead. Both are handled the
+	// same way: see PlanRequired.
+	CodeLegacyEarlyAccessRequired = "fleet_plugin_early_access_required"
+
+	// CodeEarlyAccessRequired is the old name of
+	// CodeLegacyEarlyAccessRequired.
+	//
+	// Deprecated: use CodeLegacyEarlyAccessRequired, and PlanRequired to
+	// recognize the refusal.
+	CodeEarlyAccessRequired = CodeLegacyEarlyAccessRequired
 )
 
-// EarlyAccessMessage is the text shown for CodeEarlyAccessRequired. It is
-// the approved wording. The plugin owns it: never show
-// Fleet's response message instead.
-const EarlyAccessMessage = "Kenaz for Claude Code and Codex is in early access. Contact sales@kameas.ai to join."
+// PluginCapability is the capability Fleet names in Details["capability"]
+// of a CodeCapabilityNotInTier refusal when the organization's plan does
+// not include the plugin at all. It must match the value Fleet sends for
+// that whole-plugin refusal. Every other CodeCapabilityNotInTier refusal is
+// a per-feature limit naming its own capability: see TierLimit.
+const PluginCapability = "fleet_plugin"
 
-// EarlyAccessRequired reports whether err is Fleet's early-access refusal.
-func EarlyAccessRequired(err error) bool {
+// PlanRequiredMessage is the text shown when Fleet refuses the plugin
+// because the organization's plan does not include it. The plugin owns
+// it: never show Fleet's response message instead.
+const PlanRequiredMessage = "Kenaz for Claude Code and Codex needs a Kameas Fleet plan that includes it. Ask your organization's Kameas Fleet administrator."
+
+// EarlyAccessMessage is the old name of PlanRequiredMessage.
+//
+// Deprecated: use PlanRequiredMessage.
+const EarlyAccessMessage = PlanRequiredMessage
+
+// TierLimitMessage is the text shown when Fleet refuses one feature
+// because the organization's plan does not include it. The plugin owns it.
+const TierLimitMessage = "Your organization's Kameas Fleet plan doesn't include this feature."
+
+// PlanRequired reports whether err is Fleet's refusal because the
+// organization's plan does not include the plugin at all: either
+// capability_not_in_tier naming PluginCapability, or the code older
+// servers send for the same refusal. A capability_not_in_tier for any
+// other capability, or naming none, is a per-feature limit (TierLimit),
+// not this. While refused, nothing is collected, held or sent; heartbeats
+// continue at the normal interval so a plan change is picked up.
+func PlanRequired(err error) bool {
 	var ae *APIError
-	return errors.As(err, &ae) && ae.Code == CodeEarlyAccessRequired
+	if !errors.As(err, &ae) {
+		return false
+	}
+	switch ae.Code {
+	case CodeLegacyEarlyAccessRequired:
+		return true
+	case CodeCapabilityNotInTier:
+		return ae.Details["capability"] == PluginCapability
+	}
+	return false
+}
+
+// EarlyAccessRequired is the old name of PlanRequired.
+//
+// Deprecated: use PlanRequired.
+func EarlyAccessRequired(err error) bool { return PlanRequired(err) }
+
+// TierLimit reports whether err is a per-feature capability_not_in_tier
+// refusal: the organization's plan includes the plugin but not this one
+// feature. capability is Fleet's Details["capability"] as sent (possibly
+// empty); show it only through TierLimitText. The whole-plugin refusal is
+// PlanRequired, never TierLimit.
+func TierLimit(err error) (capability string, ok bool) {
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Code != CodeCapabilityNotInTier || PlanRequired(err) {
+		return "", false
+	}
+	return ae.Details["capability"], true
+}
+
+var capabilityName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// SafeCapability returns capability if it is a short machine name that is
+// safe to show, else "".
+func SafeCapability(capability string) string {
+	if capabilityName.MatchString(capability) {
+		return capability
+	}
+	return ""
+}
+
+// TierLimitText is TierLimitMessage, naming the capability only when it is
+// a short machine name (see SafeCapability).
+func TierLimitText(capability string) string {
+	if c := SafeCapability(capability); c != "" {
+		return TierLimitMessage + " (feature: " + c + ")"
+	}
+	return TierLimitMessage
 }
 
 // APIError is a non-2xx Fleet response, normalized by the implementation.

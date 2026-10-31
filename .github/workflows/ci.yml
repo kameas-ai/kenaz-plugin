@@ -48,6 +48,25 @@ jobs:
           ./bin/kenaz-dev --version | grep -q "^kenaz-dev .*unofficial build"
           ./bin/kenaz-dev version --json | grep -q '"variant": "kenaz-dev"'
 
+  # The release build that ships the Kenaz desktop extension (build tag
+  # kenaz_claude_desktop_chat): it adds the Claude desktop app's chat as a
+  # host, so vet and test the whole module with it too. Cowork has its own
+  # tag (kenaz_cowork), off in releases; its host list is checked here too.
+  check-claude-desktop-chat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet -tags kenaz_claude_desktop_chat ./...
+      - run: go test -race -tags kenaz_claude_desktop_chat ./...
+      - run: go test -tags kenaz_claude_desktop_chat,kenaz_cowork ./internal/supported/ ./internal/features/
+      # The release-mode check, offline, against the vendored docs list.
+      - run: TAGS=kenaz_claude_desktop_chat scripts/check-supported-tools.sh internal/supported/testdata/supported-tools.json
+
   # Windows: the migration's renames, junctions and open-file refusals,
   # setup's path handling, the relay lock and the credential store behave
   # differently there. Both build variants.

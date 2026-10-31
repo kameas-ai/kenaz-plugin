@@ -91,7 +91,8 @@ func (p *Pipeline) Tick() { p.process(p.cfg.Aggregator.Tick()) }
 
 func (p *Pipeline) ingest(r decode.Result) {
 	p.note(r)
-	// While the organization is not admitted to early access nothing is
+	// While the organization is not admitted (its plan does not
+	// include the plugin) nothing is
 	// collected: events are dropped before session aggregation, so no
 	// pre-admission usage can reach a session summary sent after admission.
 	if p.cfg.Decider != nil && !gate.Admitted(p.cfg.Decider) {

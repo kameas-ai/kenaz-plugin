@@ -603,5 +603,11 @@ func friendly(err error) error {
 	if cat, ok := fleetapi.OrgPaused(err); ok {
 		return fmt.Errorf("your organization's Kameas Fleet access is paused (%s); try again later", cat)
 	}
+	if fleetapi.PlanRequired(err) {
+		return errors.New(fleetapi.PlanRequiredMessage)
+	}
+	if capability, ok := fleetapi.TierLimit(err); ok {
+		return errors.New(fleetapi.TierLimitText(capability))
+	}
 	return err
 }

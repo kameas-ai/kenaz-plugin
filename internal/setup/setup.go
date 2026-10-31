@@ -89,6 +89,9 @@ type Options struct {
 	// BundleExplicit is true when --bundle named the bundle: it then
 	// replaces the public GitHub marketplace instead of adopting it.
 	BundleExplicit bool
+	// Release is the signed release this kenaz was built from. A GitHub
+	// marketplace is adopted only when pinned to Release.Commit.
+	Release Release
 	// HostBins maps "claude" and "codex" to the executable to run when the
 	// name is not on PATH ("" or absent: run the name).
 	HostBins map[string]string
@@ -221,7 +224,7 @@ const usageOpenCode = `usage:
   {bin} setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
   {bin} setup opencode [--yes] [--dry-run] [--env E] [--adapter DIR] [--bundle DIR | --no-bundle]
   {bin} setup --undo claude|codex|opencode [--yes] [--dry-run] [--env E]
-  {bin} setup print-managed claude|codex [--port N] [--raw]
+  {bin} setup print-managed claude|codex [--port N] [--raw] [--release vX.Y.Z --commit SHA]
   {bin} setup doctor [--env E]
 
 To set up PATH, sign-in and every app at once, run {bin} init.
@@ -230,7 +233,7 @@ To set up PATH, sign-in and every app at once, run {bin} init.
 const usageBase = `usage:
   {bin} setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
   {bin} setup --undo claude|codex [--yes] [--dry-run] [--env E]
-  {bin} setup print-managed claude|codex [--port N] [--raw]
+  {bin} setup print-managed claude|codex [--port N] [--raw] [--release vX.Y.Z --commit SHA]
   {bin} setup doctor [--env E]
 
 To set up PATH, sign-in and every app at once, run {bin} init.
@@ -238,10 +241,11 @@ To set up PATH, sign-in and every app at once, run {bin} init.
 
 const usageMarketplace = `
 Plugin source (Claude Code, Codex): a downloaded {bin} registers its own
-plugin by absolute path. If the "{marketplace}" marketplace from GitHub
-({repo}) is already registered, setup uses that instead,
-which starts {bin} from PATH. --bundle DIR registers that bundle's plugin
-and replaces the GitHub marketplace; --no-bundle never registers a bundle.
+verified plugin by absolute path. A "{marketplace}" marketplace from GitHub
+({repo}) is used instead only when it is pinned to this release's
+commit; one that follows a branch or tag is replaced, with a warning.
+--bundle DIR registers that bundle's plugin and replaces the GitHub
+marketplace; --no-bundle never registers a bundle.
 Setup starts the Kenaz relay if it is not running.
 `
 
@@ -288,6 +292,9 @@ type Hooks struct {
 	// Result receives Apply's or Undo's error (nil on success), so a
 	// caller can tell a declined change from a failure.
 	Result func(error)
+	// Release is the signed release this kenaz was built from (the app's
+	// Version and BuildCommit).
+	Release Release
 }
 
 // Diff is the unified diff setup prints before a change.
@@ -307,6 +314,8 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	env := fl.String("env", "", "Kameas Fleet environment ("+variant.Current.EnvChoices(", ")+")")
 	port := fl.Int("port", variant.Shared.RelayPorts[0], "print-managed: relay port to pin fleet-wide")
 	raw := fl.Bool("raw", false, "print-managed: print only the file content")
+	pinTag := fl.String("release", "", "print-managed: release tag to pin the plugin to (default: this kenaz's release)")
+	pinCommit := fl.String("commit", "", "print-managed: full commit of --release (default: this kenaz's release commit)")
 	bundleDir := fl.String("bundle", "", "register a self-contained release bundle (default: the bundle this kenaz runs from, if any)")
 	noBundle := fl.Bool("no-bundle", false, "ignore the bundle this kenaz runs from and use kenaz from PATH")
 	adapter := new(string)
@@ -344,7 +353,12 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 			fmt.Fprintf(stderr, "%s setup: print-managed is not available in this build; it is never deployed fleet-wide\n", variant.Current.Binary)
 			return exitUsage
 		}
-		return printManaged(stdout, h, *port, *raw)
+		rel, err := managedRelease(hk.Release, *pinTag, *pinCommit)
+		if err != nil {
+			fmt.Fprintln(stderr, variant.Current.Binary+" setup:", err)
+			return exitUsage
+		}
+		return printManaged(stdout, h, *port, *raw, rel)
 	}
 
 	opts, err := defaultOptions(*env, stdout, stderr, resolve)
@@ -353,6 +367,7 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		return exitError
 	}
 	opts.Yes, opts.DryRun, opts.Traces = *yes, *dry, *traces
+	opts.Release = hk.Release
 	opts.FleetEnv = *env
 	if hk.In != nil {
 		opts.In = hk.In
@@ -474,11 +489,48 @@ func Apply(o Options, h harness) error {
 	if h != harnessOpenCode {
 		mk = o.kenazMarketplace(h)
 	}
-	if bundle != nil && h != harnessOpenCode && mk.official() && !o.BundleExplicit {
-		fmt.Fprintf(o.Out, "%s already has the Kenaz plugin marketplace from GitHub (%s); setup uses it instead of registering this download's copy. Pass --bundle to replace it.\n", h.label(), OfficialRepo)
-		bundle = nil
+	pinned, why := false, ""
+	if h != harnessOpenCode && mk.official() {
+		pinned, why = o.releasePin(h, mk, bundle)
 	}
-	if bundle == nil && h != harnessOpenCode && mk.official() {
+	// A Claude Code "settings" (inline) catalog named kenaz is declared in
+	// a settings file, typically managed settings: Claude Code allows one
+	// marketplace per name, so setup neither adds a second nor removes it.
+	inline := h == harnessClaude && mk.Inline
+	switch {
+	case inline:
+		if pinned {
+			fmt.Fprintf(o.Out, "%s declares the Kenaz plugin marketplace inline (managed or user settings), pinned to this release's commit; setup uses it.\n", h.label())
+		} else {
+			detail := "is not recognizably this release's pinned plugin"
+			if mk.official() {
+				detail = why
+			}
+			fmt.Fprintf(o.Err, "warning: %s declares the Kenaz plugin marketplace inline (managed or user settings), and it %s. Setup does not replace it or add a second %q marketplace, and configures telemetry only. To pin it, deploy the extraKnownMarketplaces entry from this release's `%s setup print-managed claude`.\n", h.label(), detail, bundleMarketplace, variant.Current.Binary)
+		}
+		bundle = nil
+	case bundle != nil && h != harnessOpenCode && mk.official() && !o.BundleExplicit:
+		if pinned {
+			fmt.Fprintf(o.Out, "%s already has the Kenaz plugin marketplace from GitHub (%s), pinned to this release's commit; setup uses it instead of registering this download's copy. Pass --bundle to replace it.\n", h.label(), OfficialRepo)
+			bundle = nil
+		} else {
+			// A marketplace on a moving ref (a branch, a tag, the default
+			// branch), or whose checkout is not the release commit, is not
+			// a signed release: register this download's verified copy
+			// instead, as --bundle would.
+			fmt.Fprintf(o.Err, "warning: the Kenaz plugin marketplace from GitHub (%s) in %s %s; setup replaces it with this download's verified copy.%s\n", OfficialRepo, h.label(), why, pinHint(h, o.Release))
+		}
+	}
+	if bundle == nil && h != harnessOpenCode && mk.official() && !pinned && !inline {
+		// No verified copy to fall back on (Homebrew, npm, --no-bundle):
+		// keep using it, and say how to pin it.
+		fmt.Fprintf(o.Err, "warning: the Kenaz plugin marketplace from GitHub (%s) in %s %s, so it can change without a release. %s\n", OfficialRepo, h.label(), why, noBundleHint(h, o.Release))
+	}
+	switch {
+	case bundle == nil && inline && !pinned:
+		// Not ours to change: no host command, telemetry keys only.
+		adopt = &Adopted{Source: "settings"}
+	case bundle == nil && h != harnessOpenCode && mk.official():
 		adopt = &Adopted{Source: mk.Remote}
 		if prev != nil && prev.Adopted != nil {
 			adopt.InstalledPlugin = prev.Adopted.InstalledPlugin
@@ -487,7 +539,7 @@ func Apply(o Options, h harness) error {
 		case !mk.Installed:
 			cmds = [][]string{installCmd(h)}
 			adopt.InstalledPlugin = true
-		case !mk.Enabled:
+		case mk.Off:
 			// Installed by the user and turned off: their choice. Setup
 			// neither re-enables it nor, on --undo, uninstalls it.
 			fmt.Fprintf(o.Err, "warning: the Kenaz plugin (%s) is installed in %s but turned off, so it will not run. %s\n", bundlePluginID, h.label(), enableHint(h))
@@ -757,7 +809,7 @@ func Undo(o Options, h harness) error {
 			_ = os.RemoveAll(fs.Bundle.Rendered)
 		}
 		if fs.Bundle.Replaced != "" {
-			fmt.Fprintf(o.Out, "Setup had replaced the %q marketplace from %s. To use it again: %s plugin marketplace add %s\n", bundleMarketplace, fs.Bundle.Replaced, hostCLI(h), OfficialRepo)
+			fmt.Fprintf(o.Out, "Setup had replaced the %q marketplace from %s. To use it again: %s\n", bundleMarketplace, fs.Bundle.Replaced, readdHint(h, o.Release))
 		}
 	}
 	if !exists {

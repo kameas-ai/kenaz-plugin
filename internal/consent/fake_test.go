@@ -24,11 +24,15 @@ type fakeFleet struct {
 	optins    map[fleetapi.TelemetryClass]fleetapi.OptInState
 	approvals []fleetapi.Approval
 	// approvalsErr is returned by PendingApprovals (e.g. Fleet's 403
-	// early-access refusal, which /me/pending-approvals answers for a plugin
-	// token of an org outside the program).
+	// plan-required refusal, which /me/pending-approvals answers for a
+	// plugin token of an org whose plan does not include the plugin).
 	approvalsErr error
 	puts         []fleetapi.OptInPut
 	lockWaits    chan fleetapi.LockdownState
+	// lockWaitErr, when set, is returned by LockdownWait; lockWaitCalls
+	// counts the calls that returned it.
+	lockWaitErr   error
+	lockWaitCalls int
 	// user / org override the signed-in session ("" = u1 / o1).
 	user, org string
 }
@@ -132,6 +136,13 @@ func (p fakePollers) LockdownStatus(context.Context) (fleetapi.LockdownState, er
 	return fleetapi.LockdownState{}, nil
 }
 func (p fakePollers) LockdownWait(ctx context.Context) (fleetapi.LockdownState, bool, error) {
+	p.f.mu.Lock()
+	if err := p.f.lockWaitErr; err != nil {
+		p.f.lockWaitCalls++
+		p.f.mu.Unlock()
+		return fleetapi.LockdownState{}, false, err
+	}
+	p.f.mu.Unlock()
 	select {
 	case s := <-p.f.lockWaits:
 		return s, true, nil

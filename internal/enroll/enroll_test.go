@@ -210,13 +210,20 @@ func TestHeartbeatKickAndSignedOutRetry(t *testing.T) {
 	waitFor(t, func() bool { st, _ := hb.State(); return st == StateEnrolled })
 }
 
-// Early access: an org outside the program is a distinct state, the
-// loop keeps going at the normal interval (not the 5 min error retry), and
-// admission is picked up on the next beat.
-func TestHeartbeatEarlyAccessKeepsBeating(t *testing.T) {
+// Plan required: an org whose plan does not include the plugin is a
+// distinct state, the loop keeps going at the normal interval (not the
+// 5 min error retry), and admission is picked up on the next beat. Older
+// servers' refusal code maps to the same state.
+func TestHeartbeatPlanRequiredKeepsBeating(t *testing.T) {
+	for _, code := range []string{fleetapi.CodeCapabilityNotInTier, fleetapi.CodeLegacyEarlyAccessRequired} {
+		t.Run(code, func(t *testing.T) { testHeartbeatPlanRequired(t, code) })
+	}
+}
+
+func testHeartbeatPlanRequired(t *testing.T, code string) {
 	dir := t.TempDir()
 	clk := clock.NewFake(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC))
-	ea := &fleetapi.APIError{Status: 403, Code: fleetapi.CodeEarlyAccessRequired}
+	ea := &fleetapi.APIError{Status: 403, Code: code, Details: map[string]string{"capability": fleetapi.PluginCapability}}
 	f := &fakeEnroller{errs: []error{ea, nil}}
 	hb := &Heartbeat{
 		Enroller: f,
@@ -229,13 +236,13 @@ func TestHeartbeatEarlyAccessKeepsBeating(t *testing.T) {
 	go func() { _ = hb.Run(ctx) }()
 
 	waitFor(t, func() bool { return f.calls() == 1 && clk.Waiters() == 1 })
-	if st, _ := hb.State(); st != StateEarlyAccess {
-		t.Fatalf("state = %s, want %s", st, StateEarlyAccess)
+	if st, _ := hb.State(); st != StatePlanRequired {
+		t.Fatalf("state = %s, want %s", st, StatePlanRequired)
 	}
 	clk.Advance(retryDelay + time.Minute) // the error retry would fire here
 	time.Sleep(10 * time.Millisecond)
 	if f.calls() != 1 {
-		t.Fatalf("early access must not use the 5 min error retry: %d calls", f.calls())
+		t.Fatalf("plan required must not use the 5 min error retry: %d calls", f.calls())
 	}
 	clk.Advance(6 * time.Hour)
 	waitFor(t, func() bool { st, _ := hb.State(); return f.calls() == 2 && st == StateEnrolled })

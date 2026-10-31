@@ -31,7 +31,12 @@ exit 64
 --- stdout
 --- stderr
 kenaz-dev setup: print-managed is not available in this build; it is never deployed fleet-wide
-$ setup print-managed codex
+$ setup print-managed claude --release v1.2.3 --commit 0123456789abcdef0123456789abcdef01234567
+exit 64
+--- stdout
+--- stderr
+kenaz-dev setup: print-managed is not available in this build; it is never deployed fleet-wide
+$ setup print-managed codex --release v1.2.3 --commit 0123456789abcdef0123456789abcdef01234567
 exit 64
 --- stdout
 --- stderr
@@ -43,7 +48,7 @@ exit 64
 usage:
   kenaz-dev setup claude|codex [--yes] [--dry-run] [--traces] [--env E] [--bundle DIR | --no-bundle]
   kenaz-dev setup --undo claude|codex [--yes] [--dry-run] [--env E]
-  kenaz-dev setup print-managed claude|codex [--port N] [--raw]
+  kenaz-dev setup print-managed claude|codex [--port N] [--raw] [--release vX.Y.Z --commit SHA]
   kenaz-dev setup doctor [--env E]
 
 To set up PATH, sign-in and every app at once, run kenaz-dev init.

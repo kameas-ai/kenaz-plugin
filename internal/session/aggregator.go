@@ -329,7 +329,7 @@ func (a *Aggregator) Tick() []Out {
 }
 
 // Reset discards every open session without emitting anything. The daemon
-// calls it when queued data is purged (withdrawal, an early-access refusal)
+// calls it when queued data is purged (withdrawal, a plan-required refusal)
 // so nothing aggregated before that moment survives in memory.
 func (a *Aggregator) Reset() {
 	a.mu.Lock()

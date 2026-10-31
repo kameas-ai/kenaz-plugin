@@ -35,9 +35,10 @@ const (
 	HoldLockdown = "lockdown"
 )
 
-// EarlyAccessNothingKept is shown with fleetapi.EarlyAccessMessage while
-// Fleet refuses the organization.
-const EarlyAccessNothingKept = "Nothing is being collected or held on this device until your organization joins early access."
+// PlanRequiredNothingKept is shown with fleetapi.PlanRequiredMessage while
+// Fleet refuses the organization because its plan does not include the
+// plugin.
+const PlanRequiredNothingKept = "Nothing is being collected or held on this device until your organization's plan includes Kenaz for Claude Code and Codex."
 
 // OrgState is the single status model rendered by `status`, the
 // fleet_status MCP tool and the SessionStart banner.
@@ -53,10 +54,10 @@ type OrgState struct {
 	// NoticeReconfirm is true when an opted-in class was accepted under an
 	// older notice version. Uploads drop until the member re-confirms.
 	NoticeReconfirm bool `json:"notice_reconfirm,omitempty"`
-	// EarlyAccess is true while Fleet refuses this organization because it
-	// is not in the early-access program. Nothing is collected or held on
+	// PlanRequired is true while Fleet refuses this organization because
+	// its plan does not include the plugin. Nothing is collected or held on
 	// the device; opting out still works.
-	EarlyAccess bool `json:"early_access,omitempty"`
+	PlanRequired bool `json:"plan_required,omitempty"`
 	// AdmittedAt is when this device first saw Fleet admit the
 	// organization (zero while not admitted). Only data generated from
 	// then on is sent.
@@ -93,11 +94,11 @@ type SpoolStats struct {
 
 // Drops counts records discarded on the device.
 type Drops struct {
-	OptOut      int64 `json:"optout"`
-	PII         int64 `json:"pii"`
-	TTL         int64 `json:"ttl"`
-	Invalid     int64 `json:"invalid"`
-	EarlyAccess int64 `json:"early_access"`
+	OptOut       int64 `json:"optout"`
+	PII          int64 `json:"pii"`
+	TTL          int64 `json:"ttl"`
+	Invalid      int64 `json:"invalid"`
+	PlanRequired int64 `json:"plan_required"`
 }
 
 // AnyOn reports whether at least one class is on.

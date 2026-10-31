@@ -30,7 +30,10 @@ func TestClassification(t *testing.T) {
 	}{
 		{nil, Sent},
 		{&fleetapi.APIError{Status: 403, Code: fleetapi.CodeOrgPaused}, Hold},
-		{&fleetapi.APIError{Status: 403, Code: fleetapi.CodeEarlyAccessRequired}, Refused},
+		{&fleetapi.APIError{Status: 403, Code: fleetapi.CodeCapabilityNotInTier, Details: map[string]string{"capability": fleetapi.PluginCapability}}, Refused},
+		// A per-feature tier limit is not the whole-plugin refusal.
+		{&fleetapi.APIError{Status: 403, Code: fleetapi.CodeCapabilityNotInTier, Details: map[string]string{"capability": "org_graph_sharing"}}, Quarantine},
+		{&fleetapi.APIError{Status: 403, Code: fleetapi.CodeLegacyEarlyAccessRequired}, Refused},
 		{&fleetapi.APIError{Status: 400, Code: "invalid_request"}, Quarantine},
 		{&fleetapi.APIError{Status: 413}, Quarantine},
 		{&fleetapi.APIError{Status: 429}, Retry},

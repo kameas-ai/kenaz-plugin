@@ -8,7 +8,7 @@
       "connection": "on-device",
       "usage_telemetry": true,
       "uses": "Skills, team context, memory, usage summaries",
-      "status": "early-access",
+      "status": "ga",
       "listed_since": "2026-10-14",
       "hosts": ["claude-code"]
     },
@@ -19,9 +19,20 @@
       "connection": "on-device",
       "usage_telemetry": true,
       "uses": "Skills, team context, memory, usage summaries",
-      "status": "early-access",
+      "status": "ga",
       "listed_since": "2026-10-14",
       "hosts": ["codex"]
+    },
+    {
+      "id": "claude-desktop-chat",
+      "name": "The Claude desktop app's chat",
+      "maker": "Anthropic, PBC",
+      "connection": "on-device",
+      "usage_telemetry": false,
+      "uses": "Skills, team context, memory",
+      "status": "ga",
+      "listed_since": "2026-10-31",
+      "hosts": ["claude-desktop"]
     }
   ]
 }

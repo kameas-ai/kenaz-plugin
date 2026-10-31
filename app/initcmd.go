@@ -31,9 +31,11 @@ Sets Kenaz up in one go:
   5. ends with kenaz setup doctor and kenaz status
 
 --yes accepts every change without asking. If the Kenaz plugin marketplace
-from GitHub (kameas-ai/kenaz-plugin) is already registered, setup uses it;
---bundle DIR replaces it with that download's plugin, and --no-bundle uses
-kenaz from PATH instead of this download's plugin.
+from GitHub (kameas-ai/kenaz-plugin) is already registered and pinned to this
+release's commit, setup uses it; one that follows a branch or tag is replaced
+by this download's verified plugin, with a warning. --bundle DIR replaces it
+with that download's plugin, and --no-bundle uses kenaz from PATH instead of
+this download's plugin.
 `
 
 // initOptions are kenaz init's flags.
@@ -238,7 +240,7 @@ func doInit(w, ew io.Writer, o initOptions, d initDeps) int {
 		if cd.Installed {
 			present = "Claude Desktop found"
 		}
-		fmt.Fprintf(w, "Claude Desktop (chat): %s; the Kenaz chat extension is not available yet.\n", present)
+		fmt.Fprintf(w, "Claude Desktop (chat): %s; to use Kenaz in chat, install the Kenaz desktop extension: %s\n", present, claudeDesktopDocs)
 	}
 	if configured["claude"] || configured["codex"] {
 		fmt.Fprintln(w, "Restart running Claude Code, Codex, Claude Desktop and ChatGPT sessions to pick up the changes.")
@@ -255,6 +257,11 @@ func doInit(w, ew io.Writer, o initOptions, d initDeps) int {
 	}
 	return ExitOK
 }
+
+// claudeDesktopDocs is the docs page for the Kenaz desktop extension
+// (download, install, sign-in), named by `kenaz init` in builds with
+// features.ClaudeDesktopChat.
+const claudeDesktopDocs = "https://docs.kameas.ai/docs/kenaz-plugin/claude-desktop"
 
 func coveredBy(ok bool, setupName string) string {
 	if ok {

@@ -82,7 +82,7 @@ type admissionFake struct {
 
 func (a admissionFake) AdmittedSince() (time.Time, bool) { return a.since, a.ok }
 
-// Outside early access every record is dropped (never held, even during a
+// While the plan does not include the plugin every record is dropped (never held, even during a
 // pause); once admitted, records generated before the admission moment
 // (or without a timestamp) are dropped.
 func TestAdmissionGate(t *testing.T) {
