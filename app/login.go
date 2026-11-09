@@ -13,6 +13,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/consent"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
+	"github.com/kameas-ai/kenaz-plugin/internal/memory/capture"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
@@ -63,6 +64,13 @@ func runLogin(env Env, args []string) int {
 		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 	}
 	relaySessionChanged(env, r)
+	// Capture's answer was for the profile before: nothing queued since carries over,
+	// and nothing runs for this account until Fleet says it offers capture to it.
+	if mp, err := env.memoryPaths(); err == nil {
+		if err := capture.ResetOffer(mp.captureRoot()); err != nil {
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
+		}
+	}
 	// Fleet refuses orgs whose plan does not include the plugin. Wait briefly for the daemon's first enroll so the member sees
 	// that here rather than only in `kenaz status`.
 	if awaitEnroll(env.Ctx, r.StateDir, loginEnrollWait) == string(enroll.StatePlanRequired) {

@@ -16,6 +16,12 @@ var HostEnvVar = variant.Shared.MCPHostVar
 // HostClaudeDesktop is HostEnvVar's value under Claude Desktop.
 const HostClaudeDesktop = "claude-desktop"
 
+// IsClaudeDesktop reports whether this server runs as the Claude Desktop
+// extension.
+func IsClaudeDesktop(getenv func(string) string) bool {
+	return strings.TrimSpace(getenv(HostEnvVar)) == HostClaudeDesktop
+}
+
 // SignInRemedy is what a tool tells the user to do to sign in.
 func SignInRemedy() string {
 	exe, _ := os.Executable()
@@ -29,7 +35,7 @@ func SignInRemedy() string {
 // executable this server runs from, with the home directory abbreviated
 // (no user name in a tool result).
 func signInRemedy(getenv func(string) string, goos, exe, home string) string {
-	if strings.TrimSpace(getenv(HostEnvVar)) != HostClaudeDesktop {
+	if !IsClaudeDesktop(getenv) {
 		return "Run /" + variant.Current.Plugin + ":login."
 	}
 	args := " login"

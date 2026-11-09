@@ -13,6 +13,9 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
 )
 
+// MaxDurationMS is the largest conversation_ended duration_ms Fleet accepts.
+const MaxDurationMS = 1_000_000_000_000
+
 // Log event kinds (kameas.event.kind) the projector emits.
 const (
 	KindConversationStarted = "harness.conversation_started"

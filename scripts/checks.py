@@ -17,7 +17,20 @@ import pathlib
 import re
 import sys
 
-ALLOWED_HOOK_EVENTS = {"SessionStart", "SessionEnd"}
+ALLOWED_HOOK_EVENTS = {"SessionStart", "SessionEnd", "UserPromptSubmit", "PostToolUse", "Stop"}
+
+# Automatic memory capture observes these events and only these. A registered
+# hook hands the session's prompts and tool output to the program even with
+# capture off, so the program returns before it reads stdin unless the member
+# has turned capture on (TestCaptureHookOffLeavesStdinUnread). Nothing here may
+# block or change what the session does: PreToolUse stays forbidden.
+CAPTURE_HOOK_MARKER = "hook memory-"
+CAPTURE_HOOKS = {
+    "SessionStart": "hook memory-index",
+    "UserPromptSubmit": "hook memory-prompt",
+    "PostToolUse": "hook memory-tool",
+    "Stop": "hook memory-stop",
+}
 
 # Strings that would make the plugin a policy surface if they appeared in
 # hook handlers (permission decisions, input rewriting, blocking).
@@ -113,6 +126,27 @@ CODEX_OVERLAY_APPROVAL = "prompt"
 CODEX_OVERLAY_SERVER_KEYS = {"command", "args", "tools"}
 
 
+def check_capture_hooks(hooks, errs):
+    """Each event runs the one capture hook meant for it, and nothing else
+    joins it. The tool hook must not hold up the tool."""
+    for event, groups in (hooks.get("hooks") or {}).items():
+        want = CAPTURE_HOOKS.get(event)
+        found = False
+        for group in groups or []:
+            for h in group.get("hooks") or []:
+                cmd = h.get("command") or ""
+                if CAPTURE_HOOK_MARKER in cmd:
+                    if want is None or not cmd.endswith(" " + want):
+                        errs.append(f"plugin/hooks/hooks.json: {event} must not run {cmd!r}")
+                    found = True
+                    if event == "PostToolUse" and h.get("async") is not True:
+                        errs.append("plugin/hooks/hooks.json: the tool hook must be async")
+                elif event not in ("SessionStart", "SessionEnd"):
+                    errs.append(f"plugin/hooks/hooks.json: {event} must not run {cmd!r}")
+        if want is not None and not found:
+            errs.append(f"plugin/hooks/hooks.json: {event} does not run {want!r}")
+
+
 def check_codex_overlay(root, errs):
     """plugin/.codex-plugin/plugin.json is the manifest Codex prefers over
     .claude-plugin/plugin.json (codex-rs DISCOVERABLE_PLUGIN_MANIFEST_PATHS).
@@ -190,6 +224,7 @@ def check_no_policy(root):
         extra = events - ALLOWED_HOOK_EVENTS
         if extra:
             errs.append(f"plugin/hooks/hooks.json: forbidden hook events {sorted(extra)} (only {sorted(ALLOWED_HOOK_EVENTS)})")
+        check_capture_hooks(hooks, errs)
 
     if (plugin / "settings.json").exists():
         errs.append("plugin/settings.json must not exist")
@@ -209,6 +244,14 @@ def check_no_policy(root):
         for tok in HOOK_POLICY_TOKENS:
             if tok in text:
                 errs.append(f"{src.relative_to(root)}: hook output must not contain {tok}")
+
+    # Capture's hook handler has no output at all; keep policy out of it too.
+    capture_hook = root / "internal" / "memory" / "capture" / "hook.go"
+    if capture_hook.is_file():
+        text = capture_hook.read_text()
+        for tok in HOOK_POLICY_TOKENS:
+            if tok in text:
+                errs.append(f"internal/memory/capture/hook.go: hook output must not contain {tok}")
 
     # The bundle renderer rewrites only launch commands in the plugin copy;
     # it must never introduce permission decisions or policy settings.

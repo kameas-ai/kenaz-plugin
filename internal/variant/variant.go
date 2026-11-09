@@ -78,6 +78,9 @@ type SharedValues struct {
 	EnvVars []string
 	// MCPHostVar names the MCP host when it cannot be told apart.
 	MCPHostVar string
+	// MemoryRecallVar carries the desktop extension's setting for what a chat app
+	// can read. An extension's member may have no program on PATH to set it with.
+	MemoryRecallVar string
 
 	// KeychainService is the OS keychain service for every credential
 	// (spool key, approvals key, sign-in tokens); the account is the
@@ -87,12 +90,11 @@ type SharedValues struct {
 	// first free one wins; daemon.json records it); 0 is an ephemeral port.
 	RelayPorts []int
 
-	// ApprovalsCSRFCookie and EnrollCookiePrefix name the approval page's
+	// ApprovalsCSRFCookie names the approval page's
 	// cookies for prod. Cookies on localhost are not scoped by port, so
 	// relays of different environments, which run side by side, use
 	// ApprovalsCSRFCookieFor.
 	ApprovalsCSRFCookie string
-	EnrollCookiePrefix  string
 }
 
 // Shared is the identity every build shares.
@@ -110,11 +112,12 @@ var Shared = SharedValues{
 	EnvVars:    []string{"KENAZ_ENV", "CLAUDE_PLUGIN_OPTION_FLEET_ENV", "FLEET_PLUGIN_ENV"},
 	MCPHostVar: "KENAZ_MCP_HOST",
 
+	MemoryRecallVar: "KENAZ_MEMORY_RECALL",
+
 	KeychainService: "kenaz-plugin",
 	RelayPorts:      []int{4318, 47318, 0},
 
 	ApprovalsCSRFCookie: "kenaz_approvals_csrf",
-	EnrollCookiePrefix:  "kenaz_enroll_",
 }
 
 // Ports returns a copy of RelayPorts.
@@ -140,7 +143,7 @@ func (i Identity) Allowed(env string) bool { return slices.Contains(i.AllowedEnv
 // EnvChoices lists AllowedEnvs joined by sep.
 func (i Identity) EnvChoices(sep string) string { return strings.Join(i.AllowedEnvs, sep) }
 
-// ApprovalsName is the approval page's name, shown by the authenticator.
+// ApprovalsName is the approval page's name.
 func (i Identity) ApprovalsName() string { return i.DisplayName + " approvals" }
 
 // For returns the variant (other than i) that connects to env, if any.

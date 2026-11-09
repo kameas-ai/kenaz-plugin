@@ -165,3 +165,61 @@ func TestEndLocalClosesByLocalHashOnly(t *testing.T) {
 		t.Fatal("local index not cleaned on close")
 	}
 }
+
+// Codex exports spans and logs separately, so a turn span can land on either
+// side of the sse_event usage it summarizes. Neither order counts usage twice.
+func TestTurnSpanFallbackNotDoubleCounted(t *testing.T) {
+	turn := ev(canon.KindModelCall, canon.Codex, "s", time.Second)
+	turn.FromTurnSpan, turn.InputTokens = true, 100
+	sse := ev(canon.KindModelCall, canon.Codex, "s", time.Second)
+	sse.InputTokens = 100
+	for name, evs := range map[string][]canon.Event{
+		"span first": {turn, sse},
+		"sse first":  {sse, turn},
+	} {
+		a := newAgg(t, &clock{t0})
+		outs := a.Ingest(evs)
+		outs = append(outs, a.End(canon.Codex, "s")...)
+		if n := count(outs, OutModelCall); n != 1 {
+			t.Errorf("%s: %d model calls, want 1", name, n)
+		}
+		if e := ended(outs); e.TokenIn != 100 {
+			t.Errorf("%s: token_in = %d, want 100", name, e.TokenIn)
+		}
+	}
+}
+
+// Idleness follows the relay's clock, not the harness's: a future-dated record
+// must not hold a session open, or the daemon with it.
+func TestFutureDatedRecordStillIdleCloses(t *testing.T) {
+	c := &clock{t0}
+	a := newAgg(t, c)
+	a.Ingest([]canon.Event{
+		ev(canon.KindSessionSeen, canon.Codex, "s", 0),
+		ev(canon.KindSessionSeen, canon.Codex, "s", 100*365*24*time.Hour),
+	})
+	c.t = t0.Add(29 * time.Minute)
+	if outs := a.Tick(); len(outs) != 0 || a.OpenCount() != 1 {
+		t.Fatalf("closed early: %+v", outs)
+	}
+	c.t = t0.Add(30 * time.Minute)
+	if e := ended(a.Tick()); e.Kind != OutEnded {
+		t.Fatal("future-dated session never closed")
+	}
+	if a.OpenCount() != 0 {
+		t.Fatalf("open sessions = %d", a.OpenCount())
+	}
+}
+
+// A late arrival keeps the session open even when its own timestamp is old.
+func TestArrivalKeepsSessionOpen(t *testing.T) {
+	c := &clock{t0}
+	a := newAgg(t, c)
+	a.Ingest([]canon.Event{ev(canon.KindSessionSeen, canon.Codex, "s", 0)})
+	c.t = t0.Add(20 * time.Minute)
+	a.Ingest([]canon.Event{ev(canon.KindToolCall, canon.Codex, "s", time.Second)})
+	c.t = t0.Add(30 * time.Minute)
+	if outs := a.Tick(); len(outs) != 0 {
+		t.Fatalf("closed 10 minutes after a record arrived: %+v", outs)
+	}
+}

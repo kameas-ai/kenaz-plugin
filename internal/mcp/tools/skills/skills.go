@@ -4,7 +4,7 @@
 // materializer as the daemon's sync, under the same cross-process lock.
 // Publishing never uploads directly: skills_publish prepares a
 // human-authorized write (internal/approvals) that the user approves with
-// their authenticator on the local approval page; the relay daemon then
+// approving on the local page or with `kenaz approve`; the relay daemon then
 // runs ExecutePublish with exactly the prepared payload.
 package skills
 
@@ -27,6 +27,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 	sk "github.com/kameas-ai/kenaz-plugin/internal/skills"
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 )
 
 // Group registers skills_search, skills_install, skills_uninstall and
@@ -171,7 +172,7 @@ func register(s *sdk.Server, d mcp.Deps) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        "skills_publish",
 		Title:       "Publish a skill",
-		Description: "Prepare publishing a local Agent Skill directory (with SKILL.md) to your Kameas Fleet catalog. Nothing is uploaded by this call: it returns request_id, status \"pending\" and approve_url. The user must open approve_url, review the exact files and approve with their security key or device unlock; give them the link. Visibility defaults to private (only you); team or org_public share it with colleagues and need a Team plan.",
+		Description: "Prepare publishing a local Agent Skill directory (with SKILL.md) to your Kameas Fleet catalog. " + usertext.ToolApproval + " Visibility defaults to private (only you); team or org_public share it with colleagues and need a Team plan.",
 		Annotations: &sdk.ToolAnnotations{Title: "Publish a skill", DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 		Meta:        requiresInteraction,
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in PublishInput) (*sdk.CallToolResult, PublishOutput, error) {

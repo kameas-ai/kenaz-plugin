@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 )
 
 // Remote is the Fleet side of turning sync on and off. memsync implements
@@ -21,6 +23,26 @@ type Remote interface {
 	EnableSync(ctx context.Context, p Profile, consentVersion string) error
 	// DisableSync records the opt-out on Fleet (best effort).
 	DisableSync(ctx context.Context, p Profile) error
+}
+
+// NoticeChecker is a Remote that can say, before anything is shown, that the notice
+// in force can't be accepted for p now. memsync's Remote is one.
+type NoticeChecker interface {
+	CheckNotice(ctx context.Context, p Profile, consentVersion string) error
+}
+
+// ErrProjectScopeNotOffered: this build's Memory Sync Notice says project notes sync,
+// and Kameas Fleet doesn't sync them for the organization (no memory_project_scope),
+// so that notice is neither shown nor recorded.
+var ErrProjectScopeNotOffered = errors.New("memory sync in this build includes project notes, which Kameas Fleet doesn't sync for your organization yet, so it can't be turned on from this build")
+
+// checkNotice refuses, before any notice or approval page, a notice Fleet can't
+// take for p now.
+func (s *Service) checkNotice(ctx context.Context, p Profile) error {
+	if c, ok := s.o.Remote.(NoticeChecker); ok {
+		return c.CheckNotice(ctx, p, s.o.ConsentVersion)
+	}
+	return nil
 }
 
 // ServiceOptions configure a Service.
@@ -41,6 +63,10 @@ type ServiceOptions struct {
 	ConsentNotice  string
 	// Busy bounds waits for another writer.
 	Busy time.Duration
+	// AfterForgetAll clears what else this device holds about a forget-all's notes:
+	// capture's waiting events. This package can't reach those itself. An error doesn't
+	// undo the forget-all, which has happened; the outcome says so.
+	AfterForgetAll func() error
 }
 
 // Service is memory as the tools and CLI use it: the active account
@@ -85,6 +111,8 @@ type Outcome struct {
 	// Profile is "device" (the device notebook) or "account".
 	Profile string `json:"profile,omitempty"`
 	Message string `json:"message,omitempty"`
+	// SyncAuto: a save went ahead under the member's standing grant.
+	SyncAuto bool `json:"sync_auto,omitempty"`
 	// Remaining counts items left for a later approval: one approval
 	// lists at most ApprovalBatch items, so a larger sync-enable,
 	// sync-approve or adopt goes in successive batches.
@@ -365,6 +393,7 @@ func (s *Service) Save(ctx context.Context, n NewNote) (Outcome, error) {
 
 // Update edits a note through the gate.
 func (s *Service) Update(ctx context.Context, id string, u Update) (Outcome, error) {
+	id = s.resolve(ctx, id)
 	p, err := s.owner(ctx, id)
 	if err != nil {
 		return Outcome{}, err
@@ -374,6 +403,7 @@ func (s *Service) Update(ctx context.Context, id string, u Update) (Outcome, err
 
 // Forget deletes a note through the gate.
 func (s *Service) Forget(ctx context.Context, id string) (Outcome, error) {
+	id = s.resolve(ctx, id)
 	p, err := s.owner(ctx, id)
 	if err != nil {
 		return Outcome{}, err
@@ -392,13 +422,15 @@ func (s *Service) ForgetAll(ctx context.Context) (Outcome, error) {
 		st.Close()
 	}
 	return s.gate(ctx, OpForgetAll, p, opPayload{Profile: p}, nil,
-		"Delete every memory of this Kameas Fleet account, on this device and in Kameas Fleet",
-		fmt.Sprintf("Deletes %d memories on this device and erases this account's memory in Kameas Fleet. %s", n, ForgetAllOtherDevices))
+		ForgetAllSummary(), forgetAllRequestImpact(n))
 }
 
-// ForgetAllOtherDevices is the forget-all disclosure: an erase reaches the
-// account's other devices, including notes there that were never synced.
-const ForgetAllOtherDevices = "This also erases your account's notes on your other devices when they next connect, including notes there that hadn't been synced yet. Notes that belong to a single project are kept."
+func forgetAllRequestImpact(n int) string {
+	if ProjectScopeRelease {
+		return ForgetAllImpact(n)
+	}
+	return fmt.Sprintf("Deletes %d memories on this device and erases this account's memory in Kameas Fleet. %s", n, ForgetAllOtherDevices)
+}
 
 // EnableSync turns Fleet sync on for the active account. It always needs
 // an approval of the Memory Sync Notice edition it names.
@@ -410,14 +442,11 @@ func (s *Service) EnableSync(ctx context.Context) (Outcome, error) {
 	if s.o.Remote == nil {
 		return Outcome{}, ErrSyncUnavailable
 	}
-	var recs []HeldOp
-	if st, err := OpenProfileReadOnly(s.path(p), p, s.o.Busy); err == nil {
-		recs, err = st.LocalSyncCandidates(ctx)
-		st.Close()
-		if err != nil {
-			return Outcome{}, err
-		}
-	} else if !errors.Is(err, ErrNoStore) {
+	if err := s.checkNotice(ctx, p); err != nil {
+		return Outcome{}, err
+	}
+	recs, err := s.syncCandidates(ctx, p)
+	if err != nil {
 		return Outcome{}, err
 	}
 	batch := firstBatch(recs)
@@ -429,6 +458,74 @@ func (s *Service) EnableSync(ctx context.Context) (Outcome, error) {
 		"Turn on memory sync to your Kameas Fleet account under the Memory Sync Notice "+s.o.ConsentVersion,
 		s.enableImpact())
 	return withRemaining(out, err, len(recs)-len(batch), "kenaz memory sync enable")
+}
+
+func (s *Service) syncCandidates(ctx context.Context, p Profile) ([]HeldOp, error) {
+	st, err := OpenProfileReadOnly(s.path(p), p, s.o.Busy)
+	if errors.Is(err, ErrNoStore) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer st.Close()
+	return st.LocalSyncCandidates(ctx)
+}
+
+// TypedEnable is what a person at a terminal is shown before turning sync on: the
+// notes the first upload sends, as an approval page would list them.
+type TypedEnable struct {
+	Records []HeldOp
+	// Remaining counts the notes left for a later run.
+	Remaining int
+}
+
+// PlanTypedEnable works out what turning sync on would upload. It changes nothing.
+func (s *Service) PlanTypedEnable(ctx context.Context) (TypedEnable, error) {
+	p := s.Active(ctx)
+	if p.IsLocal() {
+		return TypedEnable{}, ErrLocalProfile
+	}
+	if s.o.Remote == nil {
+		return TypedEnable{}, ErrSyncUnavailable
+	}
+	if err := s.checkNotice(ctx, p); err != nil {
+		return TypedEnable{}, err
+	}
+	recs, err := s.syncCandidates(ctx, p)
+	if err != nil {
+		return TypedEnable{}, err
+	}
+	batch := firstBatch(recs)
+	return TypedEnable{Records: batch, Remaining: len(recs) - len(batch)}, nil
+}
+
+// EnableSyncTyped turns sync on after the person read notice noticeID at a terminal
+// and typed their answer. The caller holds that gate; no tool calls this. It runs the
+// approval executor's code, so Fleet gets the same settings call and the store the
+// same state, bound to that notice and only to the notes in plan.
+func (s *Service) EnableSyncTyped(ctx context.Context, noticeID string, plan TypedEnable) (Outcome, error) {
+	if noticeID == "" || noticeID != s.o.ConsentVersion {
+		return Outcome{}, fmt.Errorf("%w: the notice shown isn't the one in force", ErrInvalidInput)
+	}
+	p := s.Active(ctx)
+	payload, err := json.Marshal(opPayload{Profile: p, Records: plan.Records})
+	if err != nil {
+		return Outcome{}, err
+	}
+	b, err := s.execute(ctx, OpSyncEnable, payload, "", true, false)
+	if err != nil {
+		return Outcome{}, err
+	}
+	var out Outcome
+	if err := json.Unmarshal(b, &out); err != nil {
+		return Outcome{}, err
+	}
+	if plan.Remaining > 0 {
+		out.Remaining = plan.Remaining
+		out.Message = strings.TrimSpace(out.Message + fmt.Sprintf(" %d more notes wait: run `kenaz memory sync enable` again to send them.", plan.Remaining))
+	}
+	return out, nil
 }
 
 func (s *Service) enableImpact() string {
@@ -451,10 +548,11 @@ func (s *Service) DisableSync(ctx context.Context) (Outcome, error) {
 		return Outcome{}, err
 	}
 	defer st.Close()
-	if err := st.DisableSync(ctx, "disabled_by_user"); err != nil {
+	unknown, err := st.StopSync(ctx, "disabled_by_user")
+	if err != nil {
 		return Outcome{}, err
 	}
-	out := Outcome{Status: OutcomeDone, Profile: "account", Message: SyncOffMessage}
+	out := Outcome{Status: OutcomeDone, Profile: "account", Message: strings.TrimSpace(SyncOffMessage + " " + StillQueuedMessage(unknown))}
 	if s.o.Remote != nil {
 		if err := s.o.Remote.DisableSync(ctx, p); err != nil {
 			out.Message += " Kameas Fleet could not be told yet; this device sends no new notes either way."
@@ -462,6 +560,10 @@ func (s *Service) DisableSync(ctx context.Context) (Outcome, error) {
 	}
 	return out, nil
 }
+
+// ForgetAllQueueKept follows a forget-all that couldn't clear capture's queue. Capture
+// checks each event's time against the forget-all, which stops nearly all of it.
+const ForgetAllQueueKept = "Activity waiting for automatic memory capture couldn't be cleared from this device, and in rare cases it could still become notes. To remove it now, turn capture off with `kenaz memory capture disable`."
 
 // SyncOffMessage explains what turning sync off does and does not do.
 const SyncOffMessage = "Memory sync is off for this account. New and edited notes stay on this device. Notes already synced stay in your Kameas Fleet account until you delete them: forget them one by one, or run `kenaz memory forget-all` to erase them there and here."
@@ -535,9 +637,12 @@ func (s *Service) Adopt(ctx context.Context, ids []string) (Outcome, error) {
 		return Outcome{}, ErrNotFound
 	}
 	recs := make([]HeldOp, len(notes))
+	anyAuto := false
 	for i, n := range notes {
-		recs[i] = HeldOp{RecordID: n.ID, Op: OpAdopt, Title: n.Title, Hash: ContentHash(n.Body), Body: n.Body}
+		recs[i] = HeldOp{RecordID: n.ID, Op: OpAdopt, Title: n.Title, Hash: ContentHash(n.Body), Body: n.Body, Kind: n.Kind}
+		anyAuto = anyAuto || IsAuto(n.Kind)
 	}
+	detail := AdoptImpact(anyAuto)
 	batch := firstBatch(recs)
 	ids = make([]string, len(batch))
 	for i, r := range batch {
@@ -545,11 +650,22 @@ func (s *Service) Adopt(ctx context.Context, ids []string) (Outcome, error) {
 	}
 	out, err := s.gate(ctx, OpAdopt, p, opPayload{Profile: p, Records: batch}, ids,
 		fmt.Sprintf("Move %d notes from this device's notebook into your Kameas Fleet account's memory", len(ids)),
-		"The notes leave the device notebook and can then sync to your account.")
+		detail)
 	return withRemaining(out, err, len(recs)-len(batch), "kenaz memory sync adopt --all")
 }
 
-func (s *Service) adopt(ctx context.Context, p Profile, recs []HeldOp) (int, error) {
+// AdoptImpact is what moving notes into an account does. Automatic notes sync under the
+// standing grant, so a page listing one must not say every note syncs like the others.
+func AdoptImpact(anyAuto bool) string {
+	if anyAuto {
+		return "The notes leave the device notebook. Automatic notes then sync once you let new notes sync without asking (`kenaz memory sync auto on`); any others can sync to your account as usual."
+	}
+	return "The notes leave the device notebook and can then sync to your account."
+}
+
+// adopt moves the approved notes and reports how many moved, and how many of those
+// stay on this device for now: nothing has queued them for Fleet.
+func (s *Service) adopt(ctx context.Context, p Profile, recs []HeldOp) (moved, local int, err error) {
 	want := map[string]string{}
 	wantTitle := map[string]string{}
 	ids := make([]string, 0, len(recs))
@@ -560,33 +676,36 @@ func (s *Service) adopt(ctx context.Context, p Profile, recs []HeldOp) (int, err
 	}
 	src, err := Open(s.path(Local))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer src.Close()
 	dst, err := OpenProfile(s.path(p), p)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer dst.Close()
 	notes, _, err := src.Get(ctx, ids)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	n := 0
 	for _, nt := range notes {
 		if ContentHash(nt.Body) != want[nt.ID] || nt.Title != wantTitle[nt.ID] {
 			continue // changed since it was approved
 		}
-		nn := NewNote{ProjectKey: nt.ProjectKey, ProjectRoot: nt.ProjectRoot, Title: nt.Title, Body: nt.Body, Tags: nt.Tags, Source: nt.Source}
-		if _, err := dst.SaveNote(ctx, nn, SaveOptions{RequestKey: "adopt:" + nt.ID, SyncApproved: true}); err != nil {
-			return n, err
+		nn := NewNote{ProjectKey: nt.ProjectKey, ProjectRoot: nt.ProjectRoot, Title: nt.Title, Body: nt.Body, Tags: nt.Tags, Source: nt.Source, Kind: nt.Kind}
+		saved, err := dst.SaveNote(ctx, nn, SaveOptions{RequestKey: "adopt:" + nt.ID, SyncApproved: true})
+		if err != nil {
+			return moved, local, err
 		}
 		if err := src.Forget(ctx, nt.ID); err != nil && !errors.Is(err, ErrNotFound) {
-			return n, err
+			return moved, local, err
 		}
-		n++
+		moved++
+		if saved.State == StateLocal {
+			local++
+		}
 	}
-	return n, nil
+	return moved, local, nil
 }
 
 // LocalIDs lists the device notebook's note ids (for adopt --all).
@@ -646,7 +765,7 @@ func (s *Service) owner(ctx context.Context, id string) (Profile, error) {
 
 // UnavailableMessage explains an operation that needs an approval nobody
 // can give here.
-const UnavailableMessage = "Nothing was changed. This needs your approval with a security key or this device's unlock on the Kenaz approval page, and none is available here. Run `kenaz approvals enroll` on a machine with a browser and an authenticator."
+const UnavailableMessage = usertext.ApprovalUnavailable
 
 func (s *Service) gate(ctx context.Context, op string, p Profile, pl opPayload, targets []string, summary, impact string) (Outcome, error) {
 	payload, err := json.Marshal(pl)
@@ -676,6 +795,18 @@ func (s *Service) gate(ctx context.Context, op string, p Profile, pl opPayload, 
 		}
 		if !need {
 			return s.runDeviceOnly(ctx, op, payload)
+		}
+		// A save under the member's standing grant needs no approval of its
+		// own. Edits and deletions always do.
+		if op == OpSave {
+			switch granted, within, err := s.spendSaveGrant(ctx, p); {
+			case err != nil:
+				return Outcome{}, err
+			case granted && within:
+				return s.runApproved(ctx, op, payload)
+			case granted:
+				return s.overSaveCap(ctx, op, payload)
+			}
 		}
 	}
 	if s.o.Submitter != nil {
@@ -722,14 +853,33 @@ func (s *Service) reachesFleet(ctx context.Context, op string, p Profile, pl opP
 	if err != nil {
 		return false, err
 	}
-	if set.Enabled {
-		return true, nil
-	}
 	switch op {
+	case OpSave:
+		// A note in a scope or of a kind that does not sync can never reach Fleet,
+		// so there is nothing to approve.
+		return set.Enabled && pl.Note != nil && !IsAuto(pl.Note.Kind) && syncedScope(scopeOf(pl.Note.ProjectKey)), nil
 	case OpUpdate, OpForgetOne:
+		// An automatic note is not sent, so only a copy Fleet may hold can matter.
+		if set.Enabled && scopeOfRecord(ctx, st, pl.ID) != ScopeProject && !recordIsAuto(ctx, st, pl.ID) {
+			return true, nil
+		}
 		return st.FleetMayHold(ctx, pl.ID)
 	}
-	return false, nil
+	return set.Enabled, nil
+}
+
+// scopeOfRecord is a note's scope, or "" when it is not there.
+func scopeOfRecord(ctx context.Context, st *Store, id string) string {
+	var scope string
+	_ = st.db.QueryRowContext(ctx, `SELECT scope FROM records WHERE id = ?`, resolveID(ctx, st.db, st.resolveShort(ctx, id))).Scan(&scope)
+	return scope
+}
+
+// recordIsAuto reports an automatic note. A note that is not there is not one.
+func recordIsAuto(ctx context.Context, st *Store, id string) bool {
+	var kind string
+	_ = st.db.QueryRowContext(ctx, `SELECT kind FROM records WHERE id = ?`, resolveID(ctx, st.db, st.resolveShort(ctx, id))).Scan(&kind)
+	return IsAuto(kind)
 }
 
 // requestKey is the approval idempotency key: derived from the operation,
@@ -761,6 +911,119 @@ func (s *Service) requestKey(ctx context.Context, op string, p Profile, payload 
 // approval (and without marking anything approved for Fleet).
 func (s *Service) runDeviceOnly(ctx context.Context, op string, payload []byte) (Outcome, error) {
 	b, err := s.execute(ctx, op, payload, "", false, true)
+	if err != nil {
+		return Outcome{}, err
+	}
+	var out Outcome
+	err = json.Unmarshal(b, &out)
+	return out, err
+}
+
+// runApproved applies a save the standing grant covers.
+func (s *Service) runApproved(ctx context.Context, op string, payload []byte) (Outcome, error) {
+	b, err := s.execute(ctx, op, payload, "", true, false)
+	if err != nil {
+		return Outcome{}, err
+	}
+	var out Outcome
+	err = json.Unmarshal(b, &out)
+	out.SyncAuto = true
+	return out, err
+}
+
+// overSaveCap keeps a save past the hourly cap on this device: nothing is lost,
+// and it waits for `+"`kenaz memory sync approve`"+`.
+func (s *Service) overSaveCap(ctx context.Context, op string, payload []byte) (Outcome, error) {
+	out, err := s.run(ctx, op, payload)
+	if err == nil {
+		out.Message = strings.TrimSpace(out.Message + " " + SaveCapMessage)
+	}
+	return out, err
+}
+
+func (s *Service) spendSaveGrant(ctx context.Context, p Profile) (granted, within bool, err error) {
+	st, err := OpenProfile(s.path(p), p)
+	if err != nil {
+		return false, false, err
+	}
+	defer st.Close()
+	return st.SpendSaveGrant(ctx)
+}
+
+// SetSyncAuto turns the standing grant for saves on, which needs an approval,
+// or off, which does not: turning it off only reduces what leaves the device.
+func (s *Service) SetSyncAuto(ctx context.Context, on bool) (Outcome, error) {
+	p := s.Active(ctx)
+	if p.IsLocal() {
+		return Outcome{}, ErrLocalProfile
+	}
+	if !on {
+		st, err := OpenProfile(s.path(p), p)
+		if err != nil {
+			return Outcome{}, err
+		}
+		defer st.Close()
+		unknown, err := st.EndSaveGrant(ctx)
+		if err != nil {
+			return Outcome{}, err
+		}
+		return Outcome{Status: OutcomeDone, Profile: "account", Message: strings.TrimSpace(SyncAutoOffMessage + " " + StillSendingMessage(unknown))}, nil
+	}
+	if out, ready, err := s.saveGrantReady(ctx, p); err != nil || !ready {
+		return out, err
+	}
+	return s.gate(ctx, OpSyncAuto, p, opPayload{Profile: p}, nil, SyncAutoSummary, SyncAutoImpactText())
+}
+
+func (s *Service) saveGrantReady(ctx context.Context, p Profile) (Outcome, bool, error) {
+	st, err := OpenProfileReadOnly(s.path(p), p, s.o.Busy)
+	if errors.Is(err, ErrNoStore) {
+		return Outcome{Status: OutcomeFailed, Profile: "account", Message: SyncAutoNeedsSync}, false, nil
+	}
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	set, err := st.SyncSettings(ctx)
+	st.Close()
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	if !set.Enabled {
+		return Outcome{Status: OutcomeFailed, Profile: "account", Message: SyncAutoNeedsSync}, false, nil
+	}
+	return Outcome{}, true, nil
+}
+
+// SaveGrantReady reports whether the standing grant can be given, and if not, why.
+func (s *Service) SaveGrantReady(ctx context.Context) (Outcome, bool, error) {
+	p := s.Active(ctx)
+	if p.IsLocal() {
+		return Outcome{}, false, ErrLocalProfile
+	}
+	// The terminal shows the notice in force next: not one Fleet can't take now.
+	if err := s.checkNotice(ctx, p); err != nil {
+		return Outcome{}, false, err
+	}
+	return s.saveGrantReady(ctx, p)
+}
+
+// SetSyncAutoTyped gives the standing grant after the person read notice noticeID at a
+// terminal and typed their answer. The caller holds that gate; no tool calls this. It
+// runs the approval executor's code, so the grant holds under the same notice and the
+// same hourly cap.
+func (s *Service) SetSyncAutoTyped(ctx context.Context, noticeID string) (Outcome, error) {
+	if noticeID == "" || noticeID != s.o.ConsentVersion {
+		return Outcome{}, fmt.Errorf("%w: the notice shown isn't the one in force", ErrInvalidInput)
+	}
+	p := s.Active(ctx)
+	if out, ready, err := s.saveGrantReady(ctx, p); err != nil || !ready {
+		return out, err
+	}
+	payload, err := json.Marshal(opPayload{Profile: p})
+	if err != nil {
+		return Outcome{}, err
+	}
+	b, err := s.execute(ctx, OpSyncAuto, payload, "", true, false)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -801,7 +1064,7 @@ func fromApproval(p Pending, res []byte) Outcome {
 		out.Status, out.Message = OutcomeApprovalUnavailable, UnavailableMessage
 	default: // pending, approved, executing
 		out.Status, out.ApproveURL = OutcomeApprovalPending, p.ApproveURL
-		out.Message = "Nothing has been written yet. Ask the user to open approve_url, review the exact change, and approve it with their security key or device unlock."
+		out.Message = usertext.ApprovalPending(p.ApproveURL, p.RequestID)
 		if p.Message != "" {
 			out.Message = p.Message
 		}
@@ -837,7 +1100,8 @@ func (s *Service) applied(ctx context.Context, payload []byte, key string) ([]by
 }
 
 // execute runs op. approved is true only inside an approval executor
-// (the daemon, after a verified WebAuthn assertion).
+// (the daemon, after the person approved), or for a person's answer at a terminal
+// (EnableSyncTyped, SetSyncAutoTyped).
 // execute applies op. approved: a verified approval authorizes its Fleet
 // effect. deviceOnly: the caller established the write has no Fleet
 // effect, so an account deletion is applied rather than held (anything
@@ -855,13 +1119,17 @@ func (s *Service) execute(ctx context.Context, op string, payload []byte, key st
 		return nil, fmt.Errorf("%w: %s needs an approval", ErrInvalidInput, op)
 	}
 	out := Outcome{Status: OutcomeDone, Profile: profileLabel(p)}
+	stillSending := 0
 	if op == OpAdopt {
-		n, err := s.adopt(ctx, p, pl.Records)
+		n, local, err := s.adopt(ctx, p, pl.Records)
 		if err != nil {
 			return nil, err
 		}
-		out.Queued = n
-		out.Message = fmt.Sprintf("Moved %d notes into your account.", n)
+		out.Queued = n - local
+		out.Message = fmt.Sprintf("Moved %d notes into your account.", n-local)
+		if local > 0 {
+			out.Message += fmt.Sprintf(" %d more are under your account on this device and stay here for now.", local)
+		}
 		return s.finish(ctx, p, key, op, out)
 	}
 	if op == OpSyncEnable {
@@ -902,8 +1170,16 @@ func (s *Service) execute(ctx context.Context, op string, payload []byte, key st
 			if err != nil {
 				return nil, err
 			}
+			may, err := st.FleetMayHold(ctx, id)
+			if err != nil {
+				return nil, err
+			}
 			out.ID, out.Remote, out.Hidden = id, "unapproved", true
-			out.Message = "Hidden on this device. It is deleted only after you approve (`kenaz memory sync approve`); `kenaz memory revert " + id + "` shows it again."
+			out.Message = "Hidden on this device."
+			if may {
+				out.Message += " Kameas Fleet still holds it."
+			}
+			out.Message += " It is deleted only after you approve (`kenaz memory sync approve`); `kenaz memory revert " + id + "` shows it again."
 			return json.Marshal(out)
 		}
 		r, err := st.ForgetNote(ctx, pl.ID, mo)
@@ -917,12 +1193,25 @@ func (s *Service) execute(ctx context.Context, op string, payload []byte, key st
 			return nil, err
 		}
 		out.Deleted, out.FleetErasePending = r.Deleted, r.FleetErasePending
+		if s.o.AfterForgetAll != nil {
+			if err := s.o.AfterForgetAll(); err != nil {
+				out.Status, out.Message = OutcomeDone, explain(op, out)+" "+ForgetAllQueueKept
+				return json.Marshal(out)
+			}
+		}
 	case OpSyncEnable:
 		r, err := st.EnableSync(ctx, s.o.ConsentVersion, mo)
 		if err != nil {
 			return nil, err
 		}
 		out.Queued = r.Queued
+		stillSending = r.StillSending
+	case OpSyncAuto:
+		if err := st.GrantSaves(ctx, key); err != nil {
+			return nil, err
+		}
+		out.Message = SyncAutoOnMessage
+		return json.Marshal(out)
 	case OpSyncApprove:
 		n, err := st.ApproveOps(ctx, pl.Ops, key)
 		if err != nil {
@@ -934,7 +1223,7 @@ func (s *Service) execute(ctx context.Context, op string, payload []byte, key st
 	default:
 		return nil, fmt.Errorf("unknown memory operation %q", op)
 	}
-	out.Message = explain(op, out)
+	out.Message = strings.TrimSpace(explain(op, out) + " " + StillSendingMessage(stillSending))
 	return json.Marshal(out)
 }
 
@@ -978,6 +1267,12 @@ func explain(op string, o Outcome) string {
 func StateExplanation(state, code string) string {
 	switch state {
 	case StatePending:
+		if code == "capture_off" {
+			return "Saved on this device: your organization has automatic memory capture off, so it stays queued until that changes."
+		}
+		if code == "invalid_field" {
+			return "Saved on this device: Kameas Fleet isn't taking automatic notes yet, so it stays queued."
+		}
 		return "Saved on this device; queued to sync to your Kameas Fleet account."
 	case StateSynced:
 		return "Saved on this device and in your Kameas Fleet account."
@@ -990,6 +1285,9 @@ func StateExplanation(state, code string) string {
 		return "Saved on this device only: Kameas Fleet refused it (" + code + ")."
 	case StateDenied:
 		return "Saved on this device only: syncing it was denied."
+	}
+	if code == CodeAutoWaits {
+		return "Saved on this device only. Automatic notes sync once you let new notes sync without asking (`kenaz memory sync auto on`)."
 	}
 	if code == "scope_not_supported_yet" {
 		return "Saved on this device only: project notes do not sync yet (save with project=global to sync)."

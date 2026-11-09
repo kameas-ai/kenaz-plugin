@@ -12,6 +12,9 @@ const module = "github.com/kameas-ai/kenaz-plugin"
 
 const secretscanPkg = module + "/pkg/secretscan"
 
+const safetextPkg = module + "/internal/safetext"
+const usertextPkg = module + "/internal/usertext"
+
 // sendingPackages are the packages that talk to Kameas Fleet or queue data
 // for it. Memory must never depend on them, directly or transitively.
 var sendingPackages = []string{
@@ -68,8 +71,18 @@ func TestMemoryImportsNothingThatSends(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, imp := range bp.Imports {
-		if strings.Contains(imp, ".") && imp != "modernc.org/sqlite" && imp != secretscanPkg {
+		if strings.Contains(imp, ".") && imp != "modernc.org/sqlite" && imp != secretscanPkg && imp != safetextPkg && imp != usertextPkg {
 			t.Errorf("internal/memory imports %s", imp)
+		}
+	}
+	// The words live in a package with nothing behind it.
+	ut, err := build.ImportDir(filepath.Join(root, "internal", "usertext"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, imp := range ut.Imports {
+		if strings.Contains(imp, ".") {
+			t.Errorf("internal/usertext imports %s", imp)
 		}
 	}
 	ss, err := build.ImportDir(filepath.Join(root, "pkg", "secretscan"), 0)

@@ -1,9 +1,14 @@
 package approvals
 
 import (
+	"io/fs"
+	"os"
+	"path/filepath"
+
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 	"io"
 	"net"
 	"net/http"
@@ -11,8 +16,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/go-webauthn/webauthn/protocol"
 )
 
 const testNonce = "test-nonce"
@@ -45,7 +48,7 @@ type browser struct {
 	origin string
 	csrf   string
 	cookie *http.Cookie
-	jar    map[string]*http.Cookie // other cookies (enrollment ceremony)
+	jar    map[string]*http.Cookie // other cookies
 }
 
 func newBrowser(t *testing.T, srv *httptest.Server, port string) *browser {
@@ -63,6 +66,7 @@ func (b *browser) do(method, path string, body []byte, mut func(*http.Request)) 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(csrfHeader, b.csrf)
 		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
 	}
 	if b.cookie != nil {
 		req.AddCookie(b.cookie)
@@ -115,111 +119,179 @@ func (b *browser) load(path string) []byte {
 }
 
 func TestPageFlowOverHTTP(t *testing.T) {
-	h := newHarness(t, true)
+	h := newHarness(t)
 	srv, port := pageServer(t, h.m)
-	a := newVAuth(t)
-	a.origin = "http://localhost:" + port
 	br := newBrowser(t, srv, port)
-
-	// Enroll through the page API.
-	br.load(PagePrefix + "enroll")
-	resp, body := br.do(http.MethodPost, PagePrefix+"api/enroll", []byte(`{"mode":"first"}`), nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("enroll start: %d %s", resp.StatusCode, body)
-	}
-	var es EnrollState
-	json.Unmarshal(body, &es)
-	if strings.Contains(string(body), "id.example.test") {
-		t.Fatalf("enrollment start leaks the sign-in URL: %s", body)
-	}
-	h.waitVerified(es.EnrollID)
-	// Without the ceremony cookie (any API caller) registration is refused.
-	if resp, _ := br.do(http.MethodPost, PagePrefix+"api/enroll/"+es.EnrollID+"/register/begin", []byte(`{}`), nil); resp.StatusCode < 400 {
-		t.Fatal("registration began without the browser binding")
-	}
-	// The page's sign-in link redirects to the provider.
-	resp, _ = br.do(http.MethodGet, PagePrefix+"enroll/signin/"+es.EnrollID, nil, nil)
-	if resp.StatusCode != http.StatusSeeOther || !strings.HasPrefix(resp.Header.Get("Location"), "https://id.example.test/") {
-		t.Fatalf("signin redirect: %d %v", resp.StatusCode, resp.Header)
-	}
-	// The provider's final redirect lands in the browser that signed in.
-	resp, _ = br.do(http.MethodGet, PagePrefix+"enroll/complete?c="+completeToken(h.m, es.EnrollID), nil, func(r *http.Request) {
-		r.Header.Set("Sec-Fetch-Site", "cross-site")
-		r.Header.Set("Sec-Fetch-Mode", "navigate")
-		r.Header.Set("Sec-Fetch-Dest", "document")
-	})
-	if resp.StatusCode != http.StatusSeeOther || br.jar[enrollCookiePrefix+es.EnrollID] == nil || !br.jar[enrollCookiePrefix+es.EnrollID].HttpOnly {
-		t.Fatalf("complete: %d %v", resp.StatusCode, br.jar)
-	}
-	_, body = br.do(http.MethodPost, PagePrefix+"api/enroll/"+es.EnrollID+"/register/begin", []byte(`{}`), nil)
-	var creation protocol.CredentialCreation
-	if err := json.Unmarshal(body, &creation); err != nil {
-		t.Fatalf("creation: %v %s", err, body)
-	}
-	if creation.Response.AuthenticatorSelection.UserVerification != protocol.VerificationRequired || creation.Response.RelyingParty.ID != RPID {
-		t.Fatalf("creation options: %+v", creation.Response)
-	}
-	resp, body = br.do(http.MethodPost, PagePrefix+"api/enroll/"+es.EnrollID+"/register/finish", a.register(t, &creation), nil)
-	if resp.StatusCode != 200 {
-		t.Fatalf("register finish: %d %s", resp.StatusCode, body)
-	}
 
 	// The tool side prepares over the control API.
 	r := req(alice, "k1", "<script>alert(1)</script>")
 	wire, _ := json.Marshal(WireRequest{Operation: r.Operation, Env: r.Env, OrgID: r.OrgID, UserID: r.UserID, TargetIDs: r.TargetIDs, Payload: r.Payload, IdempotencyKey: r.IdempotencyKey, Summary: r.Summary})
-	resp, body = br.do(http.MethodPost, ControlPrepare, wire, func(q *http.Request) { q.Header.Set("Authorization", "Bearer "+testNonce) })
+	bearer := func(q *http.Request) { q.Header.Set("Authorization", "Bearer "+testNonce) }
+	resp, body := br.do(http.MethodPost, ControlPrepare, wire, bearer)
 	var ws WireStatus
 	json.Unmarshal(body, &ws)
-	if resp.StatusCode != 200 || ws.Status != StatusPending || !strings.HasPrefix(ws.ApproveURL, "http://localhost:"+port+"/approvals/r/apr_") {
+	if resp.StatusCode != 200 || ws.Status != StatusPending || !strings.HasPrefix(ws.ApproveURL, "http://localhost:"+port+"/") {
 		t.Fatalf("prepare: %d %s", resp.StatusCode, body)
 	}
 	id := ws.RequestID
 
-	// The page renders the payload as data. The HTML template never
-	// contains it; the API returns it as a JSON string.
+	// The page renders the payload as data, and says nothing about a device.
 	page := br.load(PagePrefix + "r/" + id)
 	if bytes.Contains(page, []byte("alert(1)")) {
 		t.Fatal("payload rendered into HTML")
 	}
+	for _, want := range []string{usertext.PageLede, ">" + usertext.PageApprove + "<", ">" + usertext.PageDecline + "<"} {
+		if !bytes.Contains(page, []byte(want)) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	for _, not := range []string{"security key", "unlock", "enrol", "Enrol", "authenticator", "passkey"} {
+		if bytes.Contains(page, []byte(not)) {
+			t.Errorf("page says %q", not)
+		}
+	}
 	_, body = br.do(http.MethodGet, PagePrefix+"api/requests/"+id, nil, func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "same-origin") })
 	var v View
 	json.Unmarshal(body, &v)
-	if !strings.Contains(v.PayloadText, "alert(1)") || v.PayloadSHA256 != payloadHash(r.Payload) || !v.Enrolled {
+	if !strings.Contains(v.PayloadText, "alert(1)") || v.PayloadSHA256 != payloadHash(r.Payload) {
 		t.Fatalf("view: %s", body)
 	}
 
-	// Approve.
-	_, body = br.do(http.MethodPost, PagePrefix+"api/requests/"+id+"/begin", []byte(`{}`), nil)
-	var assertion protocol.CredentialAssertion
-	json.Unmarshal(body, &assertion)
-	if assertion.Response.UserVerification != protocol.VerificationRequired || len(assertion.Response.Challenge) != 32 {
-		t.Fatalf("assertion options: %s", body)
+	// One press.
+	approve := PagePrefix + "api/requests/" + id + "/approve"
+	resp, body = br.do(http.MethodPost, approve, []byte(`{}`), nil)
+	if resp.StatusCode != 200 || !strings.Contains(string(body), `"done"`) || h.execs.Load() != 1 {
+		t.Fatalf("approve: %d %s", resp.StatusCode, body)
 	}
-	resp, body = br.do(http.MethodPost, PagePrefix+"api/requests/"+id+"/finish", a.assert(t, &assertion), nil)
-	if resp.StatusCode != 200 || !strings.Contains(string(body), `"done"`) {
-		t.Fatalf("finish: %d %s", resp.StatusCode, body)
+	// A second press writes nothing more.
+	if _, body = br.do(http.MethodPost, approve, []byte(`{}`), nil); !strings.Contains(string(body), `"done"`) || h.execs.Load() != 1 {
+		t.Fatalf("second press: %s execs=%d", body, h.execs.Load())
 	}
-	// Status over the control API: no payload, no receipt.
-	_, body = br.do(http.MethodGet, ControlStatus+id, nil, func(q *http.Request) { q.Header.Set("Authorization", "Bearer "+testNonce) })
-	if !strings.Contains(string(body), `"done"`) || strings.Contains(string(body), "receipt") || strings.Contains(string(body), "alert") {
+	// Status over the control API: no payload.
+	_, body = br.do(http.MethodGet, ControlStatus+id, nil, bearer)
+	if !strings.Contains(string(body), `"done"`) || strings.Contains(string(body), "alert") {
 		t.Fatalf("status: %s", body)
 	}
-	_, body = br.do(http.MethodGet, ControlList, nil, func(q *http.Request) { q.Header.Set("Authorization", "Bearer "+testNonce) })
-	if strings.Contains(string(body), "alert") || strings.Contains(string(body), "Share a note") || strings.Contains(string(body), "receipt") {
+	_, body = br.do(http.MethodGet, ControlList, nil, bearer)
+	if strings.Contains(string(body), "alert") || strings.Contains(string(body), "Share a note") {
 		t.Fatalf("list leaks content: %s", body)
 	}
 }
 
-func TestPageGuards(t *testing.T) {
-	h := newHarness(t, true)
-	a := newVAuth(t)
+// What the approve route stops, each with nothing else wrong: a tool or a plain HTTP call
+// that hasn't loaded the page, a web page in the person's browser, and a rebound host.
+func TestApproveRouteStops(t *testing.T) {
+	h := newHarness(t)
 	srv, port := pageServer(t, h.m)
-	h.enroll(a)
-	a.origin = "http://localhost:" + port
 	id := h.prepare(req(alice, "k1", "x"))
 	br := newBrowser(t, srv, port)
 	br.load(PagePrefix + "r/" + id)
-	begin := PagePrefix + "api/requests/" + id + "/begin"
+	approve := PagePrefix + "api/requests/" + id + "/approve"
+	for name, mut := range map[string]func(*http.Request){
+		"curl, nothing added": func(r *http.Request) {
+			for k := range r.Header {
+				r.Header.Del(k)
+			}
+		},
+		"control bearer, no browser state": func(r *http.Request) {
+			for k := range r.Header {
+				r.Header.Del(k)
+			}
+			r.Header.Set("Authorization", "Bearer "+testNonce)
+		},
+		"token and cookie, no fetch metadata": func(r *http.Request) {
+			r.Header.Del("Sec-Fetch-Site")
+			r.Header.Del("Sec-Fetch-Mode")
+		},
+		"all browser headers, no token": func(r *http.Request) { r.Header.Del(csrfHeader) },
+		"cross-site page in the browser": func(r *http.Request) {
+			r.Header.Set("Origin", "http://evil.example")
+			r.Header.Set("Sec-Fetch-Site", "cross-site")
+		},
+		"same-site other port": func(r *http.Request) {
+			r.Header.Set("Origin", "http://localhost:9999")
+			r.Header.Set("Sec-Fetch-Site", "same-site")
+		},
+		"dns rebinding": func(r *http.Request) { r.Host = "attacker.example:" + port },
+	} {
+		if resp, body := br.do(http.MethodPost, approve, []byte(`{}`), mut); resp.StatusCode < 400 {
+			t.Errorf("%s: accepted: %d %s", name, resp.StatusCode, body)
+		}
+	}
+	if h.status(id) != StatusPending || h.execs.Load() != 0 {
+		t.Fatalf("%s, %d writes", h.status(id), h.execs.Load())
+	}
+}
+
+// What it doesn't stop, on purpose, so that no text promises it: a program running as
+// this user that loads the page and sends what a browser sends. PageClient is exactly
+// that, and is how `kenaz approve` works. Only the terminal check guards the command.
+func TestApproveRouteDoesNotStopAForgedBrowser(t *testing.T) {
+	h := newHarness(t)
+	srv, port := pageServer(t, h.m)
+	id := h.prepare(req(alice, "k1", "x"))
+	c := &PageClient{PageURL: "http://localhost:" + port + PagePrefix, HTTP: redirectToServer(srv)}
+	st, err := c.Approve(context.Background(), id)
+	if err != nil || st != StatusDone || h.execs.Load() != 1 {
+		t.Fatalf("%s %v %d", st, err, h.execs.Load())
+	}
+}
+
+// redirectToServer sends localhost:<port> to the test server, which is on 127.0.0.1.
+func redirectToServer(srv *httptest.Server) *http.Client {
+	return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+	}}}
+}
+
+// PageClient sees what the page shows, and can decline.
+func TestPageClientViewAndDeny(t *testing.T) {
+	h := newHarness(t)
+	srv, port := pageServer(t, h.m)
+	id := h.prepare(req(alice, "k1", "the exact body"))
+	c := &PageClient{PageURL: "http://localhost:" + port + PagePrefix, HTTP: redirectToServer(srv)}
+	v, err := c.View(context.Background(), id)
+	if err != nil || v.Status != StatusPending || !strings.Contains(v.PayloadText, "the exact body") {
+		t.Fatalf("%+v %v", v, err)
+	}
+	if err := c.Deny(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	if h.status(id) != StatusDenied || h.execs.Load() != 0 {
+		t.Fatal(h.status(id))
+	}
+}
+
+// Nothing a tool can reach approves: no MCP code names the page client or the route.
+func TestNoToolCanApprove(t *testing.T) {
+	root := filepath.Join("..", "mcp")
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		for _, bad := range []string{"PageClient", "/approve\"", ".Approve(", "api/requests"} {
+			if bytes.Contains(b, []byte(bad)) {
+				t.Errorf("%s names %s", p, bad)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPageGuards(t *testing.T) {
+	h := newHarness(t)
+	srv, port := pageServer(t, h.m)
+	id := h.prepare(req(alice, "k1", "x"))
+	br := newBrowser(t, srv, port)
+	br.load(PagePrefix + "r/" + id)
+	begin := PagePrefix + "api/requests/" + id + "/approve"
 	deny := PagePrefix + "api/requests/" + id + "/deny"
 
 	cases := map[string]func(*http.Request){
@@ -230,6 +302,7 @@ func TestPageGuards(t *testing.T) {
 		"other local origin":  func(r *http.Request) { r.Header.Set("Origin", "http://localhost:9999") },
 		"no origin":           func(r *http.Request) { r.Header.Del("Origin") },
 		"cross site fetch":    func(r *http.Request) { r.Header.Set("Sec-Fetch-Site", "cross-site") },
+		"no fetch metadata":   func(r *http.Request) { r.Header.Del("Sec-Fetch-Site") },
 		"no csrf header":      func(r *http.Request) { r.Header.Del(csrfHeader) },
 		"wrong csrf":          func(r *http.Request) { r.Header.Set(csrfHeader, "forged") },
 		"no csrf cookie":      func(r *http.Request) { r.Header.Del("Cookie") },
@@ -290,12 +363,9 @@ func TestPageGuards(t *testing.T) {
 
 // Nothing on the control API approves, enrolls or exports anything; the
 // control API needs the daemon nonce.
-func TestControlAPIHasNoApproveOrEnroll(t *testing.T) {
-	h := newHarness(t, true)
-	a := newVAuth(t)
+func TestControlAPIHasNoApprove(t *testing.T) {
+	h := newHarness(t)
 	srv, port := pageServer(t, h.m)
-	h.enroll(a)
-	a.origin = "http://localhost:" + port
 	id := h.prepare(req(alice, "k1", "x"))
 	br := newBrowser(t, srv, port)
 	auth := func(q *http.Request) {
@@ -304,7 +374,7 @@ func TestControlAPIHasNoApproveOrEnroll(t *testing.T) {
 		q.Header.Del(csrfHeader)
 	}
 	for _, p := range []string{
-		"/control/approvals/" + id + "/approve", "/control/approvals/" + id + "/finish", "/control/approvals/" + id,
+		"/control/approvals/" + id + "/approve", "/control/approvals/" + id,
 		"/control/approvals/approve", "/control/approvals/enroll", "/control/approvals/register", "/control/approvals/receipts",
 		"/control/approvals/keys",
 	} {
@@ -321,16 +391,16 @@ func TestControlAPIHasNoApproveOrEnroll(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("control without nonce: %d", resp.StatusCode)
 	}
-	// The page's begin/finish endpoints cannot be driven by a bearer-holding
-	// client without the browser's origin and CSRF state either.
-	resp, _ = br.do(http.MethodPost, PagePrefix+"api/requests/"+id+"/finish", []byte(`{}`), auth)
+	// The page's approve route can't be driven by a bearer-holding client without the
+	// browser's origin and CSRF state either.
+	resp, _ = br.do(http.MethodPost, PagePrefix+"api/requests/"+id+"/approve", []byte(`{}`), auth)
 	if resp.StatusCode < 400 {
-		t.Fatal("finish without origin/csrf accepted")
+		t.Fatal("approve without origin/csrf accepted")
 	}
 }
 
 func TestRemoteClient(t *testing.T) {
-	h := newHarness(t, true)
+	h := newHarness(t)
 	srv, port := pageServer(t, h.m)
 	rc := RemoteClient{Conn: func(context.Context) (Doer, error) { return testDoer{srv.URL}, nil }}
 	p, err := Submit(context.Background(), rc, req(alice, "k1", "x"))
@@ -373,13 +443,4 @@ func (d testDoer) DoJSON(ctx context.Context, method, path string, in, out any) 
 		return &HTTPStatusError{Status: resp.StatusCode, Code: e.Code}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
-}
-
-func completeToken(m *Manager, eid string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if e := m.enrolls[eid]; e != nil {
-		return e.completeToken
-	}
-	return ""
 }

@@ -52,6 +52,24 @@ func (s Set) String(key string) string {
 	return ""
 }
 
+// StringOnly returns the first non-empty string value recorded under key,
+// skipping values of other types. Use it where one key means different things
+// by type: a Codex span can carry thread.id twice, the integer OS thread number
+// and then the string conversation id.
+func (s Set) StringOnly(key string) string {
+	for _, l := range s.lists {
+		for _, kv := range l {
+			if kv.GetKey() != key {
+				continue
+			}
+			if sv, ok := kv.GetValue().GetValue().(*commonv1.AnyValue_StringValue); ok && sv.StringValue != "" {
+				return sv.StringValue
+			}
+		}
+	}
+	return ""
+}
+
 // Int returns key as an int64. String-encoded integers are parsed (Codex
 // records most numbers via Display). ok is false when absent or invalid.
 func (s Set) Int(key string) (int64, bool) {

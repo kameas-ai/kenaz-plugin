@@ -39,14 +39,16 @@ import (
 	_ "modernc.org/sqlite" // pure-Go SQLite with FTS5; no cgo
 )
 
+var errNoRows = sql.ErrNoRows
+
 // Limits on one note and on the whole store.
 const (
 	MaxTitleChars = 200
 	MaxBodyBytes  = 8 << 10
 	MaxTags       = 10
 	MaxTagChars   = 40
-	MaxNotes      = 2000
-	MaxStoreBytes = 16 << 20 // sum of title, body and tag bytes
+	MaxNotes      = 10000
+	MaxStoreBytes = 128 << 20 // sum of title, body and tag bytes
 	MaxLimit      = 20
 	DefaultLimit  = 10
 	MaxGetIDs     = 10
@@ -60,6 +62,8 @@ const (
 	SourceCodex         = "codex"
 	SourceCLI           = "cli"
 	SourceOpenCode      = "opencode"
+	// SourceImport marks a note brought over from another tool's database.
+	SourceImport = "import"
 )
 
 // GlobalProject is the project key of notes saved with project=global, and
@@ -99,7 +103,7 @@ const (
 var (
 	ErrNoStore      = errors.New("no memory store yet")
 	ErrNotFound     = errors.New("no memory with that id")
-	ErrFull         = errors.New("Kenaz memory is full (2,000 notes or 16 MiB). Nothing was saved. Remove notes with `kenaz memory forget <id>`, or delete everything with `kenaz memory purge`.")
+	ErrFull         = errors.New("Kenaz memory is full (10,000 notes or 128 MiB). Nothing was saved. Remove notes with `kenaz memory forget <id>`, or delete everything with `kenaz memory purge`.")
 	ErrLooksSecret  = errors.New("Not saved: this looks like it contains a secret.")
 	ErrEmptyQuery   = errors.New("the query has no searchable words")
 	ErrInvalidInput = errors.New("invalid memory")
@@ -146,6 +150,7 @@ type Entry struct {
 	Snippet   string    `json:"snippet,omitempty"`
 	Scope     string    `json:"scope,omitempty"`
 	SyncState string    `json:"sync_state,omitempty"`
+	Kind      string    `json:"kind,omitempty"`
 	// Rank orders search hits (lower is better). It is not exported.
 	Rank float64 `json:"-"`
 }
@@ -241,7 +246,12 @@ func OpenProfile(path string, p Profile) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, path: path, now: time.Now, profile: p, device: dev}, nil
+	s := &Store{db: db, path: path, now: time.Now, profile: p, device: dev}
+	if err := s.migrateProjectKeys(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 // OpenReadOnly opens an existing device-notebook store without changing
@@ -280,7 +290,11 @@ func OpenProfileReadOnly(path string, p Profile, busy time.Duration) (*Store, er
 		db.Close()
 		return nil, ErrNewerSchema
 	}
-	if v < SchemaVersion {
+	moved, err := readMeta(context.Background(), db, metaProjectKeys)
+	if err != nil {
+		moved = "" // an older table layout: the writer below sorts it out
+	}
+	if v < SchemaVersion || moved == "" {
 		db.Close()
 		w, err := OpenProfile(path, p)
 		if err != nil {
@@ -307,6 +321,9 @@ type NewNote struct {
 	Body        string
 	Tags        []string
 	Source      string
+	// Kind is empty for a note saved on purpose, or KindObservation for one an
+	// agent saved because capture reminded it to.
+	Kind string `json:",omitempty"`
 }
 
 func normSpace(s string) string { return strings.Join(strings.FieldsFunc(s, unicode.IsSpace), " ") }
@@ -369,7 +386,7 @@ func (n *NewNote) Validate() error {
 		return err
 	}
 	switch n.Source {
-	case SourceClaudeCode, SourceClaudeDesktop, SourceCodex, SourceCLI, SourceOpenCode:
+	case SourceClaudeCode, SourceClaudeDesktop, SourceCodex, SourceCLI, SourceOpenCode, SourceImport:
 	default:
 		return fmt.Errorf("%w: unknown source %q", ErrInvalidInput, n.Source)
 	}
@@ -455,7 +472,7 @@ func (s *Store) SaveNote(ctx context.Context, n NewNote, o SaveOptions) (SaveRes
 			}
 		}
 		var count, size int64
-		if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(length(CAST(title AS BLOB)) + length(CAST(content AS BLOB)) + length(CAST(tags AS BLOB))), 0) FROM records`).Scan(&count, &size); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(length(CAST(title AS BLOB)) + length(CAST(content AS BLOB)) + length(CAST(tags AS BLOB))), 0) FROM records WHERE `+notAuto).Scan(&count, &size); err != nil {
 			return err
 		}
 		add := int64(len(n.Title) + len(n.Body) + len(tags))
@@ -467,8 +484,12 @@ func (s *Store) SaveNote(ctx context.Context, n NewNote, o SaveOptions) (SaveRes
 			return err
 		}
 		now := s.now().UnixMilli()
+		kind := "raw"
+		if IsAuto(n.Kind) {
+			kind = n.Kind
+		}
 		r := record{
-			ID: newID(), Content: n.Body, Hash: ContentHash(n.Body), Title: n.Title, Kind: "raw",
+			ID: newID(), Content: n.Body, Hash: ContentHash(n.Body), Title: n.Title, Kind: kind,
 			Scope: scopeOf(n.ProjectKey), ProjectKey: n.ProjectKey, ProjectRoot: n.ProjectRoot, Tags: string(tags),
 			Source: n.Source, Origin: "device", CreatedAt: now, UpdatedAt: now,
 			CreatedHLC: string(h), TitleHLC: string(h), ScopeHLC: string(h), Visibility: "visible",
@@ -529,7 +550,7 @@ func decodeTags(s string) []string {
 // Recent returns the newest visible notes in sc, newest first (no bodies).
 func (s *Store) Recent(ctx context.Context, sc Scope, limit int) ([]Entry, error) {
 	w, args := sc.where("project_key")
-	rows, err := s.db.QueryContext(ctx, `SELECT id, title, tags, created_at, scope, sync_state FROM records WHERE visibility = 'visible' AND `+w+` ORDER BY created_at DESC, rowid DESC LIMIT ?`, append(args, clampLimit(limit))...)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, tags, created_at, scope, sync_state, kind FROM records WHERE visibility = 'visible' AND `+w+` ORDER BY created_at DESC, rowid DESC LIMIT ?`, append(args, clampLimit(limit))...)
 	if err != nil {
 		return nil, err
 	}
@@ -539,7 +560,7 @@ func (s *Store) Recent(ctx context.Context, sc Scope, limit int) ([]Entry, error
 		var e Entry
 		var tags string
 		var ms int64
-		if err := rows.Scan(&e.ID, &e.Title, &tags, &ms, &e.Scope, &e.SyncState); err != nil {
+		if err := rows.Scan(&e.ID, &e.Title, &tags, &ms, &e.Scope, &e.SyncState, &e.Kind); err != nil {
 			return nil, err
 		}
 		e.Tags, e.CreatedAt = decodeTags(tags), time.UnixMilli(ms).UTC()
@@ -573,7 +594,7 @@ func (s *Store) Search(ctx context.Context, query string, sc Scope, limit int) (
 		return nil, err
 	}
 	w, args := sc.where("m.project_key")
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.title, m.tags, m.created_at, m.scope, m.sync_state, snippet(records_fts, 1, '', '', '…', 24), bm25(records_fts, 5.0, 1.0, 2.0)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.title, m.tags, m.created_at, m.scope, m.sync_state, m.kind, snippet(records_fts, 1, '', '', '…', 24), bm25(records_fts, 5.0, 1.0, 2.0)
 FROM records_fts JOIN records m ON m.rowid = records_fts.rowid
 WHERE records_fts MATCH ? AND m.visibility = 'visible' AND `+w+`
 ORDER BY bm25(records_fts, 5.0, 1.0, 2.0) LIMIT ?`, append(append([]any{fq}, args...), clampLimit(limit))...)
@@ -586,7 +607,7 @@ ORDER BY bm25(records_fts, 5.0, 1.0, 2.0) LIMIT ?`, append(append([]any{fq}, arg
 		var e Entry
 		var tags string
 		var ms int64
-		if err := rows.Scan(&e.ID, &e.Title, &tags, &ms, &e.Scope, &e.SyncState, &e.Snippet, &e.Rank); err != nil {
+		if err := rows.Scan(&e.ID, &e.Title, &tags, &ms, &e.Scope, &e.SyncState, &e.Kind, &e.Snippet, &e.Rank); err != nil {
 			return nil, err
 		}
 		e.Tags, e.CreatedAt = decodeTags(tags), time.UnixMilli(ms).UTC()
@@ -628,7 +649,7 @@ func scanNote(row interface{ Scan(...any) error }) (Note, error) {
 // the order asked; missing ids are returned separately.
 func (s *Store) Get(ctx context.Context, ids []string) (found []Note, missing []string, err error) {
 	for _, id := range ids {
-		n, err := scanNote(s.db.QueryRowContext(ctx, `SELECT `+noteCols+` FROM records r WHERE r.id = ? AND r.visibility = 'visible'`, resolveID(ctx, s.db, id)))
+		n, err := scanNote(s.db.QueryRowContext(ctx, `SELECT `+noteCols+` FROM records r WHERE r.id = ? AND r.visibility = 'visible'`, resolveID(ctx, s.db, s.resolveShort(ctx, id))))
 		if errors.Is(err, sql.ErrNoRows) {
 			missing = append(missing, id)
 			continue

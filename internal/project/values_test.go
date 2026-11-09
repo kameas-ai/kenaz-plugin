@@ -3,6 +3,7 @@ package project_test
 import (
 	"math"
 	"testing"
+	"time"
 
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	logsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
@@ -13,6 +14,8 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/canon"
 	"github.com/kameas-ai/kenaz-plugin/internal/fixtures"
 	"github.com/kameas-ai/kenaz-plugin/internal/fleetschema"
+	"github.com/kameas-ai/kenaz-plugin/internal/project"
+	"github.com/kameas-ai/kenaz-plugin/internal/session"
 )
 
 type rec struct {
@@ -224,4 +227,22 @@ func TestSchemaRev1OmitsV2Fields(t *testing.T) {
 			t.Fatalf("cost_known sent at rev 1")
 		}
 	}
+}
+
+// Fleet rejects a larger duration_ms, and a session's length comes from harness
+// timestamps, so a future-dated record could otherwise lose the summary.
+func TestConversationEndedDurationClamped(t *testing.T) {
+	recs := project.Project([]session.Out{{Kind: session.OutEnded, Client: canon.Codex, Hash: "h", Duration: 100 * 365 * 24 * time.Hour}}, project.Options{})
+	if len(recs) != 1 {
+		t.Fatalf("records = %d", len(recs))
+	}
+	for _, f := range recs[0].Body {
+		if f.Key == "duration_ms" {
+			if f.Int != fleetschema.MaxDurationMS {
+				t.Fatalf("duration_ms = %d", f.Int)
+			}
+			return
+		}
+	}
+	t.Fatal("no duration_ms")
 }

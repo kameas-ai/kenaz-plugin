@@ -64,8 +64,9 @@ func (a memAuth) Session(context.Context) (fleetapi.Session, error) {
 
 type memMe struct{ fleetapi.Me }
 
+// Capabilities: an organization with memory sync, whose Fleet syncs project notes.
 func (memMe) Capabilities(context.Context) (fleetapi.Capabilities, error) {
-	return fleetapi.Capabilities{Keys: map[string]bool{fleetapi.CapMemorySync: true}}, nil
+	return fleetapi.Capabilities{Keys: map[string]bool{fleetapi.CapMemorySync: true, fleetapi.CapMemoryProjectScope: true}}, nil
 }
 
 // memRouter sends with the active session's identity, as a real adapter
@@ -201,7 +202,7 @@ func TestMemorySyncUnavailableInStubBuild(t *testing.T) {
 	if memoryRemote(stub.New()) != nil || memorySyncAvailable(stub.New()) {
 		t.Fatal("stub build claims memory sync")
 	}
-	if notices.MemorySync().ID != "memory-sync/v3" {
+	if want := map[bool]string{false: "memory-sync/v3", true: "memory-sync/v4"}[notices.ProjectScopeRelease]; notices.MemorySync().ID != want {
 		t.Fatal("notice edition")
 	}
 }
@@ -235,12 +236,6 @@ func (r *instantRelay) Status(_ context.Context, id string) (memory.ApprovalStat
 	return memory.ApprovalDone, r.res[id], nil
 }
 
-type fakeVerifier struct{}
-
-func (fakeVerifier) VerifyIdentity(context.Context, func(string) error, string) (approvals.Identity, error) {
-	return approvals.Identity{}, errors.New("not in this test")
-}
-
 // The real approval service in the daemon: every memory operation has an
 // executor (Prepare refuses unknown operations), an account write is
 // stored pending with an approval page link and changes nothing; without
@@ -253,9 +248,9 @@ func TestMemoryApprovalsWiring(t *testing.T) {
 	f := fleetapitest.NewMemoryFleet()
 	p := &memProvider{Provider: stub.New(), fleet: f}
 	p.signIn("alice")
-	newManager := func(v approvals.IdentityVerifier) *approvals.Manager {
-		m, err := approvals.New(approvals.Options{Dir: filepath.Join(t.TempDir(), "approvals"), Identity: sessionIdentity(p), Verifier: v,
-			StoreKey: bytes.Repeat([]byte{7}, 32),
+	newManager := func(key []byte) *approvals.Manager {
+		m, err := approvals.New(approvals.Options{Dir: filepath.Join(t.TempDir(), "approvals"), Identity: sessionIdentity(p),
+			StoreKey: key,
 			BaseURL:  func() string { return "http://localhost:4318" }})
 		if err != nil {
 			t.Fatal(err)
@@ -265,8 +260,8 @@ func TestMemoryApprovalsWiring(t *testing.T) {
 	}
 	mp := memoryPaths{StateRoot: stateRoot, DB: memory.PathIn(stateRoot), p: p}
 
-	// An enrolment path exists: requests wait on the approval page.
-	m := newManager(fakeVerifier{})
+	// Requests wait on the approval page.
+	m := newManager(bytes.Repeat([]byte{7}, 32))
 	svc := mp.service(memorytools.Submitter(m))
 	nb, err := memory.Open(memory.PathIn(stateRoot))
 	if err != nil {
@@ -298,7 +293,7 @@ func TestMemoryApprovalsWiring(t *testing.T) {
 		}
 	}
 
-	// No authenticator and no way to enroll: approval_unavailable.
+	// No key for the store (no OS keychain): approval_unavailable.
 	m2 := newManager(nil)
 	svc2 := mp.service(memorytools.Submitter(m2))
 	out, err := svc2.Save(ctx, memory.NewNote{ProjectKey: memory.GlobalProject, Title: "t", Body: "local only", Source: memory.SourceCLI})
@@ -404,7 +399,7 @@ func TestBatchedMemoryApprovalsAccepted(t *testing.T) {
 			stateRoot := t.TempDir()
 			p := &memProvider{Provider: stub.New(), fleet: fleetapitest.NewMemoryFleet()}
 			p.signIn("alice")
-			m, err := approvals.New(approvals.Options{Dir: filepath.Join(t.TempDir(), "approvals"), Identity: sessionIdentity(p), Verifier: fakeVerifier{},
+			m, err := approvals.New(approvals.Options{Dir: filepath.Join(t.TempDir(), "approvals"), Identity: sessionIdentity(p),
 				StoreKey: bytes.Repeat([]byte{7}, 32), BaseURL: func() string { return "http://localhost:4318" }})
 			if err != nil {
 				t.Fatal(err)

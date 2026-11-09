@@ -21,8 +21,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -78,6 +81,11 @@ type Options struct {
 	// without re-consent (their successor changed wording, not what is
 	// sent).
 	AcceptedConsentVersions []string
+	// Projects is Fleet's project registry. Project notes need it (nil: they wait).
+	Projects fleetapi.Projects
+	// Homes are this user's home directory, as given and with links resolved: a project
+	// there has no name to send.
+	Homes []string
 	// Holder names this worker for the lease (unique per process).
 	Holder   string
 	Log      *slog.Logger
@@ -97,6 +105,13 @@ type Worker struct {
 	held      bool
 	backoff   time.Duration
 	notBefore time.Time
+	// scopeOK: Fleet's settings for this member include project notes.
+	scopeOK bool
+	// projectOffered: this cycle, Fleet's capabilities carried memory_project_scope.
+	projectOffered bool
+	// projectsAfter: no project ids are asked for before this.
+	projectsAfter time.Time
+	projectsWait  time.Duration
 
 	pushed, pulled, cycles atomic.Int64
 	lastCode               atomic.Value
@@ -154,6 +169,154 @@ func (w *Worker) Stats() Stats {
 	return Stats{Cycles: w.cycles.Load(), Pushed: w.pushed.Load(), Pulled: w.pulled.Load(), LastCode: w.lastCode.Load().(string)}
 }
 
+const (
+	minProjectsWait = time.Minute
+	maxProjectsWait = time.Hour
+	// projectsPerCycle bounds how many ids one cycle asks for. Fleet rate limits this.
+	projectsPerCycle = 10
+)
+
+// prepareProjects gets queued project notes ready to send: Fleet's settings include
+// them, and each has its id. Nothing here sends a note. A Fleet that isn't taking them
+// is told nothing but the settings change, and is asked again after the wait.
+func (w *Worker) prepareProjects(ctx context.Context) error {
+	if !memory.ProjectScopeRelease || w.o.Projects == nil || !w.projectOffered {
+		return nil
+	}
+	st := w.o.Store
+	if work, err := st.HasProjectWork(ctx); err != nil || !work {
+		return err
+	}
+	if code, holding := st.ProjectScopeHold(ctx); holding {
+		return nil
+	} else if code != "" {
+		w.scopeOK = false
+	}
+	if !w.scopeOK {
+		ok, err := w.ensureProjectScope(ctx)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		w.scopeOK = true
+		if err := st.ReleaseStrandedProjectNotes(ctx); err != nil {
+			return err
+		}
+	}
+	if w.o.Now().Before(w.projectsAfter) {
+		return nil
+	}
+	keys, err := st.ProjectsToMap(ctx, projectsPerCycle)
+	if err != nil {
+		return err
+	}
+	for _, want := range keys {
+		key := want.Key
+		if err := w.checkIdentity(ctx); err != nil {
+			return err
+		}
+		req := fleetapi.ProjectCreateRequest{Name: memory.ProjectName(key, want.Root, w.o.Homes...), Audience: fleetapi.ProjectAudiencePrivate, ClientRequestID: memory.ProjectRequestID(key)}
+		p, err := w.o.Projects.Create(w.bound(ctx), req)
+		if c := fleetapi.APICode(err); c == "secret_detected" || c == "invalid_name" {
+			// Fleet doesn't want this name. It doesn't need one that says anything.
+			req.Name = memory.ProjectFallbackName(key)
+			p, err = w.o.Projects.Create(w.bound(ctx), req)
+		}
+		if err = mismatch(err); err != nil {
+			if errors.Is(err, ErrAccountMismatch) {
+				return err
+			}
+			// Notes stay queued. Waiting here stops a refusal becoming a storm.
+			w.projectsWait = min(max(w.projectsWait*2, minProjectsWait), maxProjectsWait)
+			w.projectsAfter = w.o.Now().Add(w.projectsWait)
+			w.o.Log.Info("memory sync project id failed", "code", fleetapi.APICode(err))
+			return nil
+		}
+		w.projectsWait = 0
+		if err := w.checkIdentity(ctx); err != nil {
+			return err
+		}
+		// A replay returns the row whatever its state, so read it.
+		if err := st.SetProject(ctx, key, p.ID, p.State, p.MergedInto); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyProjectOffer holds project notes on this device while Fleet doesn't offer
+// project sync to the organization, and lifts that hold when it does. Nothing in the
+// project scope is sent, and no settings change asks for it, while the hold stands.
+func (w *Worker) applyProjectOffer(ctx context.Context) error {
+	st := w.o.Store
+	if !w.projectOffered {
+		w.scopeOK = false
+		return st.HoldProjectScopeNotOffered(ctx)
+	}
+	cleared, err := st.ClearProjectScopeNotOffered(ctx)
+	if cleared {
+		w.scopeOK = false // ask Fleet's settings again before the first note
+	}
+	return err
+}
+
+// ensureProjectScope makes sure the member's settings on Fleet include project notes,
+// under the notice edition they actually acknowledged. It reads Fleet's answer rather
+// than assuming the write took, and it never turns a refusal into a retry per note.
+func (w *Worker) ensureProjectScope(ctx context.Context) (bool, error) {
+	st := w.o.Store
+	if err := w.checkIdentity(ctx); err != nil {
+		return false, err
+	}
+	cur, err := w.o.Memory.Settings(w.bound(ctx))
+	if err = mismatch(err); err != nil {
+		return false, err
+	}
+	if slices.Contains(cur.Scopes, memory.ScopeProject) {
+		if err := st.MarkProjectScopeSeen(ctx); err != nil {
+			return false, err
+		}
+		return true, st.ClearProjectScopeHold(ctx)
+	}
+	set, err := st.SyncSettings(ctx)
+	if err != nil {
+		return false, err
+	}
+	// Sync was turned back on through an older client, which drops project notes. Only a
+	// fresh acknowledgement of the notice brings them back, and not this device on its own.
+	seen, err := st.ProjectScopeSeen(ctx)
+	if err != nil {
+		return false, err
+	}
+	if seen || cur.ConsentVersion != set.ConsentVersion {
+		return false, st.HoldProjectScope(ctx, fleetapi.CodeConsentUpgradeRequired)
+	}
+	scopes := append(slices.Clone(cur.Scopes), memory.ScopeProject)
+	got, err := w.o.Memory.PutSettings(w.bound(ctx), fleetapi.MemorySettingsUpdate{Scopes: &scopes, ConsentVersion: set.ConsentVersion})
+	err = mismatch(err)
+	switch fleetapi.APICode(err) {
+	case "":
+	case fleetapi.CodeScopeNotSupported:
+		return false, st.HoldProjectScope(ctx, "scope_not_supported_yet")
+	case fleetapi.CodeConsentUpgradeRequired:
+		return false, st.HoldProjectScope(ctx, fleetapi.CodeConsentUpgradeRequired)
+	default:
+		return false, err
+	}
+	if err != nil {
+		return false, err
+	}
+	if !slices.Contains(got.Scopes, memory.ScopeProject) {
+		return false, st.HoldProjectScope(ctx, "scope_not_enabled")
+	}
+	if err := st.MarkProjectScopeSeen(ctx); err != nil {
+		return false, err
+	}
+	return true, st.ClearProjectScopeHold(ctx)
+}
+
 // Run cycles until ctx ends or the identity no longer matches. It returns
 // the stop reason.
 func (w *Worker) Run(ctx context.Context) error {
@@ -166,6 +329,8 @@ func (w *Worker) Run(ctx context.Context) error {
 			return err
 		case ctx.Err() != nil:
 			return ctx.Err()
+		case errors.Is(err, errEraseRunning):
+			wait = w.eraseWait(err)
 		case err != nil:
 			wait = w.nextBackoff(err)
 		default:
@@ -183,6 +348,18 @@ func (w *Worker) Run(ctx context.Context) error {
 		case <-t.C:
 		}
 	}
+}
+
+// eraseWait is Fleet's Retry-After for a running erase. It isn't a failure, so the backoff
+// starts over.
+func (w *Worker) eraseWait(err error) time.Duration {
+	w.mu.Lock()
+	w.backoff = 0
+	w.mu.Unlock()
+	if ra, ok := fleetapi.RetryAfter(err); ok && ra > 0 {
+		return ra
+	}
+	return eraseRetryWait
 }
 
 // nextBackoff doubles from 2 s to 5 min with jitter, and honours a 429's
@@ -296,9 +473,21 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		active = false
 	}
 	entitled := true
+	// Project notes go only while Fleet says it syncs them for the organization
+	// (memory_project_scope). No answer is a no: fail closed.
+	w.projectOffered = false
 	if active && w.o.Capabilities != nil {
-		if caps, err := w.o.Capabilities(ctx); err == nil && !caps.Has(fleetapi.CapMemorySync) {
-			entitled = false
+		if caps, err := w.o.Capabilities(ctx); err == nil {
+			entitled = caps.Has(fleetapi.CapMemorySync)
+			w.projectOffered = fleetapi.HasKey(caps, fleetapi.CapMemoryProjectScope)
+			if err := st.NoteCaptureSwitch(ctx, captureSwitchedOff(caps)); err != nil {
+				return err
+			}
+		}
+	}
+	if active && memory.ProjectScopeRelease {
+		if err := w.applyProjectOffer(ctx); err != nil {
+			return err
 		}
 	}
 	if active && !entitled {
@@ -337,6 +526,17 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	return nil
 }
 
+// captureSwitchedOff reads the organization's capture switch. Case does not matter, as
+// on Fleet.
+func captureSwitchedOff(caps fleetapi.Capabilities) bool {
+	for k, on := range caps.Keys {
+		if on && strings.EqualFold(k, fleetapi.CapMemoryCaptureOff) {
+			return true
+		}
+	}
+	return false
+}
+
 // classify records the condition behind err and returns it.
 func (w *Worker) classify(ctx context.Context, err error) error {
 	switch {
@@ -356,6 +556,12 @@ func (w *Worker) classify(ctx context.Context, err error) error {
 	return err
 }
 
+// errEraseRunning means Fleet is still working through a forget-all.
+var errEraseRunning = errors.New("memory sync: Kameas Fleet is still erasing")
+
+// eraseRetryWait is how long to wait for a running erase if Fleet doesn't say.
+const eraseRetryWait = 30 * time.Second
+
 // erase delivers a confirmed forget-all. Only Fleet's answer completes
 // it; a failure leaves the barrier up (nothing new is sent).
 func (w *Worker) erase(ctx context.Context, l memory.Lease) error {
@@ -363,7 +569,15 @@ func (w *Worker) erase(ctx context.Context, l memory.Lease) error {
 	if err := w.checkIdentity(ctx); err != nil {
 		return err
 	}
-	res, err := w.o.Memory.ForgetAll(w.bound(ctx), fleetapi.MemoryForgetAllRequest{Confirm: fleetapi.MemoryForgetAllConfirm})
+	id, err := w.o.Store.EraseRequestID(ctx, l)
+	if err != nil {
+		return err
+	}
+	res, err := w.o.Memory.ForgetAll(w.bound(ctx), fleetapi.MemoryForgetAllRequest{Confirm: fleetapi.MemoryForgetAllConfirm, RequestID: id})
+	if fleetapi.APICode(err) == fleetapi.CodeInvalidRequestBody {
+		// A Fleet that won't take the id erased nothing, and an erase mustn't wait on it.
+		res, err = w.o.Memory.ForgetAll(w.bound(ctx), fleetapi.MemoryForgetAllRequest{Confirm: fleetapi.MemoryForgetAllConfirm})
+	}
 	if err = mismatch(err); errors.Is(err, ErrAccountMismatch) {
 		return err // refused before sending; the barrier stays
 	}
@@ -372,6 +586,11 @@ func (w *Worker) erase(ctx context.Context, l memory.Lease) error {
 		// uncertain, so the barrier stays and the erase is repeated
 		// (idempotent) under the right account.
 		return ierr
+	}
+	if fleetapi.APICode(err) == fleetapi.CodeEraseInProgress {
+		// Fleet took it and is still working: not a failure. The barrier stays, and the
+		// same call comes back when Fleet says to.
+		return fmt.Errorf("%w: %w", errEraseRunning, err)
 	}
 	if err != nil {
 		return w.classify(ctx, err)
@@ -389,7 +608,7 @@ func toPulled(rs []fleetapi.MemoryRecord) []memory.PulledRecord {
 	for _, r := range rs {
 		out = append(out, memory.PulledRecord{ID: r.ID, Seq: r.Seq, State: r.State, Content: r.Content, ContentHash: r.ContentHash,
 			Kind: r.Kind, Source: r.Source, CreatedAt: r.CreatedAt, Title: r.Title, TitleHLC: r.TitleHLC, Pinned: r.Pinned,
-			PinnedHLC: r.PinnedHLC, ScopeKind: r.ScopeKind, ScopeHLC: r.ScopeHLC, Aliases: r.Aliases, Reason: r.Reason,
+			PinnedHLC: r.PinnedHLC, ScopeKind: r.ScopeKind, ScopeHLC: r.ScopeHLC, ScopeID: r.ScopeID, Aliases: r.Aliases, Reason: r.Reason,
 			SupersededBy: r.SupersededBy})
 	}
 	return out
@@ -526,6 +745,13 @@ func toResults(rs []fleetapi.MemoryPushResult) []memory.PushResult {
 func (w *Worker) pushAll(ctx context.Context, l memory.Lease) error {
 	st := w.o.Store
 	for {
+		// Automatic notes join the queue as there is room for them.
+		if _, err := st.QueueAutoBacklog(ctx, l); err != nil {
+			return err
+		}
+		if err := w.prepareProjects(ctx); err != nil {
+			return err
+		}
 		b, err := st.LeasePushBatch(ctx, l)
 		if err != nil {
 			return err
@@ -671,9 +897,53 @@ func (r Remote) check(ctx context.Context, p memory.Profile) error {
 	return nil
 }
 
+// Usage reads what this account has stored and its effective limits from Fleet.
+func (r Remote) Usage(ctx context.Context, p memory.Profile) (fleetapi.MemoryUsage, error) {
+	if err := r.check(ctx, p); err != nil {
+		return fleetapi.MemoryUsage{}, err
+	}
+	s, err := r.Memory.Settings(bindProfile(ctx, p))
+	if err != nil {
+		return fleetapi.MemoryUsage{}, mismatch(err)
+	}
+	return s.Usage, nil
+}
+
+// CheckNotice implements memory.NoticeChecker. In a build whose notice says project
+// notes sync (memory-sync/v4), that notice is shown and recorded only while Fleet's
+// capabilities carry memory_project_scope for the organization. No capabilities, a
+// failed read, and an absent key are all a no.
+func (r Remote) CheckNotice(ctx context.Context, p memory.Profile, consentVersion string) error {
+	if !memory.ProjectScopeRelease {
+		return nil
+	}
+	if err := r.check(ctx, p); err != nil {
+		return err
+	}
+	if r.Capabilities == nil {
+		return memory.ErrProjectScopeNotOffered
+	}
+	caps, err := r.Capabilities(ctx)
+	if err != nil {
+		return memory.ErrProjectScopeNotOffered
+	}
+	if !caps.Has(fleetapi.CapMemorySync) {
+		// Not in the plan: Fleet never offers project notes then, and the plan is
+		// what the member needs to hear about.
+		return nil
+	}
+	if !fleetapi.HasKey(caps, fleetapi.CapMemoryProjectScope) {
+		return memory.ErrProjectScopeNotOffered
+	}
+	return nil
+}
+
 // EnableSync implements memory.Remote.
 func (r Remote) EnableSync(ctx context.Context, p memory.Profile, consentVersion string) error {
 	if err := r.check(ctx, p); err != nil {
+		return err
+	}
+	if err := r.CheckNotice(ctx, p, consentVersion); err != nil {
 		return err
 	}
 	if r.Capabilities != nil {

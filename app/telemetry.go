@@ -162,7 +162,7 @@ func newTelemetryLane(env Env, opt *daemon.Options) (*telemetryLane, error) {
 		queue:   make(chan queued, 64),
 		wake:    make(chan struct{}, 1),
 		refresh: make(chan struct{}, 1),
-		fwd:     &forward.Forwarder{Poster: opt.Provider.OTLP(), PerMinute: 100},
+		fwd:     &forward.Forwarder{Poster: opt.Provider.OTLP(), PerMinute: 100, Logger: log},
 	}
 	l.fwd.Current = l.ownerIs
 	l.cm = consent.NewManager(consent.Options{
@@ -288,6 +288,10 @@ func (l *telemetryLane) Stop() error {
 		cancel()
 	}
 	l.wg.Wait()
+	// Summarize open sessions: nothing else will once the process exits. A
+	// session still running opens a new conversation under the next relay.
+	// Logout and removal purge the spool right after this.
+	l.pipe.Flush()
 	// Flush anything still queued in memory to the spool.
 	for {
 		select {
@@ -298,6 +302,11 @@ func (l *telemetryLane) Stop() error {
 		}
 	}
 }
+
+// Busy keeps the daemon up until open sessions close. A harness with no
+// SessionEnd hook firing depends on the idle close to report its session, and
+// that takes longer than the daemon's own idle timeout.
+func (l *telemetryLane) Busy() bool { return l.pipe.OpenSessions() > 0 }
 
 func (l *telemetryLane) Hold(reason string) {
 	l.mu.Lock()
@@ -652,6 +661,15 @@ func (l *telemetryLane) drain(ctx context.Context) {
 			}
 			if _, ok := l.admittedSince(); !ok || l.uploadHeld() {
 				return errStopDrain // a refusal or hold arrived mid-drain
+			}
+			// A batch may have waited through a relay restart, and a new
+			// manager has no earlier opt-ins to compare, so its refresh purges
+			// nothing. Read the manager directly: the decider's snapshot is
+			// cached. Spooled batches mix classes, so only a full withdrawal
+			// can be applied here; Fleet checks each class on arrival.
+			if st := l.cm.State(); !st.SignedIn || !st.AnyOn() || st.NoticeReconfirm {
+				l.dropped.Add(1)
+				return nil
 			}
 			var ob ownedBatch
 			if json.Unmarshal(r.Payload[9:], &ob) != nil {

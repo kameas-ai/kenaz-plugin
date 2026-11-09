@@ -44,6 +44,9 @@ type EnableResult struct {
 	Queued int `json:"queued"`
 	// LocalOnly counts notes that stay on the device (project scope).
 	LocalOnly int `json:"local_only"`
+	// StillSending counts notes left queued, on a new notice, because Fleet may already
+	// hold them.
+	StillSending int `json:"still_sending,omitempty"`
 }
 
 // EnableSync turns sync on for this account profile under consentVersion.
@@ -68,7 +71,24 @@ func (s *Store) EnableSync(ctx context.Context, consentVersion string, o MutateO
 				return err
 			}
 		}
+		// A standing grant holds under the notice it was given under.
+		set, err := loadSettings(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if set.ConsentVersion != consentVersion {
+			if res.StillSending, err = endSaveGrant(ctx, tx); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE sync_state SET enabled = 1, ever_enabled = 1, consent_version = ?, status_code = '' WHERE singleton = 1`, consentVersion); err != nil {
+			return err
+		}
+		// A fresh acknowledgement: anything waiting on one can try again now.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM meta WHERE key = ?`, metaProjectScopeSeen); err != nil {
+			return err
+		}
+		if err := saveClass(ctx, tx, syncClassProject, classState{}); err != nil {
 			return err
 		}
 		// Only the notes the user saw listed on the approval page, with
@@ -89,20 +109,12 @@ func (s *Store) EnableSync(ctx context.Context, consentVersion string, o MutateO
 			if pending > 0 {
 				continue
 			}
-			st, _, op, err := s.makeEligible(ctx, tx, &r, true, 0)
+			queued, err := s.queueExisting(ctx, tx, &r)
 			if err != nil {
 				return err
 			}
-			if st == StatePending {
+			if queued {
 				res.Queued++
-				// An edit made while sync was off: link its job to the
-				// create just queued.
-				if _, err := tx.ExecContext(ctx, `UPDATE replacements SET new_upsert_op = ? WHERE new_id = ? AND phase = 'prepared' AND new_upsert_op = 0`, op, r.ID); err != nil {
-					return err
-				}
-				if _, err := tx.ExecContext(ctx, `UPDATE outbox SET depends_on_op = ? WHERE op_id IN (SELECT old_forget_op FROM replacements WHERE new_id = ? AND phase = 'prepared')`, op, r.ID); err != nil {
-					return err
-				}
 			} else {
 				res.LocalOnly++
 			}
@@ -119,10 +131,23 @@ func (s *Store) EnableSync(ctx context.Context, consentVersion string, o MutateO
 // but are not sent; queued forgets still go (Fleet keeps synced notes until
 // they are deleted explicitly). Nothing on Fleet is deleted by this.
 func (s *Store) DisableSync(ctx context.Context, code string) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE sync_state SET enabled = 0, status_code = ? WHERE singleton = 1`, code)
+	_, err := s.StopSync(ctx, code)
+	return err
+}
+
+// StopSync is DisableSync, and returns how many notes stay queued because Fleet may
+// already hold them.
+func (s *Store) StopSync(ctx context.Context, code string) (int, error) {
+	var unknown int
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE sync_state SET enabled = 0, status_code = ? WHERE singleton = 1`, code); err != nil {
+			return err
+		}
+		var err error
+		unknown, err = endSaveGrant(ctx, tx)
 		return err
 	})
+	return unknown, err
 }
 
 // SetStatusCode records the sync worker's latest condition (a short code,
@@ -150,6 +175,7 @@ type PulledRecord struct {
 	Title, TitleHLC                string
 	Pinned                         bool
 	PinnedHLC, ScopeKind, ScopeHLC string
+	ScopeID                        string
 	Aliases                        []string
 	Reason, SupersededBy           string
 }
@@ -163,7 +189,7 @@ type PullPage struct {
 
 // ErrErasePending refuses pulled data while a forget-all has not reached
 // Fleet: a page fetched before the erase must not bring notes back.
-var ErrErasePending = errors.New("a forget-all is waiting to reach Kameas Fleet; nothing is pulled until it does")
+var ErrErasePending = errors.New("Kameas Fleet hasn't confirmed a forget-all yet; nothing is pulled until it does")
 
 func checkNoErase(ctx context.Context, tx *sql.Tx) error {
 	set, err := loadSettings(ctx, tx)
@@ -204,6 +230,9 @@ func validatePulled(r PulledRecord) error {
 	}
 	if !syncedScope(r.ScopeKind) {
 		return fmt.Errorf("%w: scope not synced", ErrInvalidPage)
+	}
+	if r.ScopeKind == ScopeProject && !idRe.MatchString(r.ScopeID) {
+		return fmt.Errorf("%w: project without an id", ErrInvalidPage)
 	}
 	if utf8.RuneCountInString(r.Title) > 256 || !utf8.ValidString(r.Title) {
 		return fmt.Errorf("%w: bad title", ErrInvalidPage)
@@ -341,8 +370,14 @@ func (s *Store) applyPulled(ctx context.Context, tx *sql.Tx, r PulledRecord, out
 		if kind == "" {
 			kind = "raw"
 		}
+		key := GlobalProject
+		if r.ScopeKind == ScopeProject {
+			if key, err = projectKeyFor(ctx, tx, r.ScopeID); err != nil {
+				return err
+			}
+		}
 		nr := record{ID: r.ID, Content: r.Content, Hash: r.ContentHash, Title: r.Title, Kind: kind, Scope: r.ScopeKind,
-			ProjectKey: GlobalProject, Tags: "[]", Source: r.Source, Origin: "fleet", CreatedAt: created, UpdatedAt: now.UnixMilli(),
+			ProjectKey: key, Tags: "[]", Source: r.Source, Origin: "fleet", CreatedAt: created, UpdatedAt: now.UnixMilli(),
 			CreatedHLC: string(FormatHLC(created, 0, "fleet")), TitleHLC: r.TitleHLC, ScopeHLC: r.ScopeHLC, PinnedHLC: r.PinnedHLC,
 			Pinned: r.Pinned, Visibility: "visible", SyncState: StateSynced, ServerSeq: r.Seq}
 		return insertRecord(ctx, tx, nr, "")
@@ -360,6 +395,11 @@ func (s *Store) applyPulled(ctx context.Context, tx *sql.Tx, r PulledRecord, out
 	}
 	if r.ScopeHLC > lr.ScopeHLC {
 		lr.Scope, lr.ScopeHLC = r.ScopeKind, r.ScopeHLC
+	}
+	if r.ScopeKind == ScopeProject && lr.Scope == ScopeProject {
+		if err := s.followPulledProject(ctx, tx, lr.ProjectKey, r.ScopeID); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE records SET content = ?, content_hash = ?, title = ?, title_hlc = ?, pinned = ?, pinned_hlc = ?, scope = ?, scope_hlc = ?, server_seq = ?, updated_at = ? WHERE id = ?`,
 		lr.Content, lr.Hash, lr.Title, lr.TitleHLC, lr.Pinned, lr.PinnedHLC, lr.Scope, lr.ScopeHLC, r.Seq, now.UnixMilli(), lr.ID); err != nil {
@@ -440,13 +480,13 @@ func (s *Store) StageSnapshot(ctx context.Context, l Lease, gen int64, p PullPag
 
 // CommitReset reconciles the complete snapshot atomically and publishes
 // it with its cursor:
-//   - for reason erased, notes in synced scopes created before
-//     erased_before are deleted (unless the erase was this device's own,
-//     which already cleared them at its barrier);
+//   - for reason erased, notes in the scopes eraseScopes names created before
+//     erased_before are deleted (unless the erase was this device's own, which
+//     already cleared them at its barrier);
 //   - notes Fleet held (synced or pulled) that the snapshot lacks are
 //     deleted, with their queued upserts;
-//   - unsynced notes (pending, unapproved, local) and project-scope notes
-//     are kept and their upserts resume after the commit;
+//   - otherwise unsynced notes (pending, unapproved, local) and notes Fleet
+//     never held are kept and their upserts resume after the commit;
 //   - the snapshot is applied like a pull.
 func (s *Store) CommitReset(ctx context.Context, l Lease, gen int64, cursor string) (PullOutcome, error) {
 	var out PullOutcome
@@ -489,7 +529,7 @@ func (s *Store) CommitReset(ctx context.Context, l Lease, gen int64, cursor stri
 		}
 		rows.Close()
 		var drop []string
-		rrows, err := tx.QueryContext(ctx, `SELECT id, created_hlc, provenance, sync_state, server_seq FROM records WHERE scope IN ('global','long_term')`)
+		rrows, err := tx.QueryContext(ctx, `SELECT id, created_hlc, provenance, sync_state, server_seq FROM records WHERE scope IN (`+eraseScopes()+`)`)
 		if err != nil {
 			return err
 		}
@@ -512,7 +552,22 @@ func (s *Store) CommitReset(ctx context.Context, l Lease, gen int64, cursor stri
 			}
 			out.Removed++
 		}
+		// Rows may have gone, so a later import could land under the mark.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM meta WHERE key = ?`, metaImportUploadThrough); err != nil {
+			return err
+		}
 		if reason == "erased" {
+			// A forget-all from another device ends this device's grant too.
+			if err := clearSaveGrant(ctx, tx); err != nil {
+				return err
+			}
+			// What capture has waiting from before now isn't written up. This device's
+			// own forget-all recorded its time when it ran: work done since is new.
+			if erasedBefore == "" || erasedBefore != own {
+				if err := markErased(ctx, tx, s.now()); err != nil {
+					return err
+				}
+			}
 			// Fleet forgot everything: queued forgets have nothing left to do.
 			if _, err := tx.ExecContext(ctx, `DELETE FROM outbox WHERE op = 'forget' AND state != 'inflight'`); err != nil {
 				return err
@@ -541,19 +596,29 @@ func (s *Store) CommitReset(ctx context.Context, l Lease, gen int64, cursor stri
 // codes only, never content.
 type SyncStatus struct {
 	SyncSettings
+	// SaveGrant: saves sync without their own approval, up to the hourly cap.
+	SaveGrant bool `json:"save_grant"`
 	// Notes counts visible notes by sync state.
 	Notes map[string]int `json:"notes"`
 	// Queue counts outbox ops by state (ready, inflight, unapproved,
 	// held, blocked).
-	Queue               map[string]int `json:"queue"`
-	ForgetsPending      int            `json:"forgets_pending"`
-	EditsInProgress     int            `json:"edits_in_progress"`
-	EditsBlocked        int            `json:"edits_blocked"`
-	BlockedCodes        []string       `json:"blocked_codes,omitempty"`
-	LastPullAt          *time.Time     `json:"last_pull_at,omitempty"`
-	LastPushAt          *time.Time     `json:"last_push_at,omitempty"`
-	ProjectNotesLocal   int            `json:"project_notes_local"`
-	UnsupportedProjects bool           `json:"-"`
+	Queue             map[string]int `json:"queue"`
+	ForgetsPending    int            `json:"forgets_pending"`
+	EditsInProgress   int            `json:"edits_in_progress"`
+	EditsBlocked      int            `json:"edits_blocked"`
+	BlockedCodes      []string       `json:"blocked_codes,omitempty"`
+	LastPullAt        *time.Time     `json:"last_pull_at,omitempty"`
+	LastPushAt        *time.Time     `json:"last_push_at,omitempty"`
+	ProjectNotesLocal int            `json:"project_notes_local"`
+	// AutoWaiting counts automatic notes on this device that can sync but are not
+	// queued yet; AutoHeld is why Fleet is not being sent them, if it is refusing.
+	AutoWaiting int    `json:"auto_waiting"`
+	AutoHeld    string `json:"auto_held,omitempty"`
+	// ProjectHeld is why project notes are not being sent, if Fleet isn't taking them.
+	ProjectHeld string `json:"project_held,omitempty"`
+	// QuotaReached: Fleet refused notes over a limit, and they wait on this device.
+	QuotaReached        bool `json:"quota_reached,omitempty"`
+	UnsupportedProjects bool `json:"-"`
 }
 
 // Status reports this profile's sync state.
@@ -562,6 +627,9 @@ func (s *Store) Status(ctx context.Context) (SyncStatus, error) {
 	var err error
 	if st.SyncSettings, err = s.SyncSettings(ctx); err != nil {
 		return st, err
+	}
+	if v, err := readMeta(ctx, s.db, metaSaveGrant); err == nil {
+		st.SaveGrant = v != ""
 	}
 	count := func(q string, into map[string]int) error {
 		rows, err := s.db.QueryContext(ctx, q)
@@ -587,6 +655,12 @@ func (s *Store) Status(ctx context.Context) (SyncStatus, error) {
 	s.db.QueryRowContext(ctx, `SELECT count(*) FROM replacements WHERE phase IN ('prepared','new_pending','new_accepted','old_forget_pending')`).Scan(&st.EditsInProgress)
 	s.db.QueryRowContext(ctx, `SELECT count(*) FROM replacements WHERE phase = 'blocked'`).Scan(&st.EditsBlocked)
 	s.db.QueryRowContext(ctx, `SELECT count(*) FROM records WHERE visibility = 'visible' AND scope = 'project'`).Scan(&st.ProjectNotesLocal)
+	s.db.QueryRowContext(ctx, `SELECT count(*) FROM records WHERE visibility = 'visible' AND sync_state = 'local' AND kind IN ('observation','session_summary') AND `+syncableNotes()).Scan(&st.AutoWaiting)
+	var overQuota int
+	s.db.QueryRowContext(ctx, `SELECT count(*) FROM outbox WHERE state = 'ready' AND last_code = 'quota_exceeded'`).Scan(&overQuota)
+	st.QuotaReached = overQuota > 0
+	st.AutoHeld = loadClass(ctx, s.db, syncClassAuto).Code
+	st.ProjectHeld = loadClass(ctx, s.db, syncClassProject).Code
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT last_code FROM outbox WHERE state = 'blocked' AND last_code != '' ORDER BY 1`)
 	if err == nil {
 		for rows.Next() {
@@ -638,6 +712,7 @@ type ExportRecord struct {
 	CreatedAt string   `json:"created_at"`
 	SyncState string   `json:"sync_state"`
 	Profile   string   `json:"profile"`
+	Untrusted string   `json:"untrusted,omitempty"`
 }
 
 // Export writes this profile's visible notes as NDJSON (one ExportRecord
@@ -655,7 +730,7 @@ func (s *Store) Export(ctx context.Context, w io.Writer, profileLabel string) (i
 		if err != nil {
 			return n, err
 		}
-		if err := enc.Encode(ExportRecord{ID: nt.ID, Title: nt.Title, Body: nt.Body, Tags: nt.Tags, Scope: nt.Scope, Kind: nt.Kind,
+		if err := enc.Encode(ExportRecord{Untrusted: untrustedIfAuto(nt.Kind), ID: nt.ID, Title: nt.Title, Body: nt.Body, Tags: nt.Tags, Scope: nt.Scope, Kind: nt.Kind,
 			Origin: nt.Origin, Source: nt.Source, CreatedAt: nt.CreatedAt.Format(time.RFC3339), SyncState: nt.SyncState, Profile: profileLabel}); err != nil {
 			return n, err
 		}
@@ -674,6 +749,8 @@ type HeldOp struct {
 	Op       string `json:"op"`
 	Title    string `json:"title,omitempty"`
 	Hash     string `json:"content_hash,omitempty"`
+	// Kind is the note's kind, where the approval page has to say what it is.
+	Kind string `json:"kind,omitempty"`
 	// Body is the exact text the op uploads (or, for a held deletion,
 	// deletes), shown on the approval page. When set, Hash is its
 	// ContentHash, so the approved payload binds the full text.
@@ -736,8 +813,10 @@ ORDER BY 1, 2`)
 // LocalSyncCandidates lists the notes turning sync on would upload (the
 // approval page shows them; EnableSync queues only these).
 func (s *Store) LocalSyncCandidates(ctx context.Context) ([]HeldOp, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, title, content_hash, content FROM records
-WHERE visibility = 'visible' AND sync_state = 'local' AND scope IN ('global','long_term') ORDER BY created_at, rowid`)
+	// Notes saved on purpose come first: approvals go in batches, and the standing
+	// grant takes care of automatic notes anyway.
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, content_hash, content, kind FROM records
+WHERE visibility = 'visible' AND sync_state = 'local' AND `+syncableNotes()+` ORDER BY kind IN ('observation','session_summary'), created_at, rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -745,7 +824,7 @@ WHERE visibility = 'visible' AND sync_state = 'local' AND scope IN ('global','lo
 	var out []HeldOp
 	for rows.Next() {
 		h := HeldOp{Op: OpUpsert}
-		if err := rows.Scan(&h.RecordID, &h.Title, &h.Hash, &h.Body); err != nil {
+		if err := rows.Scan(&h.RecordID, &h.Title, &h.Hash, &h.Body, &h.Kind); err != nil {
 			return nil, err
 		}
 		if !LooksLikeCredentialForSync(h.Title) {

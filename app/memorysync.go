@@ -19,9 +19,23 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	contexttools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/context"
 	"github.com/kameas-ai/kenaz-plugin/internal/memory"
+	"github.com/kameas-ai/kenaz-plugin/internal/memory/capture"
 	"github.com/kameas-ai/kenaz-plugin/internal/memory/memsync"
 	"github.com/kameas-ai/kenaz-plugin/notices"
 )
+
+// homeForms is the home directory as given and with links resolved: a project's root has
+// its links resolved, so comparing the given form alone would miss a linked home.
+func homeForms() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	if real, err := filepath.EvalSymlinks(home); err == nil && real != home {
+		return []string{home, real}
+	}
+	return []string{home}
+}
 
 // memorySyncAvailable reports whether this build can sync memory: an
 // official provider that implements the memory seam.
@@ -130,6 +144,7 @@ type memorySyncLane struct {
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
+	sdone   chan struct{}
 	profile memory.Profile
 	worker  *memsync.Worker
 	wcancel context.CancelFunc
@@ -145,10 +160,14 @@ func (l *memorySyncLane) Name() string { return "memory-sync" }
 
 func (l *memorySyncLane) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
 	l.mu.Lock()
-	l.cancel, l.stopped = cancel, false
+	l.cancel, l.sdone, l.stopped = cancel, done, false
 	l.mu.Unlock()
-	go l.supervise(ctx)
+	go func() {
+		defer close(done)
+		l.supervise(ctx)
+	}()
 	return nil
 }
 
@@ -195,7 +214,8 @@ func (l *memorySyncLane) reconcile(ctx context.Context) {
 		return
 	}
 	w := memsync.New(memsync.Options{
-		Store: st, Memory: fleetapi.MemoryOf(l.p), Session: l.p.Auth().Session, Capabilities: l.caps.get,
+		Homes: homeForms(),
+		Store: st, Memory: fleetapi.MemoryOf(l.p), Projects: fleetapi.ProjectsOf(l.p), Session: l.p.Auth().Session, Capabilities: l.caps.get,
 		ConsentVersion: notices.MemorySync().ID, AcceptedConsentVersions: notices.MemorySyncAccepted(),
 		Holder: l.holder, Log: l.log,
 	})
@@ -234,11 +254,16 @@ func (l *memorySyncLane) stopWorker() {
 
 func (l *memorySyncLane) Stop() error {
 	l.mu.Lock()
-	cancel := l.cancel
+	cancel, done := l.cancel, l.sdone
 	l.stopped = true
 	l.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	// The supervisor can be in the middle of opening the store, so wait for it: Stop
+	// means nothing has the database open afterward.
+	if done != nil {
+		<-done
 	}
 	l.stopWorker()
 	return nil
@@ -297,7 +322,7 @@ func (l *memorySyncLane) Status() daemon.LaneStatus {
 }
 
 // Memory's approval executors run only in the relay daemon, inside the
-// approval service, after it verified the user's WebAuthn assertion. They
+// approval service, after the person approved. They
 // open the payload's profile store here and apply exactly the stored
 // payload under its idempotency key.
 func init() { approvalRegistrars = append(approvalRegistrars, registerMemoryExecutors) }
@@ -314,6 +339,7 @@ func registerMemoryExecutors(m *approvals.Manager, p fleetapi.Provider, stateDir
 		Active:         func(ctx context.Context) memory.Profile { return memoryProfileOf(ctx, p) },
 		Remote:         memoryRemote(p),
 		ConsentVersion: notices.MemorySync().ID,
+		AfterForgetAll: func() error { return capture.PurgeQueue(capture.PathsIn(root)) },
 	})
 }
 
@@ -400,6 +426,7 @@ type heldOpView struct {
 	Op       string `json:"op"`
 	Title    string `json:"title"`
 	Hash     string `json:"content_hash"`
+	Kind     string `json:"kind"`
 	Body     string `json:"body"`
 }
 
@@ -467,8 +494,11 @@ func renderMemory(op string) approvals.Renderer {
 			return approvals.Rendered{Summary: "Delete memory " + pl.ID + ".", Targets: []string{pl.ID},
 				Impact: "Deletes this memory on this device and, if it was synced, in your Kameas Fleet account."}, nil
 		case memory.OpForgetAll:
-			return approvals.Rendered{Summary: "Delete every memory of this Kameas Fleet account, on this device and in Kameas Fleet.",
-				Impact: "Irreversible: erases all of this account's memories on this device and its memory in Kameas Fleet. " + memory.ForgetAllOtherDevices}, nil
+			summary := memory.ForgetAllSummary()
+			if !memory.ProjectScopeRelease {
+				summary += "."
+			}
+			return approvals.Rendered{Summary: summary, Impact: memory.ForgetAllImpact(0)}, nil
 		case memory.OpSyncEnable:
 			details, err := noteDetails(pl.Records, func(r heldOpView) string { return "Upload " + strconv.Quote(clip(r.Title)) })
 			if err != nil {
@@ -480,6 +510,8 @@ func renderMemory(op string) approvals.Renderer {
 				out.Targets = append(out.Targets, r.RecordID)
 			}
 			return out, nil
+		case memory.OpSyncAuto:
+			return approvals.Rendered{Summary: memory.SyncAutoSummary + ".", Impact: memory.SyncAutoImpactText()}, nil
 		case memory.OpSyncApprove:
 			if len(pl.Ops) == 0 {
 				return approvals.Rendered{}, errors.New("sync approve needs at least one change")
@@ -498,12 +530,19 @@ func renderMemory(op string) approvals.Renderer {
 			if len(pl.Records) == 0 {
 				return approvals.Rendered{}, errors.New("adopt needs at least one note")
 			}
-			details, err := noteDetails(pl.Records, func(r heldOpView) string { return "Move " + strconv.Quote(clip(r.Title)) })
+			anyAuto := false
+			details, err := noteDetails(pl.Records, func(r heldOpView) string {
+				if memory.IsAuto(r.Kind) {
+					anyAuto = true
+					return "Move automatic note " + strconv.Quote(clip(r.Title))
+				}
+				return "Move " + strconv.Quote(clip(r.Title))
+			})
 			if err != nil {
 				return approvals.Rendered{}, fmt.Errorf("adopt: %w", err)
 			}
 			out := approvals.Rendered{Summary: fmt.Sprintf("Move %d notes from this device's notebook into your Kameas Fleet account's memory.", len(pl.Records)),
-				Impact: "The notes leave the device notebook and can then sync to your account.", Details: details}
+				Impact: memory.AdoptImpact(anyAuto), Details: details}
 			for _, r := range pl.Records {
 				out.Targets = append(out.Targets, r.RecordID)
 			}

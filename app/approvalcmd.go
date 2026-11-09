@@ -12,19 +12,21 @@ import (
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
+	"github.com/kameas-ai/kenaz-plugin/internal/contextlib"
 	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
+	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	contexttools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/context"
 	skillstools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/skills"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
-// Human-authorized writes. The daemon hosts
+// Human-approved writes. The daemon hosts
 // the approval service and page; the MCP process prepares requests over the
 // daemon's control API; `kenaz approvals` can only list requests and open
 // the page. Nothing in the CLI or MCP surface approves, enrolls an
-// authenticator or exports a receipt.
+// exports a receipt.
 
 // approvalsDir is the pending-write store for an env.
 func approvalsDir(stateDir string) string { return filepath.Join(stateDir, "approvals") }
@@ -36,7 +38,7 @@ type ApprovalRegistrar func(m *approvals.Manager, p fleetapi.Provider, stateDir 
 
 // approvalRegistrars are the registered write operations. Other
 // workstreams (memory) append their registrar here.
-var approvalRegistrars = []ApprovalRegistrar{registerFleetWriteExecutors}
+var approvalRegistrars = []ApprovalRegistrar{registerFleetWriteExecutors, registerContextFileExecutors}
 
 func registerFleetWriteExecutors(m *approvals.Manager, p fleetapi.Provider, _ string, st contexttools.StatusSource) {
 	m.Register(skillstools.PublishOperation, skillstools.ExecutePublish(p))
@@ -48,6 +50,19 @@ func registerFleetWriteExecutors(m *approvals.Manager, p fleetapi.Provider, _ st
 	m.RegisterRenderer(skillstools.PublishOperation, skillstools.RenderPublish)
 	m.RegisterRenderer(contexttools.ShareOperation, contexttools.RenderShare(teamNames(p)))
 	m.RegisterRenderer(contexttools.PromoteOperation, contexttools.RenderPromote(teamNames(p)))
+}
+
+// registerContextFileExecutors is sharing a local context file, in builds with
+// the context library. The relay keeps the file's link in the same ledger the
+// tools read.
+func registerContextFileExecutors(m *approvals.Manager, p fleetapi.Provider, stateDir string, st contexttools.StatusSource) {
+	if !features.ContextLibrary {
+		return
+	}
+	led := contextlib.NewLedger(contextLedgerIn(filepath.Dir(stateDir)))
+	m.Register(contexttools.ShareFileOperation, contexttools.ExecuteShareFile(p, st, led))
+	m.RegisterReconciler(contexttools.ShareFileOperation, contexttools.ReconcileShareFile(p, led))
+	m.RegisterRenderer(contexttools.ShareFileOperation, contexttools.RenderShareFile(teamNames(p)))
 }
 
 // teamNames resolves a team id to its display name for the approval page
@@ -112,38 +127,6 @@ func sessionIdentity(p fleetapi.Provider) approvals.IdentitySource {
 	}
 }
 
-// identityVerifier adapts the private client's optional browser identity
-// verification. Without it (public builds, older clients) enrollment is
-// unavailable.
-type identityVerifier struct {
-	v   fleetapi.IdentityVerifier
-	env fleetapi.Env
-}
-
-func (iv identityVerifier) VerifyIdentity(ctx context.Context, open func(string) error, completeURL string) (approvals.Identity, error) {
-	start := time.Now().Add(-time.Minute) // clock skew allowance
-	got, err := iv.v.VerifyIdentity(ctx, fleetapi.LoginRequest{Env: iv.env, OpenURL: open, CompleteURL: completeURL, Timeout: 10 * time.Minute})
-	if err != nil {
-		return approvals.Identity{}, err
-	}
-	// Only a sign-in completed during this ceremony counts; a reused
-	// identity-provider session does not.
-	if got.AuthTime.IsZero() || got.AuthTime.Before(start) {
-		return approvals.Identity{}, errors.New("identity verification was not a fresh sign-in")
-	}
-	return approvals.Identity{Env: string(got.Env), OrgID: got.OrgID, UserID: got.UserID}, nil
-}
-
-func verifierFor(p fleetapi.Provider, env fleetapi.Env) approvals.IdentityVerifier {
-	if p.Flavor() != fleetapi.FlavorOfficial {
-		return nil
-	}
-	if v, ok := p.Auth().(fleetapi.IdentityVerifier); ok {
-		return identityVerifier{v: v, env: env}
-	}
-	return nil
-}
-
 // daemonStatus adapts the daemon to contexttools.StatusSource.
 type daemonStatus struct{ d *daemon.Daemon }
 
@@ -165,7 +148,6 @@ func installApprovals(opt *daemon.Options, key []byte) (func(*daemon.Daemon), er
 		Env:      string(opt.Env),
 		Dir:      approvalsDir(opt.StateDir),
 		Identity: sessionIdentity(opt.Provider),
-		Verifier: verifierFor(opt.Provider, opt.Env),
 		BaseURL:  func() string { return fmt.Sprintf("http://localhost:%d", d.Info().Port) },
 		Logger:   opt.Logger,
 	})
@@ -215,18 +197,17 @@ func approvalsClient(conn func(context.Context) *daemon.Client) approvals.Remote
 	}}
 }
 
-// refusedApprovalVerbs are subcommands people (or agents) might try. The
-// CLI can never approve, enroll or export anything.
+// refusedApprovalVerbs are subcommands people (or agents) might try here. Approving has
+// its own commands, which need a real terminal.
 var refusedApprovalVerbs = map[string]bool{
-	"approve": true, "accept": true, "confirm": true, "allow": true, "yes": true, "deny": true, "cancel": true,
-	"register": true, "add-key": true, "export": true, "receipt": true, "token": true, "sign": true,
+	"approve": true, "accept": true, "confirm": true, "allow": true, "yes": true, "deny": true, "cancel": true, "decline": true,
+	"enroll": true, "register": true, "add-key": true, "export": true, "receipt": true, "token": true, "sign": true,
 }
 
-const approvalsUsage = "usage: kenaz approvals [list | status <request_id> | open [request_id] | enroll]"
+const approvalsUsage = "usage: kenaz approvals [list | status <request_id> | open [request_id]]"
 
-// runApprovals implements `kenaz approvals`. It shows pending and completed
-// requests and opens the approval page; approving, canceling and setting up
-// an authenticator happen only on that page.
+// runApprovals implements `kenaz approvals`. It shows requests and opens the approval
+// page. Approving is the page's button, or `kenaz approve` and `kenaz decline`.
 func runApprovals(env Env, args []string) int {
 	fs := flag.NewFlagSet("approvals", flag.ContinueOnError)
 	fs.SetOutput(env.Stderr)
@@ -241,11 +222,11 @@ func runApprovals(env Env, args []string) int {
 		sub = rest[0]
 	}
 	if refusedApprovalVerbs[strings.ToLower(sub)] {
-		fmt.Fprintln(env.Stderr, variant.Current.Binary+": the CLI cannot approve, cancel or set up anything. Open the approval page with `kenaz approvals open <request_id>` and use your security key or device unlock there.")
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": use `kenaz approve [id]` or `kenaz decline [id]` in a terminal, or the page from `kenaz approvals open <request_id>`.")
 		return ExitUsage
 	}
 	switch sub {
-	case "list", "status", "open", "enroll":
+	case "list", "status", "open":
 	default:
 		fmt.Fprintln(env.Stderr, approvalsUsage)
 		return ExitUsage
@@ -296,10 +277,7 @@ func runApprovals(env Env, args []string) int {
 			}
 			tw.Flush()
 		}
-		if !l.Enrolled {
-			fmt.Fprintln(env.Stdout, "No authenticator is set up for approvals yet. Run `kenaz approvals enroll`.")
-		}
-		fmt.Fprintln(env.Stdout, "Approve or cancel requests at "+l.PageURL+"r/<request>  (`kenaz approvals open <request>`).")
+		fmt.Fprintln(env.Stdout, "Approve or decline with `kenaz approve [request]`, or at "+l.PageURL+"r/<request>.")
 		return ExitOK
 	case "status":
 		st, res, err := rc.Status(env.Ctx, rest[1])
@@ -314,10 +292,7 @@ func runApprovals(env Env, args []string) int {
 		return ExitOK
 	}
 	url := l.PageURL
-	switch {
-	case sub == "enroll":
-		url += "enroll"
-	case len(rest) > 1:
+	if len(rest) > 1 {
 		url += "r/" + rest[1]
 	}
 	fmt.Fprintf(env.Stdout, "Open the Kenaz approval page:\n  %s\n", url)

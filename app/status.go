@@ -111,6 +111,9 @@ func runStatus(env Env, args []string) int {
 	}
 	if mp, err := env.memoryPaths(); err == nil {
 		fmt.Fprintf(w, "  %s\n", mp.statusLine(env.Ctx))
+		if l := mp.captureLine(env.now()); l != "" {
+			fmt.Fprintf(w, "  %s\n", l)
+		}
 	}
 	if cerr == nil {
 		consent.WriteText(w, cm.State())

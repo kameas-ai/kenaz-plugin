@@ -1,0 +1,14 @@
+{
+  "_source": "Fixtures from kenaz-harness core/contexts/library_test.go (TestPathTraversalRejected, TestSaveRejectsBadExtensions, TestSymlinkEscapeRejected). Keep the two repositories' rules the same; extend both.",
+  "traversal": [
+    "../escape.md",
+    "../../escape.md",
+    "foo/../../escape.md",
+    "/etc/passwd",
+    "foo/../bar/../../baz.md"
+  ],
+  "bad_extensions": ["foo.exe", "foo.json", "foo", "foo.md.exe"],
+  "good_extensions": ["a.md", "a.markdown", "a.txt", "A.MD"],
+  "max_file_bytes": 1048576,
+  "trash_ttl_days": 30
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,32 +15,18 @@ import (
 
 	"github.com/kameas-ai/kenaz-plugin/app"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
-	"github.com/kameas-ai/kenaz-plugin/fleetapi/fleetapitest"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi/stub"
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 )
 
-// verifying is the official fake whose Auth can also run a browser
-// identity verification (what enrollment needs).
-type verifying struct{ *official }
-
-func (p verifying) Auth() fleetapi.Auth {
-	return verifyingAuth{auth{p.official}, &fleetapitest.IdentityVerifier{}}
-}
-
-type verifyingAuth struct {
-	auth
-	*fleetapitest.IdentityVerifier
-}
-
-// The CLI can never approve, cancel, enroll or export: every such verb is
-// refused before anything is contacted.
+// `kenaz approvals` lists and opens. These verbs point at the commands that decide, or
+// are refused, before anything is contacted.
 func TestApprovalsCLIRefusesApprove(t *testing.T) {
 	h := newHarness(t, stub.New())
-	for _, verb := range []string{"approve", "APPROVE", "accept", "confirm", "deny", "cancel", "register", "export", "receipt", "token"} {
+	for _, verb := range []string{"approve", "APPROVE", "accept", "confirm", "deny", "cancel", "decline", "enroll", "register", "export", "receipt", "token"} {
 		code, out, errb := h.run(t, "approvals", verb, "apr_aaaaaaaaaaaaaaaaaaaaaaaaaa")
-		if code != app.ExitUsage || out != "" || !strings.Contains(errb, "cannot approve") {
+		if code != app.ExitUsage || out != "" || !strings.Contains(errb, "kenaz approve") {
 			t.Errorf("%s: exit=%d out=%q err=%q", verb, code, out, errb)
 		}
 	}
@@ -53,7 +40,7 @@ func TestApprovalsCLIRefusesApprove(t *testing.T) {
 // cancels it and purges its content.
 func TestApprovalsEndToEnd(t *testing.T) {
 	p := &official{Provider: stub.New()}
-	h := newHarness(t, verifying{p})
+	h := newHarness(t, p)
 	if code, _, errb := h.run(t, "login"); code != 0 {
 		t.Fatalf("login: %s", errb)
 	}
@@ -117,7 +104,7 @@ func TestApprovalsEndToEnd(t *testing.T) {
 	}
 
 	code, out, errb := h.run(t, "approvals")
-	if code != 0 || !strings.Contains(out, id) || !strings.Contains(out, "skills.publish") || !strings.Contains(out, "pending") || !strings.Contains(out, "approvals enroll") {
+	if code != 0 || !strings.Contains(out, id) || !strings.Contains(out, "skills.publish") || !strings.Contains(out, "pending") {
 		t.Fatalf("list exit=%d out=%s err=%s", code, out, errb)
 	}
 	if strings.Contains(out, "secret-body-text") {
@@ -161,11 +148,10 @@ func TestApprovalsEndToEnd(t *testing.T) {
 	}
 }
 
-// Without an enrolled authenticator and without a way to enroll one, a
-// write tool reports approval_unavailable and stores nothing.
-func TestApprovalsUnavailableWithoutVerifier(t *testing.T) {
+// No setup: on a device with a keychain, a write tool's first request is ready to approve.
+func TestApprovalsNeedNoSetup(t *testing.T) {
 	p := &official{Provider: stub.New()}
-	h := newHarness(t, p) // Auth has no VerifyIdentity
+	h := newHarness(t, p)
 	if code, _, errb := h.run(t, "login"); code != 0 {
 		t.Fatalf("login: %s", errb)
 	}
@@ -203,9 +189,100 @@ func TestApprovalsUnavailableWithoutVerifier(t *testing.T) {
 		return json.Unmarshal(raw, &got)
 	}
 	app.RunEnv(menv, []string{"mcp"})
-	if got["status"] != "approval_unavailable" || got["request_id"] != nil {
+	if got["status"] != "pending" || got["request_id"] == nil || !strings.Contains(fmt.Sprint(got["message"]), "kenaz approve") {
 		t.Fatalf("got %v", got)
 	}
 	cancel()
 	<-ddone
+}
+
+// teamMember is a signed-in member of one team on a plan with team sharing.
+type teamMember struct{ *official }
+
+func (teamMember) Me() fleetapi.Me { return teamMe{} }
+
+// Auth is signed in to the organization once logged in.
+func (m teamMember) Auth() fleetapi.Auth { return acctAuth{auth{m.official}} }
+
+type teamMe struct{}
+
+func (teamMe) Get(context.Context) (fleetapi.MeInfo, error) {
+	return fleetapi.MeInfo{UserID: "u1", OrgID: "o1", Tier: "team", Teams: []fleetapi.TeamRef{{ID: "t1", Name: "Platform"}}}, nil
+}
+func (teamMe) Capabilities(context.Context) (fleetapi.Capabilities, error) {
+	return fleetapi.Capabilities{Keys: map[string]bool{"team_graph_sharing": true, "shared_team_graph": true, fleetapi.CapContextFiles: true}}, nil
+}
+
+// Sharing a context file through the real relay and MCP server: the request is
+// prepared, the relay renders it for the page and nothing is uploaded.
+func TestShareContextFileThroughRelay(t *testing.T) {
+	contextFeature(t, true)
+	p := &official{Provider: stub.New()}
+	h := newHarness(t, teamMember{p})
+	if code, _, errb := h.run(t, "login"); code != 0 {
+		t.Fatalf("login: %s", errb)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ddone := make(chan int, 1)
+	var derr bytes.Buffer
+	go func() { ddone <- app.RunEnv(h.env(ctx, &bytes.Buffer{}, &derr), []string{"daemon"}) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := daemon.Connect(ctx, h.state()); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon never started: %s", derr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	writeFile(t, filepath.Join(h.home, "contexts", "company.md"), "# Company\nsecret-body-text\n")
+
+	var got map[string]any
+	var merr bytes.Buffer
+	menv := h.env(ctx, &bytes.Buffer{}, &merr)
+	menv.ServeMCP = func(ctx context.Context, srv *sdk.Server) error {
+		ct, st := sdk.NewInMemoryTransports()
+		if _, err := srv.Connect(ctx, st, nil); err != nil {
+			return err
+		}
+		cs, err := sdk.NewClient(&sdk.Implementation{Name: "t", Version: "1"}, nil).Connect(ctx, ct, nil)
+		if err != nil {
+			return err
+		}
+		defer cs.Close()
+		res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "context_share_file", Arguments: map[string]any{"path": "personal/company.md"}})
+		if err != nil {
+			return err
+		}
+		raw, _ := json.Marshal(res.StructuredContent)
+		return json.Unmarshal(raw, &got)
+	}
+	if code := app.RunEnv(menv, []string{"mcp"}); code != 0 {
+		t.Fatalf("mcp exit=%d err=%s", code, merr.String())
+	}
+	id, _ := got["request_id"].(string)
+	if got["status"] != "pending" || !approvals.ValidID(id) || got["slug"] != "company.md" {
+		t.Fatalf("context_share_file = %v", got)
+	}
+	code, out, errb := h.run(t, "approvals")
+	if code != 0 || !strings.Contains(out, id) || !strings.Contains(out, "context.share_file") {
+		t.Fatalf("list exit=%d out=%s err=%s", code, out, errb)
+	}
+	if strings.Contains(out, "secret-body-text") {
+		t.Fatal("list shows content")
+	}
+	if code, _, _ := h.run(t, "logout"); code != 0 {
+		t.Fatal("logout")
+	}
+	select {
+	case <-ddone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("daemon did not stop")
+	}
+	logs, _ := os.ReadFile(filepath.Join(h.state(), "logs", "relay.log"))
+	if bytes.Contains(logs, []byte("secret-body-text")) {
+		t.Fatal("relay.log carries the file")
+	}
 }

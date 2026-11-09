@@ -1,7 +1,7 @@
 // Package approvaltools is the read-only approval_status MCP tool. It
 // reports a prepared write's state. There is deliberately no tool that
-// approves, enrolls an authenticator or returns a receipt: approval only
-// happens on the local approval page with the user's authenticator.
+// approves: only the person does, on the local page or with `kenaz approve` in a real
+// terminal.
 package approvaltools
 
 import (

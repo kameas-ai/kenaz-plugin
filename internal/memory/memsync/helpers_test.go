@@ -89,7 +89,7 @@ func (d *device) signIn(p memory.Profile) {
 // enable turns sync on the way the approved executor does.
 func (d *device) enable() {
 	d.t.Helper()
-	r := Remote{Memory: d.fleet.SessionClient(d.sessionFn), Session: d.sessionFn}
+	r := Remote{Memory: d.fleet.SessionClient(d.sessionFn), Session: d.sessionFn, Capabilities: d.fleetCaps}
 	if err := r.EnableSync(context.Background(), d.p, consent); err != nil {
 		d.t.Fatal(err)
 	}

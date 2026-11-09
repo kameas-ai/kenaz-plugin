@@ -127,6 +127,10 @@ func runPlanted(t *testing.T, v string, rev int) [][]byte {
 	return out
 }
 
+// plantedIn ignores case: the decoders lower-case some values (the provider
+// token), and a planted value must not get out that way either.
+func plantedIn(b []byte) bool { return bytes.Contains(bytes.ToLower(b), []byte("plant")) }
+
 // TestPlanted is the "planted string in every attribute" variant of the
 // canary suite: nothing a harness puts in any attribute, body, scope or
 // resource may reach the transport, even values that look
@@ -144,7 +148,7 @@ func TestPlanted(t *testing.T) {
 				t.Fatalf("%q rev %d: nothing emitted", v, rev)
 			}
 			for _, b := range bodies {
-				if bytes.Contains(b, []byte("PLANT")) {
+				if plantedIn(b) {
 					t.Errorf("planted value %q leaked at rev %d", v, rev)
 				}
 			}
@@ -164,7 +168,7 @@ func FuzzPlanted(f *testing.F) {
 		}
 		v := "PLANT" + s
 		for _, b := range runPlanted(t, v, 2) {
-			if bytes.Contains(b, []byte("PLANT")) {
+			if plantedIn(b) {
 				t.Fatalf("planted value %q leaked", v)
 			}
 		}

@@ -9,6 +9,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kenaz hook memory-index",
+            "timeout": 4
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -18,6 +28,40 @@
             "type": "command",
             "command": "kenaz hook session-end",
             "timeout": 1
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kenaz hook memory-prompt",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kenaz hook memory-tool",
+            "timeout": 2,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kenaz hook memory-stop",
+            "timeout": 2
           }
         ]
       }

@@ -89,6 +89,15 @@ func (p *Pipeline) SessionEndLocal(c canon.ClientKind, localHash string) {
 // Tick closes idle sessions; the daemon calls it about once a minute.
 func (p *Pipeline) Tick() { p.process(p.cfg.Aggregator.Tick()) }
 
+// Flush closes every open session; the daemon calls it when it stops, so a
+// session's summary is not lost with the process. Records pass the usual gates
+// now. Logout purges what they keep right after, and a withdrawal made while
+// the relay is down is caught when the spool drains.
+func (p *Pipeline) Flush() { p.process(p.cfg.Aggregator.CloseAll()) }
+
+// OpenSessions returns the number of sessions not yet closed.
+func (p *Pipeline) OpenSessions() int { return p.cfg.Aggregator.OpenCount() }
+
 func (p *Pipeline) ingest(r decode.Result) {
 	p.note(r)
 	// While the organization is not admitted (its plan does not
@@ -100,6 +109,12 @@ func (p *Pipeline) ingest(r decode.Result) {
 		return
 	}
 	p.process(p.cfg.Aggregator.Ingest(r.Events))
+	// A session's summary (conversation_ended) totals everything seen since it began. It
+	// may be sent only for what happened while the member was opted in, so nothing
+	// counts towards it meanwhile: a session spanning an opted-out window starts over.
+	if p.cfg.Decider != nil && !p.cfg.Decider.OptedIn(fleetschema.ClassUsageCounts) {
+		p.cfg.Aggregator.Reset()
+	}
 }
 
 // Reset discards open sessions without emitting them (see

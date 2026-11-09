@@ -151,6 +151,9 @@ func runDoctor(env Env, args []string) int {
 	}
 	if mp, err := env.memoryPaths(); err == nil {
 		fmt.Fprintf(w, "[info] %s\n", mp.statusLine(env.Ctx))
+		if l := mp.captureLine(env.now()); l != "" {
+			fmt.Fprintf(w, "[info] %s\n", l)
+		}
 	}
 	fmt.Fprintf(w, "[info] %-18s %s\n", "clock skew", "not checked yet")
 	for _, h := range hostSetups(r.StateDir) {

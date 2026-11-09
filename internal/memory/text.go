@@ -7,18 +7,20 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/safetext"
 )
 
 // Notice is the user-facing statement about where memories go. It appears
 // verbatim in the READMEs and in `kenaz memory --help`.
-const Notice = "Memories are stored on this device. They are sent to Kameas only if you turn on memory sync for your Kameas Fleet account (off by default), and never as telemetry. When your AI tool uses a memory in a session, it becomes part of that session and is sent to your AI tool's provider (for example Anthropic for Claude Code, or OpenAI for Codex) like anything else in the conversation."
+const Notice = "Memories are stored on this device. They are sent to Kameas only if you turn on memory sync for your Kameas Fleet account (off by default), and never as telemetry. If you turn on automatic memory capture, session content can also go to the model that writes your notes, as its own notice explains. When your AI tool uses a memory in a session, it becomes part of that session and is sent to your AI tool's provider (for example Anthropic for Claude Code, or OpenAI for Codex) like anything else in the conversation."
 
 // OffMessage is returned by every memory tool while memory is turned off.
 const OffMessage = "Kenaz memory is turned off. Turn it on with `kenaz memory enable`."
 
 // Disclosure is the one-time notice shown when memory is first used.
 func Disclosure(path string) string {
-	return fmt.Sprintf("Kenaz memory is on: your AI tool can save notes to %s on this device. They stay on this device unless you turn on memory sync (`kenaz memory sync enable`). Turn off: `kenaz memory disable`. Clear: `kenaz memory purge`.", path)
+	return fmt.Sprintf("Kenaz memory is on: your AI tool can save notes to %s on this device. They stay on this device unless you turn on memory sync (`kenaz memory sync enable`). Automatic memory capture is separate and has its own notice. Turn off: `kenaz memory disable`. Clear: `kenaz memory purge`.", path)
 }
 
 // KeptLine is printed by `kenaz logout` and `kenaz setup --undo`, which
@@ -29,6 +31,12 @@ func KeptLine(path string) string {
 
 // DisclosureMarker is the state file that records the disclosure was shown.
 const DisclosureMarker = "memory-disclosure-shown"
+
+// RecallNoticeMarker records that the notice for reading across projects was given.
+const RecallNoticeMarker = "memory-recall-notice"
+
+// RecallNotice is given once, with the first read across every project in a chat app.
+const RecallNotice = "When your AI tool uses a note in a session, the note becomes part of that session and is sent to the tool's AI provider like the rest of the conversation. Chat is set to read notes from all your projects, not just the one you're working on. You can limit this in the Kenaz extension's settings in the Claude desktop app."
 
 // ClaimDisclosure returns true exactly once per marker file: the first
 // caller creates it and should show the disclosure. Any error (including
@@ -82,7 +90,11 @@ func FormatIndex(entries []Entry) string {
 	budget := IndexMaxBytes - len(indexHeader) - len(indexFooter) - 2
 	n := 0
 	for _, e := range entries {
-		line := fmt.Sprintf("\n- %s [%s, %s]", Clip(e.Title, 120), e.ID, e.CreatedAt.Format("2006-01-02"))
+		label := ""
+		if IsAuto(e.Kind) {
+			label = " (auto, untrusted)"
+		}
+		line := fmt.Sprintf("\n- %s%s [%s, %s]", safetext.OneLine(e.Title, 120), label, e.ID, e.CreatedAt.Format("2006-01-02"))
 		if len(line) > budget {
 			break
 		}
@@ -103,5 +115,5 @@ func IsUserError(err error) bool {
 	return errors.Is(err, ErrInvalidInput) || errors.Is(err, ErrFull) || errors.Is(err, ErrLooksSecret) ||
 		errors.Is(err, ErrNotFound) || errors.Is(err, ErrEmptyQuery) || errors.Is(err, ErrAccountChanged) ||
 		errors.Is(err, ErrLocalProfile) || errors.Is(err, ErrSyncUnavailable) || errors.Is(err, ErrNotBlocked) ||
-		errors.Is(err, ErrNewerSchema) || errors.Is(err, ErrProfileMismatch)
+		errors.Is(err, ErrNewerSchema) || errors.Is(err, ErrProfileMismatch) || errors.Is(err, ErrSyncOffForGrant)
 }

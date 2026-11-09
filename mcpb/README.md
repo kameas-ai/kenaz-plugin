@@ -56,10 +56,22 @@ the official build's licence in `licenses/`. `tools` lists every tool
   extension's server reads, whichever `kenaz` executable ran it. Claude Desktop
   chat has no `/kenaz:login`, so with `KENAZ_MCP_HOST=claude-desktop` a
   signed-out tool call tells the user the terminal command for the executable
-  the server runs from (home directory abbreviated). Memory works signed out,
-  in the device notebook.
+  the server runs from (home directory abbreviated). The server re-reads the
+  stored session before each tool call, so "try again" works without restarting
+  Claude Desktop (after a keychain read error, it can take up to 5 minutes).
+  Memory works signed out, in the device notebook.
 - **Working directory:** Claude Desktop starts extensions in its own directory,
   and chat has no project, so memory's "current project" is the home directory.
+  `memory_search` and `memory_recent` therefore default to every project there,
+  and `project=current` limits them to notes saved in chat and global notes.
+  By default chat reads only notes not tied to a project, until the member changes
+  "Notes chat can read" in the extension's settings (`memory_chat_recall`). The first
+  read across every project carries a one-time notice in `notice_for_user`.
+- **No hooks:** chat has no session-start index. With
+  `KENAZ_MCP_HOST=claude-desktop` the server sends MCP instructions, and
+  `memory_recent`'s description says the same, asking the model to check saved
+  notes at the start of a conversation. This is a request to the model, so it
+  can skip it, and Claude Desktop may ask the person to allow the tool.
 - **Relay:** the server starts the shared relay daemon from its own
   executable if none is running, as it does under Claude Code. The daemon runs
   in the Kenaz state directory, not the extension folder, so it never holds

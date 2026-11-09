@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
+	"time"
 )
 
 // SchemaVersion is the current store schema (PRAGMA user_version).
@@ -366,8 +368,45 @@ func fillHashes(ctx context.Context, tx *sql.Tx) error {
 	return nil
 }
 
+// beginRetryFor is how long a write keeps trying to take the lock after SQLite's own
+// busy wait has given up. That wait is not always fair: on Windows, on a slow machine,
+// writers in other processes can outlast it again and again. A variable for tests.
+var beginRetryFor = 30 * time.Second
+
+// isBusy reports SQLite's "another writer holds the lock".
+func isBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "SQLITE_BUSY") || strings.Contains(s, "database is locked")
+}
+
+// beginTx starts the write transaction, waiting its turn. Nothing has happened yet at
+// this point, so trying again is always safe.
+func beginTx(ctx context.Context, db *sql.DB) (*sql.Tx, error) {
+	deadline := time.Now().Add(beginRetryFor)
+	wait := 20 * time.Millisecond
+	for {
+		tx, err := db.BeginTx(ctx, nil)
+		if !isBusy(err) || !time.Now().Before(deadline) {
+			return tx, err
+		}
+		t := time.NewTimer(wait/2 + rand.N(wait))
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, ctx.Err()
+		case <-t.C:
+		}
+		if wait < time.Second {
+			wait *= 2
+		}
+	}
+}
+
 func inTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := beginTx(ctx, db)
 	if err != nil {
 		return err
 	}

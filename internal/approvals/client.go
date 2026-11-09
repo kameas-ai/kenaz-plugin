@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 )
 
 // Doer performs an authenticated JSON call on the daemon's control API
@@ -100,9 +102,8 @@ func (c RemoteClient) List(ctx context.Context) (WireList, error) {
 	return out, err
 }
 
-// Pending is the tool-facing reply for a prepared write. It never contains
-// an approval token: request_id is an opaque handle, and approval needs the
-// user's authenticator on the page at approve_url.
+// Pending is the tool-facing reply for a prepared write. request_id is an opaque handle:
+// approval is the person pressing the button at approve_url or answering `kenaz approve`.
 type Pending struct {
 	RequestID  string `json:"request_id,omitempty"`
 	Status     Status `json:"status"`
@@ -129,7 +130,7 @@ func Submit(ctx context.Context, p Preparer, r Request) (Pending, error) {
 		out.Message = UnavailableMessage
 	case StatusPending:
 		out.ApproveURL, _ = p.ApprovalURL(ctx, id)
-		out.Message = "Nothing has been written yet. Ask the user to open approve_url in their browser, review the exact content, and approve it with their security key or device unlock within 5 minutes. Run `kenaz approvals` to see its status."
+		out.Message = usertext.ApprovalPending(out.ApproveURL, id)
 	case StatusDone:
 		out.Message = "This exact request was already approved and completed."
 	default:
@@ -139,4 +140,4 @@ func Submit(ctx context.Context, p Preparer, r Request) (Pending, error) {
 }
 
 // UnavailableMessage explains approval_unavailable to the user.
-const UnavailableMessage = "Nothing was written. Writes need approval with a security key or this device's unlock (WebAuthn), and none is available here. Run `kenaz approvals enroll` on a machine with a browser and an authenticator."
+const UnavailableMessage = usertext.ApprovalUnavailable

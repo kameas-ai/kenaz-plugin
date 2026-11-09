@@ -41,13 +41,14 @@ func TestMemoryClosedSet(t *testing.T) {
 	m := Memory()
 	for name, c := range map[string][2]string{
 		"push":     {strings.Join(m.PushRequest, ","), "base_cursor,device_id,items"},
-		"item":     {strings.Join(m.PushItem, ","), "content,content_hash,created_at,fields,files_modified,files_read,hlc,id,kind,last_accessed,op,recall_own,retrieval_weight,source,source_turn,tool_name,turn_id"},
+		"item":     {strings.Join(m.PushItem, ","), "content,content_hash,created_at,fields,files_modified,files_read,hlc,id,kind,last_accessed,op,recall_own,retrieval_weight,scope_id,source,source_turn,tool_name,turn_id"},
 		"fields":   {strings.Join(m.Fields, ","), "pinned,scope_kind,title"},
 		"register": {strings.Join(m.FieldValue, ","), "hlc,v"},
 		"settings": {strings.Join(m.SettingsUpdate, ","), "consent_version,enabled,scopes"},
 		"forget":   {strings.Join(m.Forget, ","), "ids"},
-		"all":      {strings.Join(m.ForgetAll, ","), "confirm"},
+		"all":      {strings.Join(m.ForgetAll, ","), "confirm,request_id"},
 		"pull":     {strings.Join(m.PullQuery, ","), "cursor,device_id,limit"},
+		"project":  {strings.Join(m.ProjectCreate, ","), "audience,client_request_id,name"},
 	} {
 		if c[0] != c[1] {
 			t.Errorf("%s = %s, want %s", name, c[0], c[1])

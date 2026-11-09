@@ -21,6 +21,12 @@ type Lane interface {
 	Status() LaneStatus
 }
 
+// BusyLane is implemented by a lane with work that needs the daemon to keep
+// running even though nothing is talking to it.
+type BusyLane interface {
+	Busy() bool
+}
+
 // LaneStatus is one lane's counters for status / fleet_status.
 type LaneStatus struct {
 	Name     string `json:"name"`

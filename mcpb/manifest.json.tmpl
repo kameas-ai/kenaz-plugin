@@ -3,7 +3,8 @@
   "name": "kenaz",
   "display_name": "Kenaz",
   "version": "@VERSION@",
-  "description": "Kenaz, a Kameas AI product. Brings your organization's Kameas Fleet skills, team context and your Kenaz memory to chat in the Claude desktop app. Sends no usage telemetry. Requires the kenaz program and a Kameas Fleet account. Claude is a trademark of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic.",
+  "description": "Kenaz, a Kameas AI product. Brings your organization's Kameas Fleet skills, team context and your Kenaz memory to chat in the Claude desktop app. Sends no usage telemetry. Includes the kenaz program. Requires a Kameas Fleet account. Claude is a trademark of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic.",
+  "long_description": "Chat reads only memory notes not tied to a project until you change \"Notes chat can read\" in this extension's settings. When your AI tool uses a note in a session, the note becomes part of that session and is sent to the tool's AI provider like the rest of the conversation. If you choose all, that can include notes from all your projects, not just the one you're working on.",
   "author": {
     "name": "Kameas AI, Inc.",
     "url": "https://kameas.ai"
@@ -28,6 +29,7 @@
       "env": {
         "KENAZ_ENV": "${user_config.fleet_env}",
         "KENAZ_ORG_HINT": "${user_config.org_hint}",
+        "KENAZ_MEMORY_RECALL": "${user_config.memory_chat_recall}",
         "KENAZ_MCP_HOST": "claude-desktop"
       }
     }
@@ -84,6 +86,10 @@
     {
       "description": "Search memories",
       "name": "memory_search"
+    },
+    {
+      "description": "Memory timeline",
+      "name": "memory_timeline"
     },
     {
       "description": "Memory sync settings",
@@ -146,6 +152,13 @@
       "type": "string",
       "title": "Organization hint",
       "description": "Optional organization hint shown at sign-in.",
+      "required": false,
+      "default": ""
+    },
+    "memory_chat_recall": {
+      "type": "string",
+      "title": "Notes chat can read",
+      "description": "Which memory notes chat can read: no-project for only notes not tied to a project, or all for notes from all your projects. Notes chat reads can go to the AI provider.",
       "required": false,
       "default": ""
     }

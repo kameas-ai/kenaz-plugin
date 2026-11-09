@@ -27,17 +27,41 @@ func IsServiceName(s string) bool { return strings.HasPrefix(s, "codex") }
 // DefaultProvider is used when conversation_starts did not name one.
 const DefaultProvider = "openai"
 
-func base(a attr.Set, sessionKey string, t time.Time) canon.Event {
-	return canon.Event{
-		Client:    canon.Codex,
-		SessionID: a.String(sessionKey),
-		Time:      t,
+func base(sessionID string, t time.Time) canon.Event {
+	return canon.Event{Client: canon.Codex, SessionID: sessionID, Time: t}
+}
+
+// spanSession returns a span's native session id, or "" when it has none.
+// Codex's tracing layer stamps most spans with an integer thread.id, the OS
+// thread number (0.166.0 emits about a dozen per run), and some spans carry
+// that next to a string thread.id naming the conversation. Only the string one
+// counts, so a thread number must not open a session, typed as a string or not.
+func spanSession(a attr.Set) string {
+	id := a.StringOnly("conversation.id")
+	if id == "" {
+		id = a.StringOnly("thread.id")
 	}
+	if allDigits(id) {
+		return ""
+	}
+	return id
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // LogRecord decodes one Codex log record.
 func LogRecord(a attr.Set, name string, t time.Time) []canon.Event {
-	b := base(a, "conversation.id", t)
+	b := base(a.String("conversation.id"), t)
 	if b.SessionID == "" {
 		return nil
 	}
@@ -115,7 +139,7 @@ func TurnSpan(name string, a attr.Set) bool {
 // (used only when no sse_event usage arrived for the session);
 // handle_responses and all other spans yield only session activity.
 func Span(a attr.Set, name string, start, end time.Time) []canon.Event {
-	b := base(a, "thread.id", end)
+	b := base(spanSession(a), end)
 	if b.SessionID == "" {
 		return nil
 	}

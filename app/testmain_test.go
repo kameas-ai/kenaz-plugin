@@ -16,6 +16,9 @@ import (
 // directory. The daemon's skills lane and `logout` manage skill directories
 // under ~/.claude and ~/.agents; tests must never read or write those.
 func TestMain(m *testing.M) {
+	if args := os.Getenv(cliTestArgs); args != "" {
+		runCLIForTest(args)
+	}
 	home, err := os.MkdirTemp("", "kenaz-app-home-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -24,6 +27,8 @@ func TestMain(m *testing.M) {
 	os.Setenv("HOME", home)
 	os.Setenv("USERPROFILE", home)
 	skillsHome = func() (string, error) { return home, nil }
+	// A notice names the installed tools' versions; a test must not run a real one.
+	harnessVersion = func(string) string { return "" }
 	// A detached relay would outlive the test (and run the test binary as
 	// one). Tests start relays through Env.Spawn or in-process; any real
 	// self-exec fails the run.
@@ -43,3 +48,7 @@ func TestMain(m *testing.M) {
 	os.RemoveAll(home)
 	os.Exit(code)
 }
+
+// cliTestArgs makes this test binary run as the CLI, for a test that has to see a
+// whole process (runCLIForTest).
+const cliTestArgs = "KENAZ_TEST_CLI_ARGS"

@@ -13,21 +13,37 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
+	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 	memorytools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/memory"
 	"github.com/kameas-ai/kenaz-plugin/internal/memory"
+	"github.com/kameas-ai/kenaz-plugin/internal/memory/capture"
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 	"github.com/kameas-ai/kenaz-plugin/notices"
 )
 
+// The notice in force and what forget-all erases follow the project-scope release.
+func init() {
+	notices.ProjectScopeRelease = features.MemoryProjectScope
+	memory.ProjectScopeRelease = features.MemoryProjectScope
+	memory.AutomaticNotesBuild = features.MemoryCapture
+}
+
 // memoryConfigKey is the config.toml switch: "off" turns memory off;
 // anything else (including no value) leaves it on.
 const memoryConfigKey = "memory"
+
+// memoryRecallKey is the member's setting for what a chat app can read: "all" is every
+// project. Anything else, and no setting at all, is only notes not tied to a project:
+// nothing can make sure the member sees what wider reading means, so they choose it.
+const memoryRecallKey = "memory_recall_scope"
 
 // memoryPaths is where memory lives: per OS user under the state root,
 // not per Fleet env. The device notebook needs no sign-in; account
@@ -62,6 +78,39 @@ func (mp memoryPaths) enabled() bool {
 	return strings.TrimSpace(strings.ToLower(f.Get(memoryConfigKey))) != "off"
 }
 
+// recallNoProject reads the setting, from the desktop extension (through the
+// environment, for a member with no program to run) and from `kenaz memory recall`. Chat
+// reads every project only when one of them asks for it and neither asks for less.
+func (mp memoryPaths) recallNoProject(getenv func(string) string) bool {
+	f, err := config.LoadFile(mp.Config)
+	if err != nil {
+		return true // a damaged config must not widen what a chat app sees
+	}
+	all := false
+	for _, v := range []string{getenv(variant.Shared.MemoryRecallVar), f.Get(memoryRecallKey)} {
+		switch strings.TrimSpace(strings.ToLower(v)) {
+		case "":
+		case "all":
+			all = true
+		default:
+			return true
+		}
+	}
+	return !all
+}
+
+// recallNoticeOnce is the one-time notice for the first read across every project.
+func (mp memoryPaths) recallNoticeOnce(now time.Time) string {
+	marker := filepath.Join(mp.StateRoot, memory.RecallNoticeMarker)
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		return ""
+	}
+	if memory.ClaimDisclosure(marker, now) {
+		return memory.RecallNotice
+	}
+	return ""
+}
+
 func (mp memoryPaths) active(ctx context.Context) memory.Profile { return memoryProfileOf(ctx, mp.p) }
 
 // service is memory as the CLI and hooks use it.
@@ -73,7 +122,7 @@ func (mp memoryPaths) service(sub memory.Submitter) *memory.Service {
 
 // cliSubmitter prepares approval requests through the relay daemon,
 // starting it if needed. The CLI can only prepare: the user approves on
-// the approval page with their authenticator.
+// the approval page or with `kenaz approve`.
 func cliSubmitter(env Env) memory.Submitter {
 	return memorytools.Submitter(approvalsClient(func(ctx context.Context) *daemon.Client {
 		r, err := env.resolve("")
@@ -135,18 +184,26 @@ func syncWord(st memory.SyncStatus) string {
 }
 
 // memoryGroup is the memory_* MCP tool group for this machine.
-func memoryGroup(env Env) mcp.Group {
+// contextFiles says the context file tools are served alongside.
+func memoryGroup(env Env, contextFiles bool) mcp.Group {
 	mp, err := env.memoryPaths()
 	if err != nil {
 		return mcp.GroupFunc(func(*sdk.Server, mcp.Deps) {})
 	}
 	return memorytools.NewGroup(memorytools.Options{
-		Path:           mp.DB,
-		Enabled:        mp.enabled,
+		Path:            mp.DB,
+		Enabled:         mp.enabled,
+		RecallNoProject: func() bool { return mp.recallNoProject(env.getenv) },
+		RecallNotice:    func() string { return mp.recallNoticeOnce(env.now()) },
+		AutoSaves: func() bool {
+			// Only while capture runs: Kameas Fleet offers it to the organization.
+			return mp.captureRunning(env.now()) && mp.captureSettings().Writer == capture.WriterSessionAgent
+		},
 		Disclose:       func() string { return mp.discloseOnce(env.now()) },
 		Active:         mp.active,
 		Remote:         memoryRemote(env.Provider),
 		ConsentVersion: notices.MemorySync().ID,
+		ContextFiles:   contextFiles,
 	})
 }
 
@@ -155,7 +212,8 @@ func memoryGroup(env Env) mcp.Group {
 type memoryIndex struct{ mp memoryPaths }
 
 func (m memoryIndex) Index(ctx context.Context, cwd string) string {
-	if !m.mp.enabled() {
+	// While capture runs, its hook prints the rich index instead.
+	if !m.mp.enabled() || m.mp.captureRunning(time.Now()) {
 		return ""
 	}
 	if cwd == "" {
@@ -180,6 +238,7 @@ func (e Env) keptMemoryLine() string {
 const memoryUsage = `usage:
   kenaz memory list [--project current|all] [--limit N]
   kenaz memory search <query> [--project current|all] [--limit N]
+  kenaz memory timeline <id> [--before N] [--after N] [--project current|all]
   kenaz memory show <id>
   kenaz memory update <id> [--title T] [--body B] [--tags a,b]
   kenaz memory forget <id>
@@ -189,11 +248,18 @@ const memoryUsage = `usage:
                                   in Kameas Fleet (needs approval on the approval page)
   kenaz memory purge [--yes]      delete the device notebook (signed-out notes)
   kenaz memory path               print the device notebook's location
-  kenaz memory enable | disable   turn memory on or off (default on)
+  kenaz memory recall all|no-project
+                                  what a chat app can read: all projects (default), or
+                                  only notes not tied to a project
+  kenaz memory on                 turn it all on: capture, sync and your earlier notes
+  kenaz memory off                stop capture and sync (notes stay)
+  kenaz memory enable | disable   allow or block the notes tools on this device (default on)
   kenaz memory sync status        is memory sync on, and what is queued
-  kenaz memory sync enable        turn on sync to your Kameas Fleet account (needs approval)
+  kenaz memory sync enable        turn on sync to your Kameas Fleet account (in a terminal)
   kenaz memory sync disable       stop syncing (synced notes stay until deleted)
   kenaz memory sync approve       ask to send changes that wait for your approval
+  kenaz memory sync auto on|off   let new notes sync without asking each time (on
+                                  needs a terminal once; edits and deletions still ask)
   kenaz memory sync adopt <id>... | --all
                                   move signed-out notes into your account so they sync
 
@@ -208,13 +274,28 @@ func memoryHelp(w io.Writer) {
 
 // memoryStdinTerminal is a var so tests can drive the confirmations.
 var memoryStdinTerminal = func() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	fd := os.Stdin.Fd()
+	return isatty.IsTerminal(fd) || isatty.IsCygwinTerminal(fd)
 }
 
 var memoryStdin io.Reader = os.Stdin
 
-// confirm asks a yes/no question on the terminal.
+// askYes shows prompt and reads the answer: Enter, y or yes in any case means yes.
+// Anything else, or input that ends with no line at all, is no.
+func askYes(env Env, prompt string) bool {
+	fmt.Fprint(env.Stdout, prompt)
+	line, err := bufio.NewReader(memoryStdin).ReadString('\n')
+	if err != nil && line == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "", "y", "yes":
+		return true
+	}
+	return false
+}
+
+// confirm asks a yes/no question on the terminal, defaulting to no.
 func confirm(env Env, question string) bool {
 	fmt.Fprintf(env.Stdout, "%s [y/N] ", question)
 	line, _ := bufio.NewReader(memoryStdin).ReadString('\n')
@@ -239,6 +320,14 @@ func runMemory(env Env, args []string) int {
 	sub, rest := args[0], args[1:]
 	for _, a := range rest {
 		if a == "-h" || a == "--help" {
+			if sub == "capture" && features.MemoryCapture {
+				fmt.Fprint(env.Stdout, captureUsage)
+				return ExitOK
+			}
+			if sub == "import" && features.MemoryCapture {
+				fmt.Fprint(env.Stdout, memoryImportUsage)
+				return ExitOK
+			}
 			memoryHelp(env.Stdout)
 			return ExitOK
 		}
@@ -249,6 +338,10 @@ func runMemory(env Env, args []string) int {
 	}
 
 	switch sub {
+	case "on":
+		return memoryOn(ctx, env, mp)
+	case "off":
+		return memoryOff(ctx, env, mp)
 	case "enable":
 		if err := config.SetValue(mp.Config, memoryConfigKey, "on"); err != nil {
 			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
@@ -264,6 +357,8 @@ func runMemory(env Env, args []string) int {
 		}
 		fmt.Fprintf(env.Stdout, "Kenaz memory is off. Your AI tool can no longer read or save memories, and sessions no longer get the memory index. Existing memories were kept in %s; delete them with `kenaz memory purge`.\n", mp.DB)
 		return ExitOK
+	case "recall":
+		return memoryRecall(env, mp, rest)
 	case "path":
 		showDisclosure(env, mp)
 		fmt.Fprintln(env.Stdout, mp.DB)
@@ -272,7 +367,11 @@ func runMemory(env Env, args []string) int {
 		return memoryPurge(env, mp, rest)
 	case "sync":
 		return memorySync(ctx, env, mp, rest)
-	case "list", "search", "show", "forget", "update", "revert", "export", "forget-all":
+	case "capture":
+		return runMemoryCapture(ctx, env, mp, rest)
+	case "import":
+		return runMemoryImport(ctx, env, mp, rest)
+	case "list", "search", "timeline", "show", "forget", "update", "revert", "export", "forget-all":
 	default:
 		fmt.Fprintf(env.Stderr, variant.Current.Binary+" memory: unknown command %q\n\n", sub)
 		fmt.Fprint(env.Stderr, memoryUsage)
@@ -289,6 +388,8 @@ func runMemory(env Env, args []string) int {
 	fs.SetOutput(env.Stderr)
 	project := fs.String("project", "current", "current (this project and global notes) or all")
 	limit := fs.Int("limit", memory.DefaultLimit, "maximum entries (1 to 20)")
+	before := fs.Int("before", 5, "older notes to show (timeline)")
+	after := fs.Int("after", 5, "newer notes to show (timeline)")
 	noBrowserF := fs.Bool("no-browser", false, "print the approval page URL instead of opening a browser")
 	title := fs.String("title", "", "new title (update)")
 	body := fs.String("body", "", "new body (update)")
@@ -344,6 +445,15 @@ func runMemory(env Env, args []string) int {
 			return fail(err)
 		}
 		printEntries(env.Stdout, es, true)
+	case "timeline":
+		if len(pos) != 1 {
+			return usage()
+		}
+		es, err := svc.Timeline(ctx, pos[0], clampDepth(*before), clampDepth(*after), scope)
+		if err != nil {
+			return fail(err)
+		}
+		printEntries(env.Stdout, es, false)
 	case "show":
 		if len(pos) != 1 {
 			return usage()
@@ -415,6 +525,61 @@ func runMemory(env Env, args []string) int {
 	return ExitOK
 }
 
+// syncNotesLine is the status line counting notes by sync state.
+func syncNotesLine(st memory.SyncStatus) string {
+	return fmt.Sprintf("notes:    %d synced, %d queued, %d waiting for approval, %d on this device only, %d refused",
+		st.Notes[memory.StateSynced], st.Notes[memory.StatePending], st.Notes[memory.StateUnapproved], st.Notes[memory.StateLocal], st.Notes[memory.StateRejected])
+}
+
+// memoryRecall shows or sets what a chat app can read.
+func memoryRecall(env Env, mp memoryPaths, args []string) int {
+	if len(args) > 1 {
+		fmt.Fprint(env.Stderr, memoryUsage)
+		return ExitUsage
+	}
+	if len(args) == 1 {
+		switch args[0] {
+		case "all", "no-project":
+		default:
+			fmt.Fprint(env.Stderr, memoryUsage)
+			return ExitUsage
+		}
+		// Widening what a chat app reads is the member's own choice: a command an agent
+		// was talked into running mustn't make it.
+		if args[0] == "all" {
+			if !memoryStdinTerminal() {
+				fmt.Fprintln(env.Stderr, variant.Current.Binary+": run this in a terminal: letting a chat app read every project has to come from you.")
+				return ExitError
+			}
+			if !askYes(env, usertext.PromptRecallAll) {
+				fmt.Fprintln(env.Stdout, usertext.NothingChanged)
+				return ExitOK
+			}
+		}
+		if err := config.SetValue(mp.Config, memoryRecallKey, args[0]); err != nil {
+			fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
+			return ExitError
+		}
+	}
+	if mp.recallNoProject(env.getenv) {
+		fmt.Fprintln(env.Stdout, "A chat app can read only notes not tied to a project.")
+	} else {
+		fmt.Fprintln(env.Stdout, "A chat app can read notes from all your projects.")
+	}
+	return ExitOK
+}
+
+// clampDepth bounds a timeline's reach on one side.
+func clampDepth(n int) int {
+	switch {
+	case n < 0:
+		return 0
+	case n > memory.MaxLimit:
+		return memory.MaxLimit
+	}
+	return n
+}
+
 func splitTags(s string) []string {
 	var out []string
 	for _, t := range strings.Split(s, ",") {
@@ -439,9 +604,8 @@ func printOutcome(env Env, out memory.Outcome, done string, noBrowser bool) int 
 		}
 		return ExitOK
 	case memory.OutcomeApprovalPending:
-		fmt.Fprintln(env.Stdout, "Waiting for your approval; nothing has changed yet.")
 		if out.ApproveURL != "" {
-			fmt.Fprintf(env.Stdout, "Review and approve it with your security key or device unlock:\n  %s\n", out.ApproveURL)
+			fmt.Fprintln(env.Stdout, usertext.ApprovalPending(out.ApproveURL, out.RequestID))
 			if !noBrowser {
 				open := env.OpenBrowser
 				if open == nil {
@@ -470,6 +634,9 @@ func printNote(w io.Writer, n memory.Note) {
 	fmt.Fprintf(w, "id:       %s\n", n.ID)
 	fmt.Fprintf(w, "title:    %s\n", n.Title)
 	fmt.Fprintf(w, "created:  %s\n", n.CreatedAt.Format(time.RFC3339))
+	if memory.IsAuto(n.Kind) {
+		fmt.Fprintf(w, "note:     %s\n", memory.UntrustedLabel)
+	}
 	switch {
 	case n.ProjectKey == memory.GlobalProject:
 		fmt.Fprintln(w, "project:  global")
@@ -517,6 +684,9 @@ func printEntries(w io.Writer, es []memory.Entry, snippets bool) {
 		if e.SyncState != "" && e.SyncState != memory.StateLocal {
 			fmt.Fprintf(w, "  (%s)", e.SyncState)
 		}
+		if memory.IsAuto(e.Kind) {
+			fmt.Fprint(w, "  (auto, untrusted)")
+		}
 		fmt.Fprintln(w)
 		if snippets && e.Snippet != "" {
 			fmt.Fprintf(w, "    %s\n", e.Snippet)
@@ -526,7 +696,8 @@ func printEntries(w io.Writer, es []memory.Entry, snippets bool) {
 
 // memorySync is `kenaz memory sync ...`. Everything that reaches Fleet
 // (enable, approve, adopt) is prepared for approval on the approval page;
-// the CLI only prints and opens that page.
+// the CLI only prints and opens that page. Enable and auto on are the person's own
+// typed answer at a terminal instead.
 func memorySync(ctx context.Context, env Env, mp memoryPaths, args []string) int {
 	noBrowser := false
 	var rest []string
@@ -558,8 +729,17 @@ func memorySync(ctx context.Context, env Env, mp memoryPaths, args []string) int
 			return ExitOK
 		}
 		fmt.Fprintln(env.Stdout, memorytools.SyncSummary(st, memoryRemote(mp.p) != nil))
-		fmt.Fprintf(env.Stdout, "notes:    %d synced, %d queued, %d waiting for approval, %d on this device only, %d refused\n",
-			st.Notes[memory.StateSynced], st.Notes[memory.StatePending], st.Notes[memory.StateUnapproved], st.Notes[memory.StateLocal], st.Notes[memory.StateRejected])
+		if st.Enabled {
+			if st.SaveGrant {
+				fmt.Fprintf(env.Stdout, "new notes: sync without asking, up to %d an hour (turn off: `kenaz memory sync auto off`)\n", memory.MaxGrantedSavesPerHour)
+			} else {
+				fmt.Fprintln(env.Stdout, "new notes: ask before syncing (turn that off: `kenaz memory sync auto on`)")
+			}
+		}
+		fmt.Fprintln(env.Stdout, syncNotesLine(st))
+		if u, ok := fleetUsage(ctx, mp); ok && (u.MaxRecords > 0 || u.MaxBytes > 0) {
+			fmt.Fprintf(env.Stdout, "stored:   %d of %d notes, %.1f of %.1f MiB\n", u.LiveRecords, u.MaxRecords, float64(u.LiveBytes)/(1<<20), float64(u.MaxBytes)/(1<<20))
+		}
 		if st.ForgetsPending > 0 || st.EditsInProgress > 0 || st.EditsBlocked > 0 {
 			fmt.Fprintf(env.Stdout, "changes:  %d deletions and %d edits on their way, %d edits refused\n", st.ForgetsPending, st.EditsInProgress, st.EditsBlocked)
 		}
@@ -574,14 +754,7 @@ func memorySync(ctx context.Context, env Env, mp memoryPaths, args []string) int
 		if memoryRemote(mp.p) == nil {
 			return fail(memory.ErrSyncUnavailable)
 		}
-		n := notices.MemorySync()
-		fmt.Fprintln(env.Stdout, n.Text)
-		fmt.Fprintf(env.Stdout, "The approval page shows this notice (%s) again; approving there turns memory sync on.\n\n", n.ID)
-		out, err := svc.EnableSync(ctx)
-		if err != nil {
-			return fail(err)
-		}
-		return printOutcome(env, out, "Memory sync is on.", noBrowser)
+		return memorySyncEnableTyped(ctx, env, svc)
 	case "disable":
 		out, err := svc.DisableSync(ctx)
 		if err != nil {
@@ -589,6 +762,23 @@ func memorySync(ctx context.Context, env Env, mp memoryPaths, args []string) int
 		}
 		fmt.Fprintln(env.Stdout, out.Message)
 		return ExitOK
+	case "auto":
+		if len(args) != 2 || (args[1] != "on" && args[1] != "off") {
+			fmt.Fprint(env.Stderr, memoryUsage)
+			return ExitUsage
+		}
+		if args[1] == "on" {
+			return memorySyncAutoOnTyped(ctx, env, svc)
+		}
+		out, err := svc.SetSyncAuto(ctx, false)
+		if err != nil {
+			return fail(err)
+		}
+		if out.Status == memory.OutcomeDone && out.Message != "" {
+			fmt.Fprintln(env.Stdout, out.Message)
+			return ExitOK
+		}
+		return printOutcome(env, out, "", false)
 	case "approve":
 		out, err := svc.ApproveHeld(ctx)
 		if err != nil {
@@ -666,6 +856,10 @@ func memoryPurge(env Env, mp memoryPaths, args []string) int {
 		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitError
 	}
+	if err := mp.purgeCaptureQueue(); err != nil {
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
+		return ExitError
+	}
 	fmt.Fprintf(env.Stdout, "Deleted your Kenaz memory notebook (%s).\n", mp.DB)
 	keptLine()
 	return ExitOK
@@ -681,6 +875,9 @@ func memoryJSON(env Env, mp memoryPaths) map[string]any {
 		if st, _, signedIn, err := svc.SyncStatus(env.Ctx); err == nil && signedIn {
 			out["sync"] = st
 		}
+	}
+	if features.MemoryCapture {
+		out["capture"] = capture.BuildReport(mp.captureRoot(), mp.captureSettings(), env.now())
 	}
 	return out
 }

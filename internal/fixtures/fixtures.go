@@ -6,9 +6,9 @@
 //   - Codex: openai/codex@1b6e0d8 codex-rs/otel/src/{events/shared.rs,
 //     events/session_telemetry.rs,tool_result.rs}, core/src/tasks/mod.rs
 //
-// Real recordings with every content flag on are still to do; when they
-// exist they go in internal/project/testdata and run through the same
-// canary test.
+// A sanitized recording of a real Codex run is in internal/project/testdata
+// (see codex_recorded_test.go). Real recordings with every content flag on are
+// still to do.
 //
 // Every content-bearing attribute carries a distinct 32-char canary so the
 // canary suite can prove none of them leaves the device.

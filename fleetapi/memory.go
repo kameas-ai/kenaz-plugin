@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,44 @@ import (
 // user whose plan lapsed can erase or take out their data.
 const CapMemorySync = "memory_sync"
 
+// CapMemoryCaptureOff is the capability Fleet grants when the organization's
+// administrators turned automatic memory capture off. Capture is allowed by
+// default, so absent means allowed: an older Fleet that has never heard of it
+// allows it.
+const CapMemoryCaptureOff = "memory_capture_off"
+
+// CapMemoryCaptureKinds is the positive rollout key Fleet sends while it accepts
+// automatic memory capture's notes for the caller's organization. Fleet sends it
+// present and true when capture is offered, and leaves it out otherwise: it is
+// never false. Capture runs only while it is present and true; absent, an
+// unreadable answer, a signed-out device or an unofficial build all mean capture
+// is not offered (fail closed). The off switches above still apply on top.
+const CapMemoryCaptureKinds = "memory_capture_kinds"
+
+// CapMemoryProjectScope is the positive rollout key Fleet sends while it syncs
+// project notes for the caller's organization: present and true, or absent, never
+// false. A build with project notes sends them, and shows memory-sync/v4, only
+// while it is present and true. It does not say the member accepted v4.
+const CapMemoryProjectScope = "memory_project_scope"
+
+// HasKey reports whether caps holds key, true, whatever the case of the key, as
+// Fleet compares them.
+func HasKey(caps Capabilities, key string) bool {
+	for k, on := range caps.Keys {
+		if on && strings.EqualFold(k, key) {
+			return true
+		}
+	}
+	return false
+}
+
+// CapMemoryCaptureHostCLIOff is the capability Fleet grants to switch off, with
+// no release, the memory capture writer that runs one vendor's CLI under the
+// member's signed-in account. There is one key per vendor. Absent means allowed.
+func CapMemoryCaptureHostCLIOff(vendor string) string {
+	return "memory_capture_host_cli_off_" + vendor
+}
+
 // Memory routes. Bodies decode as JSON whatever the Content-Type.
 const (
 	MemoryRoutePush        = "POST /api/v1/memory/push"
@@ -52,7 +91,9 @@ const (
 	CodePermissionMemorySync   = "permission_denied:memory:sync"
 	CodeConsentVersionRequired = "consent_version_required" // 422
 	CodeConfirmationRequired   = "confirmation_required"    // 422
+	CodeEraseInProgress        = "erase_in_progress"        // Details["retry_after_seconds"]
 	CodeScopeNotSupported      = "scope_not_supported"      // 422
+	CodeConsentUpgradeRequired = "consent_upgrade_required" // 422, and per record
 	CodeInvalidCursor          = "invalid_cursor"           // 400
 	CodeTooManyItems           = "too_many_items"           // 400
 	CodeInvalidRequestBody     = "invalid_request_body"     // 400
@@ -154,9 +195,11 @@ type MemoryPushItem struct {
 	FilesModified   []string                    `json:"files_modified,omitempty"`
 	CreatedAt       string                      `json:"created_at,omitempty"`
 	Fields          map[string]MemoryFieldValue `json:"fields,omitempty"`
-	RecallOwn       *int64                      `json:"recall_own,omitempty"`
-	LastAccessed    string                      `json:"last_accessed,omitempty"`
-	HLC             string                      `json:"hlc,omitempty"`
+	// ScopeID is the project's Fleet id, on a write of scope_kind "project".
+	ScopeID      string `json:"scope_id,omitempty"`
+	RecallOwn    *int64 `json:"recall_own,omitempty"`
+	LastAccessed string `json:"last_accessed,omitempty"`
+	HLC          string `json:"hlc,omitempty"`
 }
 
 // MemoryPushRequest is the push body.
@@ -237,6 +280,7 @@ type MemoryRecord struct {
 	PinnedHLC         string   `json:"pinned_hlc"`
 	ScopeKind         string   `json:"scope_kind"`
 	ScopeHLC          string   `json:"scope_hlc"`
+	ScopeID           string   `json:"scope_id,omitempty"`
 	RecallCount       int64    `json:"recall_count"`
 	RecallCountOthers int64    `json:"recall_count_others"`
 	LastAccessed      string   `json:"last_accessed,omitempty"`
@@ -315,6 +359,10 @@ type MemoryForgetResponse struct {
 // MemoryForgetAllRequest is the forget-all body.
 type MemoryForgetAllRequest struct {
 	Confirm string `json:"confirm"`
+	// RequestID names one confirmed forget-all, and is the same on every retry of it: 1-64
+	// characters of A-Za-z0-9._:-. Fleet answers a retry with the original result and erases
+	// nothing new, even with newer notes. A Fleet from before it ignores the field.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // MemoryForgetAllConfirm is the only accepted Confirm value.
@@ -335,7 +383,7 @@ type MemoryExportTrailer struct {
 // RetryAfter reports a 429's back-off hint.
 func RetryAfter(err error) (time.Duration, bool) {
 	var ae *APIError
-	if !errors.As(err, &ae) || ae.Status != 429 {
+	if !errors.As(err, &ae) || (ae.Status != 429 && ae.Code != CodeEraseInProgress) {
 		return 0, false
 	}
 	if n, e := strconv.Atoi(ae.Details["retry_after_seconds"]); e == nil && n > 0 {

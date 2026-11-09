@@ -1,8 +1,11 @@
 package forward
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +24,31 @@ func (p poster) Post(ctx context.Context, _ fleetapi.ProjectedBatch) (fleetapi.E
 		return fleetapi.ExportResult{}, p.err
 	}
 	return fleetapi.ExportResult{Accepted: 1}, nil
+}
+
+type dropPoster struct{ res fleetapi.ExportResult }
+
+func (p dropPoster) Post(context.Context, fleetapi.ProjectedBatch) (fleetapi.ExportResult, error) {
+	return p.res, nil
+}
+
+func TestFleetDropsLoggedAsCounts(t *testing.T) {
+	var buf bytes.Buffer
+	f := &Forwarder{Poster: dropPoster{fleetapi.ExportResult{Accepted: 2, DroppedInvalid: 3}}, Logger: slog.New(slog.NewTextHandler(&buf, nil))}
+	body := "CANARYbatchbody"
+	if r := f.Send(context.Background(), owner, fleetapi.ProjectedBatch{Signal: fleetapi.SignalLogs, Records: 5, Body: []byte(body)}); r.Disposition != Sent {
+		t.Fatalf("%+v", r)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "dropped_invalid=3") || strings.Contains(out, body) {
+		t.Fatalf("log = %q", out)
+	}
+	buf.Reset()
+	f.Poster = dropPoster{fleetapi.ExportResult{Accepted: 5}}
+	f.Send(context.Background(), owner, fleetapi.ProjectedBatch{Signal: fleetapi.SignalLogs, Records: 5})
+	if buf.Len() != 0 {
+		t.Fatalf("logged with no drops: %q", buf.String())
+	}
 }
 
 func TestClassification(t *testing.T) {

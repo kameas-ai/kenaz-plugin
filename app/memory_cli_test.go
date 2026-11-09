@@ -190,7 +190,7 @@ func TestMemoryDisclosureOnceFromCLI(t *testing.T) {
 	if strings.TrimSpace(errb) != want {
 		t.Fatalf("first use stderr %q", errb)
 	}
-	if !strings.Contains(want, "Kenaz memory is on: your AI tool can save notes to "+h.memoryDB()+" on this device. They stay on this device unless you turn on memory sync (`kenaz memory sync enable`). Turn off: `kenaz memory disable`. Clear: `kenaz memory purge`.") {
+	if !strings.Contains(want, "Kenaz memory is on: your AI tool can save notes to "+h.memoryDB()+" on this device. They stay on this device unless you turn on memory sync (`kenaz memory sync enable`). Automatic memory capture is separate and has its own notice. Turn off: `kenaz memory disable`. Clear: `kenaz memory purge`.") {
 		t.Fatal("disclosure wording changed")
 	}
 	if _, _, errb := h.run(t, "memory", "list"); errb != "" {

@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"github.com/go-webauthn/webauthn/webauthn"
 )
 
 // StateFile is the pending-write store inside the approvals directory. It
@@ -44,25 +42,8 @@ type record struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 	// Result is bounded result metadata (MaxResult bytes), kept for
 	// idempotent replies after completion.
-	Result []byte `json:"result,omitempty"`
-	// ReceiptSHA256 is the hash of the one-use internal receipt minted when
-	// the assertion verified. The receipt itself lives only in memory and
-	// is consumed by the approved → executing transition.
-	ReceiptSHA256 string `json:"receipt_sha256,omitempty"`
-	Attempts      int    `json:"attempts,omitempty"`
-	// Proof is the verified WebAuthn assertion that approved this record.
-	// Its challenge is derived from the record's id, payload hash,
-	// operation, identity and generation (challengeFor), so it cannot be
-	// moved to another record or payload. Every transition into executing
-	// re-verifies it against an enrolled credential.
-	Proof *proof `json:"proof,omitempty"`
-}
-
-// proof is what re-verification needs.
-type proof struct {
-	Nonce     []byte `json:"nonce"`
-	Origin    string `json:"origin"`
-	Assertion []byte `json:"assertion"`
+	Result   []byte `json:"result,omitempty"`
+	Attempts int    `json:"attempts,omitempty"`
 }
 
 func (r *record) purgeContent() {
@@ -71,8 +52,6 @@ func (r *record) purgeContent() {
 	r.Impact = ""
 	r.Details = nil
 	r.TargetIDs = nil
-	r.ReceiptSHA256 = ""
-	r.Proof = nil
 }
 
 func (r *record) clone() *record {
@@ -84,29 +63,15 @@ func (r *record) clone() *record {
 	return &c
 }
 
-// storedCredential is an enrolled authenticator, bound to one identity.
-type storedCredential struct {
-	Identity   Identity            `json:"identity"`
-	Credential webauthn.Credential `json:"credential"`
-	CreatedAt  time.Time           `json:"created_at"`
-}
-
 // state is the whole persisted store.
 type state struct {
 	Version int `json:"version"`
-	// ProfileGen increments on sign-out, account switch and credential
-	// recovery. Prepared records and challenges are bound to it.
+	// ProfileGen increments on sign-out and account switch. Prepared records are bound
+	// to it.
 	ProfileGen uint64 `json:"profile_gen"`
 	// Bound is the identity ProfileGen is bound to (nil: none yet).
-	Bound *Identity `json:"bound,omitempty"`
-	// CredGen increments on every change to the credential set; a
-	// registration begun under an older CredGen cannot finish (first
-	// registration race).
-	CredGen uint64 `json:"cred_gen"`
-	// UserHandles maps an identity key to its random WebAuthn user handle.
-	UserHandles map[string][]byte  `json:"user_handles,omitempty"`
-	Credentials []storedCredential `json:"credentials,omitempty"`
-	Records     map[string]*record `json:"records"`
+	Bound   *Identity          `json:"bound,omitempty"`
+	Records map[string]*record `json:"records"`
 }
 
 // store persists state atomically. All access is serialized by mu.
@@ -114,8 +79,7 @@ type state struct {
 // The file is authenticated: it holds the state and an HMAC-SHA256 over it,
 // keyed with a secret kept outside user-writable files (the OS keychain).
 // A file whose MAC does not verify, or an older unauthenticated file, is
-// set aside and never trusted: no record, credential or user handle from it
-// is used. Without a key (no OS keychain), nothing is read or written and
+// set aside and never trusted: no record from it is used. Without a key (no OS keychain), nothing is read or written and
 // the Manager reports approval_unavailable.
 //
 // Threat model: the keychain key stops an agent that acts only through the
@@ -144,7 +108,7 @@ type sealedFile struct {
 const sealedVersion = 2
 
 func freshState() state {
-	return state{Version: storeVersion, Records: map[string]*record{}, UserHandles: map[string][]byte{}}
+	return state{Version: storeVersion, Records: map[string]*record{}}
 }
 
 func (s *store) mac(b []byte) string {
@@ -189,9 +153,6 @@ func openStore(dir string, key []byte) (*store, error) {
 	if st.Records == nil {
 		st.Records = map[string]*record{}
 	}
-	if st.UserHandles == nil {
-		st.UserHandles = map[string][]byte{}
-	}
 	s.st = st
 	return s, nil
 }
@@ -225,9 +186,6 @@ func (s *store) restore(prev []byte) {
 	if json.Unmarshal(prev, &st) == nil {
 		if st.Records == nil {
 			st.Records = map[string]*record{}
-		}
-		if st.UserHandles == nil {
-			st.UserHandles = map[string][]byte{}
 		}
 		s.st = st
 	}

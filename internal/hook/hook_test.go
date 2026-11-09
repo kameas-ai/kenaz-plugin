@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/kameas-ai/kenaz-plugin/internal/contextlib"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemonstate"
 )
 
@@ -290,5 +293,192 @@ func TestSessionStartTag(t *testing.T) {
 	}
 	if v := startWith(t, `{}`, Deps{Memory: &fakeMemory{}, Tag: tag, Getenv: claudeEnv}); v != nil {
 		t.Fatalf("a tag alone produced %v", v)
+	}
+}
+
+type fakeContextFiles struct {
+	index string
+	delay time.Duration
+	mu    sync.Mutex
+	cwd   string
+}
+
+func (f *fakeContextFiles) Index(ctx context.Context, cwd string) string {
+	f.mu.Lock()
+	f.cwd = cwd
+	f.mu.Unlock()
+	if f.delay > 0 {
+		select {
+		case <-time.After(f.delay):
+		case <-ctx.Done():
+		}
+	}
+	return f.index
+}
+
+// The context file index sits beside the memory index, after it, each with
+// its own cap: full context files never push memory out.
+func TestSessionStartContextFilesBesideMemory(t *testing.T) {
+	memIdx := "M" + strings.Repeat("m", MaxMemoryContext-1)
+	fileIdx := "F" + strings.Repeat("f", MaxContextFiles-1)
+	for name, g := range map[string]func(string) string{"claude": claudeEnv, "codex": codexEnv} {
+		files := &fakeContextFiles{index: fileIdx}
+		mem := &fakeMemory{index: memIdx}
+		v := startWith(t, `{"cwd":"/home/u/repo"}`, Deps{Banners: banners{"Org paused"}, Memory: mem, ContextFiles: files, Getenv: g})
+		ctx, _ := hso(v)["additionalContext"].(string)
+		bi, mi, fi := strings.Index(ctx, "Org paused"), strings.Index(ctx, memIdx), strings.Index(ctx, fileIdx)
+		if bi < 0 || mi < bi || fi < mi {
+			t.Fatalf("%s: banners %d, memory %d, files %d", name, bi, mi, fi)
+		}
+		if files.cwd != "/home/u/repo" || mem.cwd != "/home/u/repo" {
+			t.Fatalf("%s: both indexes get the session's directory: %q %q", name, files.cwd, mem.cwd)
+		}
+	}
+}
+
+func TestSessionStartContextFilesLimits(t *testing.T) {
+	// Nothing to show: no output at all.
+	if v := startWith(t, `{}`, Deps{ContextFiles: &fakeContextFiles{}, Memory: &fakeMemory{}, Getenv: claudeEnv}); v != nil {
+		t.Fatalf("empty produced %v", v)
+	}
+	// Alone it still shows, with the dev tag.
+	if v := startWith(t, `{}`, Deps{ContextFiles: &fakeContextFiles{index: "idx"}, Tag: "[t]", Getenv: claudeEnv}); hso(v)["additionalContext"] != "[t] idx" {
+		t.Fatalf("got %v", v)
+	}
+	// Over its cap, it alone is dropped.
+	v := startWith(t, `{}`, Deps{Memory: &fakeMemory{index: "memory"}, ContextFiles: &fakeContextFiles{index: strings.Repeat("x", MaxContextFiles+1)}, Getenv: claudeEnv})
+	if hso(v)["additionalContext"] != "memory" {
+		t.Fatalf("got %v", v)
+	}
+}
+
+// A slow folder costs only the context file block, within its own wait.
+func TestSessionStartContextFilesSlow(t *testing.T) {
+	t0 := time.Now()
+	files := &stuckContextFiles{}
+	r, w, _ := os.Pipe()
+	defer w.Close()
+	var out bytes.Buffer
+	Run(context.Background(), EventSessionStart, r, &out, Deps{Memory: &fakeMemory{index: "memory"}, ContextFiles: files, Banners: banners{"Org paused"}, Getenv: claudeEnv})
+	if d := time.Since(t0); d > DefaultStartDeadline {
+		t.Fatalf("took %v", d)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(out.Bytes(), &v); err != nil {
+		t.Fatalf("output %q", out.String())
+	}
+	got, _ := hso(v)["additionalContext"].(string)
+	if !strings.Contains(got, "memory") || !strings.Contains(got, "Org paused") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// A relay slower than the context file wait must not lose a block that finished
+// in time (select picks at random between two ready cases).
+func TestSessionStartContextFilesReadyBeforeSlowRelay(t *testing.T) {
+	t.Parallel()
+	for range 3 {
+		var out bytes.Buffer
+		Run(context.Background(), EventSessionStart, strings.NewReader(`{}`), &out, Deps{
+			Daemon: slowDaemon{contextFilesWait + 5*time.Millisecond}, ContextFiles: &fakeContextFiles{index: "idx"}, Getenv: claudeEnv})
+		if !strings.Contains(out.String(), "idx") {
+			t.Fatalf("lost the block: %q", out.String())
+		}
+	}
+}
+
+// stuckContextFiles ignores its deadline.
+type stuckContextFiles struct{}
+
+func (stuckContextFiles) Index(context.Context, string) string {
+	time.Sleep(time.Minute)
+	return "late"
+}
+
+type slowDaemon struct{ d time.Duration }
+
+func (s slowDaemon) Ensure(ctx context.Context) error {
+	select {
+	case <-time.After(s.d):
+	case <-ctx.Done():
+	}
+	return nil
+}
+func (slowDaemon) SessionEnd(context.Context, daemonstate.SessionEnd) error { return nil }
+
+type realContextFiles struct{ personal string }
+
+func (r realContextFiles) Index(ctx context.Context, cwd string) string {
+	return contextlib.SessionContext(ctx, contextlib.Open(r.personal, cwd), contextlib.Options{
+		Index: true, IndexBytes: contextlib.DefaultIndexBytes, AlwaysBytes: contextlib.DefaultAlwaysBytes})
+}
+
+func fillFolder(t *testing.T, dir, pattern string, n int) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range n {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf(pattern, i)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// A repository over every scan limit cannot take the user's own files out of the
+// index. A big enough one can still use the whole wait of about 1.5 s; these trees
+// scan well inside it, so the time check catches a scan that stopped being bounded.
+func TestSessionStartHostileRepoKeepsYourFiles(t *testing.T) {
+	const folders, perFolder = 5, 5001
+	for name, build := range map[string]func(t *testing.T, proj string){
+		"deep folders of other files": func(t *testing.T, proj string) {
+			dir := proj
+			for i := range folders {
+				dir = filepath.Join(dir, fmt.Sprintf("d%d", i))
+				fillFolder(t, dir, "x%05d.bin", perFolder)
+			}
+		},
+		"folders of hidden files": func(t *testing.T, proj string) {
+			for i := range folders {
+				fillFolder(t, filepath.Join(proj, fmt.Sprintf("d%d", i)), ".x%05d.md", perFolder)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			build(t, filepath.Join(repo, ".kenaz", "context"))
+			personal := filepath.Join(t.TempDir(), "contexts")
+			if err := os.MkdirAll(personal, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(personal, "mine.md"), []byte("---\ntitle: Mine\n---\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stdin, _ := json.Marshal(map[string]string{"cwd": repo})
+			var out bytes.Buffer
+			t0 := time.Now()
+			Run(context.Background(), EventSessionStart, bytes.NewReader(stdin), &out, Deps{ContextFiles: realContextFiles{personal: personal}, Getenv: claudeEnv})
+			if d := time.Since(t0); d >= contextFilesWait {
+				t.Fatalf("took %v, the whole wait", d)
+			}
+			if !strings.Contains(out.String(), "[personal/mine.md]") {
+				t.Fatalf("your file is gone: %q", out.String())
+			}
+		})
+	}
+}
+
+// A scan cut off at the deadline still delivers what it found.
+func TestSessionStartContextFilesGrace(t *testing.T) {
+	files := &fakeContextFiles{index: "idx", delay: time.Minute}
+	v := startWith(t, `{}`, Deps{ContextFiles: files, Getenv: claudeEnv})
+	if hso(v)["additionalContext"] != "idx" {
+		t.Fatalf("got %v", v)
 	}
 }

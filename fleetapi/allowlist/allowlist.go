@@ -98,6 +98,7 @@ type MemoryAllowlist struct {
 	Forget         []string // forget body
 	ForgetAll      []string // forget-all body
 	PullQuery      []string // pull query parameters
+	ProjectCreate  []string // POST /projects body
 }
 
 // Memory returns the memory lane's closed key sets, derived from the
@@ -112,6 +113,7 @@ func Memory() MemoryAllowlist {
 		Forget:         jsonKeys(reflect.TypeOf(fleetapi.MemoryForgetRequest{})),
 		ForgetAll:      jsonKeys(reflect.TypeOf(fleetapi.MemoryForgetAllRequest{})),
 		PullQuery:      []string{"cursor", "device_id", "limit"},
+		ProjectCreate:  jsonKeys(reflect.TypeOf(fleetapi.ProjectCreateRequest{})),
 	}
 }
 

@@ -1,13 +1,13 @@
 // Package contexttools is the team/org context-graph MCP tool group:
 // context_search, context_pull, context_share,
-// context_promote and team_members.
+// context_promote and team_members, plus the context file tools in files.go.
 //
 // Request construction lives here as pure functions so that every byte of a
 // push or promote body is built in public code. The private
 // fleetapi implementation only adds auth and transport.
 //
-// Nothing local is uploaded except a note the user authored and explicitly
-// confirmed through context_share. No tool
+// Nothing local is uploaded except text or a file the user asked to share and
+// approved. No tool
 // here makes a permission decision for the harness; tier, role
 // and org-state refusals only describe what Fleet would refuse.
 package contexttools

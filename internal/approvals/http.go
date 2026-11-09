@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals/web"
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
@@ -22,8 +23,8 @@ import (
 // loopback listener.
 const PagePrefix = "/approvals/"
 
-// Control API paths (behind the daemon's nonce bearer). There is no
-// approve, enroll or receipt endpoint here, by design.
+// Control API paths (behind the daemon's nonce bearer, which the MCP process holds).
+// There is no approve endpoint here, by design.
 const (
 	ControlPrepare = "/control/approvals/prepare"
 	ControlList    = "/control/approvals"
@@ -36,10 +37,9 @@ const (
 	maxBody    = 64 << 10
 )
 
-// Mount registers the page routes with page (no bearer: the browser has
-// none; every state change is guarded by Host/Origin/CSRF checks and,
-// for approval, a verified WebAuthn assertion) and the control routes with
-// control (the daemon's nonce-authenticated mux).
+// Mount registers the page routes with page (no bearer: the browser has none; every
+// state change is guarded by Host, Origin, Sec-Fetch and CSRF checks) and the control
+// routes with control (the daemon's nonce-authenticated mux).
 func (m *Manager) Mount(page func(pattern string, h http.Handler), control func(pattern string, h http.HandlerFunc)) {
 	pg := func(p string, f func(http.ResponseWriter, *http.Request, string)) { page(p, m.guard(f, false, false)) }
 	api := func(p string, f func(http.ResponseWriter, *http.Request, string)) { page(p, m.guard(f, true, false)) }
@@ -47,25 +47,12 @@ func (m *Manager) Mount(page func(pattern string, h http.Handler), control func(
 
 	pg("GET "+PagePrefix+"{$}", m.servePage)
 	pg("GET "+PagePrefix+"r/{id}", m.servePage)
-	pg("GET "+PagePrefix+"enroll", m.servePage)
-	pg("GET "+PagePrefix+"enroll/signin/{eid}", m.serveSignIn)
-	// The identity provider's final redirect is a cross-site top-level
-	// navigation; its one-time token is the credential.
-	page("GET "+PagePrefix+"enroll/complete", m.guardNav(m.serveComplete))
 	pg("GET "+PagePrefix+"static/{file}", m.serveStatic)
 
 	api("GET "+PagePrefix+"api/requests/{id}", m.apiView)
-	post("POST "+PagePrefix+"api/requests/{id}/begin", m.apiBegin)
-	post("POST "+PagePrefix+"api/requests/{id}/finish", m.apiFinish)
+	api("GET "+PagePrefix+"api/requests", m.apiList)
+	post("POST "+PagePrefix+"api/requests/{id}/approve", m.apiApprove)
 	post("POST "+PagePrefix+"api/requests/{id}/deny", m.apiDeny)
-
-	api("GET "+PagePrefix+"api/enroll", m.apiEnrollInfo)
-	post("POST "+PagePrefix+"api/enroll", m.apiEnrollStart)
-	api("GET "+PagePrefix+"api/enroll/{eid}", m.apiEnrollState)
-	post("POST "+PagePrefix+"api/enroll/{eid}/assert/begin", m.apiEnrollAssertBegin)
-	post("POST "+PagePrefix+"api/enroll/{eid}/assert/finish", m.apiEnrollAssertFinish)
-	post("POST "+PagePrefix+"api/enroll/{eid}/register/begin", m.apiRegisterBegin)
-	post("POST "+PagePrefix+"api/enroll/{eid}/register/finish", m.apiRegisterFinish)
 
 	control("POST "+ControlPrepare, m.ctlPrepare)
 	control("GET "+ControlList, m.ctlList)
@@ -99,8 +86,12 @@ func securityHeaders(w http.ResponseWriter) {
 //     rebinding); a GET of a page on 127.0.0.1 is redirected to localhost.
 //   - A present Origin must be the page origin; a present Sec-Fetch-Site
 //     must be same-origin (or none, for a top-level page load).
-//   - State-changing calls must be POST with an exact Origin, a JSON body
-//     and a CSRF token matching both the cookie and an issued token.
+//   - State-changing calls must be POST with an exact Origin, Sec-Fetch headers a
+//     browser's same-origin fetch sends, a JSON body and a CSRF token matching both the
+//     cookie and an issued token, which only the page hands out.
+//
+// These stop a tool, a cross-site page and a plain HTTP call. They don't stop a program
+// running as this user that loads the page and sends those same headers.
 func (m *Manager) guard(f func(http.ResponseWriter, *http.Request, string), api, post bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		securityHeaders(w)
@@ -133,6 +124,10 @@ func (m *Manager) guard(f func(http.ResponseWriter, *http.Request, string), api,
 		if post {
 			if r.Header.Get("Origin") != origin {
 				jsonErr(w, http.StatusForbidden, "bad_origin", "origin required")
+				return
+			}
+			if r.Header.Get("Sec-Fetch-Site") != "same-origin" || (r.Header.Get("Sec-Fetch-Mode") != "cors" && r.Header.Get("Sec-Fetch-Mode") != "same-origin") {
+				jsonErr(w, http.StatusForbidden, "bad_origin", "open this page in a browser")
 				return
 			}
 			if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
@@ -194,7 +189,9 @@ func (m *Manager) servePage(w http.ResponseWriter, r *http.Request, _ string) {
 	http.SetCookie(w, &http.Cookie{Name: m.csrfCookie(), Value: tok, Path: PagePrefix, HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(csrfTTL / time.Second)})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	var buf bytes.Buffer
-	if err := pageTmpl.Execute(&buf, struct{ CSRF string }{tok}); err != nil {
+	if err := pageTmpl.Execute(&buf, struct {
+		CSRF, Lede, Approve, Decline string
+	}{tok, usertext.PageLede, usertext.PageApprove, usertext.PageDecline}); err != nil {
 		http.Error(w, "unavailable", http.StatusInternalServerError)
 		return
 	}
@@ -240,8 +237,6 @@ type View struct {
 	PayloadSHA256 string          `json:"payload_sha256"`
 	CreatedAt     time.Time       `json:"created_at"`
 	ExpiresAt     time.Time       `json:"expires_at"`
-	Enrolled      bool            `json:"enrolled"`
-	CanEnroll     bool            `json:"can_enroll"`
 	Result        json.RawMessage `json:"result,omitempty"`
 }
 
@@ -265,7 +260,6 @@ func (m *Manager) ViewRequest(ctx context.Context, requestID string) (View, erro
 			Targets: append([]string(nil), r.TargetIDs...), Details: append([]Detail(nil), r.Details...),
 			Env: r.Identity.Env, OrgID: r.Identity.OrgID,
 			PayloadSHA256: r.PayloadSHA256, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt,
-			Enrolled: len(credentialsFor(s, cur)) > 0, CanEnroll: m.opt.Verifier != nil,
 		}
 		if len(r.Result) > 0 {
 			v.Result = append(json.RawMessage(nil), r.Result...)
@@ -294,30 +288,16 @@ func (m *Manager) apiView(w http.ResponseWriter, r *http.Request, _ string) {
 	writeJSON(w, v)
 }
 
-func (m *Manager) apiBegin(w http.ResponseWriter, r *http.Request, origin string) {
-	a, err := m.BeginApproval(r.Context(), r.PathValue("id"), origin, r.Header.Get(csrfHeader))
-	if err != nil {
-		writeErr(w, err)
-		return
+func (m *Manager) apiList(w http.ResponseWriter, r *http.Request, _ string) {
+	out := m.List(r.Context())
+	if out == nil {
+		out = []Info{}
 	}
-	writeJSON(w, a)
+	writeJSON(w, map[string][]Info{"requests": out})
 }
 
-func readBody(r *http.Request) ([]byte, error) {
-	b, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
-	if err != nil || len(b) > maxBody {
-		return nil, ErrInvalidRequest
-	}
-	return b, nil
-}
-
-func (m *Manager) apiFinish(w http.ResponseWriter, r *http.Request, origin string) {
-	b, err := readBody(r)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	st, err := m.FinishApproval(r.Context(), r.PathValue("id"), origin, r.Header.Get(csrfHeader), b)
+func (m *Manager) apiApprove(w http.ResponseWriter, r *http.Request, _ string) {
+	st, err := m.Approve(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -326,97 +306,11 @@ func (m *Manager) apiFinish(w http.ResponseWriter, r *http.Request, origin strin
 }
 
 func (m *Manager) apiDeny(w http.ResponseWriter, r *http.Request, _ string) {
-	if err := m.Deny(r.Context(), r.PathValue("id"), r.Header.Get(csrfHeader)); err != nil {
+	if err := m.Deny(r.Context(), r.PathValue("id")); err != nil {
 		writeErr(w, err)
 		return
 	}
 	writeJSON(w, map[string]Status{"status": StatusDenied})
-}
-
-func (m *Manager) apiEnrollInfo(w http.ResponseWriter, r *http.Request, _ string) {
-	if _, _, err := m.current(r.Context()); err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, map[string]bool{"enrolled": m.Enrolled(r.Context()), "can_enroll": m.opt.Verifier != nil})
-}
-
-func (m *Manager) apiEnrollStart(w http.ResponseWriter, r *http.Request, origin string) {
-	b, err := readBody(r)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	var in struct {
-		Mode string `json:"mode"`
-	}
-	if len(b) > 0 && json.Unmarshal(b, &in) != nil {
-		writeErr(w, ErrInvalidRequest)
-		return
-	}
-	st, err := m.StartEnrollment(r.Context(), in.Mode, origin)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, st)
-}
-
-func (m *Manager) apiEnrollState(w http.ResponseWriter, r *http.Request, origin string) {
-	if _, _, err := m.enrollment(r.Context(), r.PathValue("eid"), origin); err != nil {
-		writeErr(w, err)
-		return
-	}
-	st, err := m.EnrollmentState(r.PathValue("eid"))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, st)
-}
-
-func (m *Manager) apiEnrollAssertBegin(w http.ResponseWriter, r *http.Request, origin string) {
-	a, err := m.BeginEnrollAssertion(r.Context(), r.PathValue("eid"), origin)
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, a)
-}
-
-func (m *Manager) apiEnrollAssertFinish(w http.ResponseWriter, r *http.Request, origin string) {
-	b, err := readBody(r)
-	sec := ""
-	if err == nil {
-		sec, err = m.FinishEnrollAssertion(r.Context(), r.PathValue("eid"), origin, b)
-	}
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	setEnrollCookie(w, r.PathValue("eid"), sec)
-	writeJSON(w, map[string]bool{"asserted": true})
-}
-
-func (m *Manager) apiRegisterBegin(w http.ResponseWriter, r *http.Request, origin string) {
-	c, err := m.BeginRegistration(r.Context(), r.PathValue("eid"), origin, enrollCookie(r, r.PathValue("eid")))
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, c)
-}
-
-func (m *Manager) apiRegisterFinish(w http.ResponseWriter, r *http.Request, origin string) {
-	b, err := readBody(r)
-	if err == nil {
-		err = m.FinishRegistration(r.Context(), r.PathValue("eid"), origin, enrollCookie(r, r.PathValue("eid")), b)
-	}
-	if err != nil {
-		writeErr(w, err)
-		return
-	}
-	writeJSON(w, map[string]bool{"enrolled": true})
 }
 
 // ---- control API (nonce bearer; MCP process and CLI) ----
@@ -447,7 +341,6 @@ type WireStatus struct {
 // WireList is the control-API listing.
 type WireList struct {
 	PageURL  string `json:"page_url"`
-	Enrolled bool   `json:"enrolled"`
 	Requests []Info `json:"requests"`
 }
 
@@ -488,7 +381,7 @@ func (m *Manager) ctlStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) ctlList(w http.ResponseWriter, r *http.Request) {
-	out := WireList{Requests: m.List(r.Context()), Enrolled: m.Enrolled(r.Context())}
+	out := WireList{Requests: m.List(r.Context())}
 	if out.Requests == nil {
 		out.Requests = []Info{}
 	}
@@ -511,7 +404,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 // another site or app.
 var CrossSiteMessage = variant.Current.ApprovalsName() + ": this page was not opened.\n\n" +
 	"For your safety, " + variant.Current.DisplayName + " approval pages only open when you go to them directly, not from a link on another web page, chat or email.\n\n" +
-	"Copy the approval link from your terminal (or run `" + variant.Current.Binary + " approvals`) and paste it into your browser's address bar:\n\n"
+	"Paste the link into your browser's address bar, or run `" + variant.Current.Binary + " approve` in a terminal:\n\n"
 
 func crossSitePage(w http.ResponseWriter, link string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -532,18 +425,12 @@ func ErrCode(err error) (int, string) {
 		return http.StatusNotFound, "not_found"
 	case errors.Is(err, ErrUnavailable):
 		return http.StatusConflict, string(StatusApprovalUnavailable)
-	case errors.Is(err, ErrEnrollmentRequired):
-		return http.StatusConflict, "enrollment_required"
-	case errors.Is(err, ErrEnrollmentRace):
-		return http.StatusConflict, "enrollment_race"
 	case errors.Is(err, ErrConflict):
 		return http.StatusConflict, "conflict"
 	case errors.Is(err, ErrIdempotencyConflict):
 		return http.StatusConflict, "idempotency_conflict"
-	case errors.Is(err, ErrChallenge):
-		return http.StatusBadRequest, "stale_challenge"
-	case errors.Is(err, ErrAssertion):
-		return http.StatusForbidden, "assertion_rejected"
+	case errors.Is(err, ErrPayloadChanged):
+		return http.StatusForbidden, "payload_changed"
 	case errors.Is(err, ErrIdentityMismatch):
 		return http.StatusForbidden, "account_mismatch"
 	case errors.Is(err, ErrNotSignedIn):
@@ -561,7 +448,7 @@ func ErrCode(err error) (int, string) {
 // codeErrors maps wire codes back to errors (RemoteClient).
 var codeErrors = map[string]error{
 	"not_found": ErrNotFound, string(StatusApprovalUnavailable): ErrUnavailable,
-	"enrollment_required": ErrEnrollmentRequired, "conflict": ErrConflict,
+	"conflict":             ErrConflict,
 	"idempotency_conflict": ErrIdempotencyConflict, "account_mismatch": ErrIdentityMismatch,
 	"signed_out": ErrNotSignedIn, "unknown_operation": ErrUnknownOperation, "invalid_request": ErrInvalidRequest,
 }
@@ -573,87 +460,15 @@ func writeErr(w http.ResponseWriter, err error) {
 	case "not_found":
 		msg = "This request does not exist, has been cleaned up, or belongs to another account."
 	case string(StatusApprovalUnavailable):
-		msg = "No authenticator is set up and this build cannot set one up, so this request cannot be approved."
-	case "enrollment_required":
-		msg = "Set up a security key or this device's unlock first."
-	case "stale_challenge":
-		msg = "This approval attempt is no longer valid. Reload the page and try again."
-	case "assertion_rejected":
-		msg = "Your authenticator's response could not be verified. Nothing was written."
+		msg = usertext.ApprovalUnavailable
+	case "payload_changed":
+		msg = "The stored request changed, so nothing was written."
 	case "account_mismatch":
 		msg = "This request belongs to a different signed-in account."
 	case "signed_out":
 		msg = "You are signed out, so pending requests were canceled."
 	case "expired":
 		msg = "This request expired. Ask your agent to prepare it again."
-	case "enrollment_race":
-		msg = "Another authenticator was set up at the same time. Start again."
 	}
 	jsonErr(w, status, code, msg)
-}
-
-// ---- enrollment browser binding ----
-
-// enrollCookiePrefix names an enrollment ceremony's cookie; the random
-// ceremony id after it keeps relays apart.
-var enrollCookiePrefix = variant.Shared.EnrollCookiePrefix
-
-func setEnrollCookie(w http.ResponseWriter, eid, secret string) {
-	http.SetCookie(w, &http.Cookie{Name: enrollCookiePrefix + eid, Value: secret, Path: PagePrefix, HttpOnly: true,
-		SameSite: http.SameSiteStrictMode, MaxAge: int(enrollTTL / time.Second)})
-}
-
-func enrollCookie(r *http.Request, eid string) string {
-	c, err := r.Cookie(enrollCookiePrefix + eid)
-	if err != nil {
-		return ""
-	}
-	return c.Value
-}
-
-// serveSignIn sends the page's browser to the identity provider for
-// ceremony eid.
-func (m *Manager) serveSignIn(w http.ResponseWriter, r *http.Request, origin string) {
-	u, err := m.SignInURL(r.PathValue("eid"), origin)
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	http.Redirect(w, r, u, http.StatusSeeOther)
-}
-
-// guardNav is guard for the identity provider's completion redirect: exact
-// Host, GET only, and a top-level navigation (never a subresource or
-// fetch).
-func (m *Manager) guardNav(f func(http.ResponseWriter, *http.Request, string)) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		securityHeaders(w)
-		port := localPort(r)
-		if port == "" || r.Host != "localhost:"+port {
-			jsonErr(w, http.StatusMisdirectedRequest, "bad_host", "bad host")
-			return
-		}
-		if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" && mode != "navigate" {
-			jsonErr(w, http.StatusForbidden, "bad_origin", "navigation required")
-			return
-		}
-		if d := r.Header.Get("Sec-Fetch-Dest"); d != "" && d != "document" {
-			jsonErr(w, http.StatusForbidden, "bad_origin", "navigation required")
-			return
-		}
-		f(w, r, "http://localhost:"+port)
-	})
-}
-
-// serveComplete binds the ceremony to the browser the identity provider
-// redirected here after sign-in: it sets the HttpOnly ceremony cookie that
-// registration requires, then shows the setup page.
-func (m *Manager) serveComplete(w http.ResponseWriter, r *http.Request, origin string) {
-	eid, sec, err := m.CompleteEnrollment(r.Context(), r.URL.Query().Get("c"), origin)
-	if err != nil {
-		http.Error(w, "This sign-in link is not valid any more. Start setup again.", http.StatusBadRequest)
-		return
-	}
-	setEnrollCookie(w, eid, sec)
-	http.Redirect(w, r, PagePrefix+"enroll?e="+eid, http.StatusSeeOther)
 }

@@ -67,7 +67,7 @@ func noticeVars(m *consent.Manager) consent.NoticeVars {
 			continue
 		}
 		names = append(names, x.name)
-		versions = append(versions, x.name+versionOf(x.bin))
+		versions = append(versions, x.name+harnessVersion(x.bin))
 	}
 	if len(names) == 0 {
 		names = []string{"Claude Code", "Codex"}
@@ -80,6 +80,10 @@ func noticeVars(m *consent.Manager) consent.NoticeVars {
 	}
 	return consent.NoticeVars{OrgName: org, Harnesses: names, DeviceDisplayName: deviceDisplayName(), HarnessVersions: versions}
 }
+
+// harnessVersion is versionOf; tests replace it, so that they never start a real
+// AI tool that happens to be installed.
+var harnessVersion = versionOf
 
 // versionOf asks a harness CLI for its version. It returns "" on any
 // failure. Only the version token is kept.

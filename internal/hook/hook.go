@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -93,6 +94,25 @@ type Memory interface {
 // Fleet banners.
 const MaxMemoryContext = 1536
 
+// ContextFiles supplies the local context file index for the session's
+// project. It must return "" when there is nothing to show or on any error,
+// and return promptly when ctx is done.
+type ContextFiles interface {
+	Index(ctx context.Context, cwd string) string
+}
+
+// MaxContextFiles caps the context file block. It has its own cap and comes
+// after the memory index, so it can never push memory out.
+const MaxContextFiles = 7680
+
+// contextFilesWait bounds how long the hook waits for the context file block.
+// A folder that scans slowly loses only that block.
+const contextFilesWait = 1500 * time.Millisecond
+
+// contextFilesGrace is how long the hook waits for a scan its deadline just cut
+// off. The scan stops at that deadline, so this only covers returning its result.
+const contextFilesGrace = 200 * time.Millisecond
+
 // Deps are the hook's collaborators. Nil interfaces are treated as "no
 // daemon / no banners / no skill changes / no memory".
 type Deps struct {
@@ -100,6 +120,7 @@ type Deps struct {
 	Banners       Banners
 	Skills        Skills
 	Memory        Memory
+	ContextFiles  ContextFiles
 	Getenv        func(string) string
 	StartDeadline time.Duration
 	EndDeadline   time.Duration
@@ -163,6 +184,15 @@ func Run(ctx context.Context, event string, stdin io.Reader, stdout io.Writer, d
 func sessionStart(ctx context.Context, stdin io.Reader, stdout io.Writer, deps Deps) {
 	harness := DetectHarness(deps.Getenv)
 
+	// A stdin that never closes costs at most stdinWait; the indexes then
+	// fall back to the hook's working directory.
+	cwd := sync.OnceValue(func() string {
+		rctx, cancel := context.WithTimeout(ctx, stdinWait)
+		defer cancel()
+		in, _ := readInput(rctx, stdin)
+		return in.Cwd
+	})
+
 	// The memory index runs alongside the daemon start so a slow relay
 	// never starves it. It is best-effort in both harnesses.
 	mem := make(chan string, 1)
@@ -171,12 +201,19 @@ func sessionStart(ctx context.Context, stdin io.Reader, stdout io.Writer, deps D
 			mem <- ""
 			return
 		}
-		// A stdin that never closes costs at most stdinWait; the
-		// index then falls back to the hook's working directory.
-		rctx, cancel := context.WithTimeout(ctx, stdinWait)
-		in, _ := readInput(rctx, stdin)
-		cancel()
-		mem <- deps.Memory.Index(ctx, in.Cwd)
+		mem <- deps.Memory.Index(ctx, cwd())
+	}()
+
+	// So does the context file index, on its own deadline.
+	files := make(chan string, 1)
+	fctx, fcancel := context.WithTimeout(ctx, contextFilesWait)
+	defer fcancel()
+	go func() {
+		if deps.ContextFiles == nil {
+			files <- ""
+			return
+		}
+		files <- deps.ContextFiles.Index(fctx, cwd())
 	}()
 
 	type result struct {
@@ -217,6 +254,23 @@ func sessionStart(ctx context.Context, stdin io.Reader, stdout io.Writer, deps D
 			text += "\n\n"
 		}
 		text += index
+	}
+	var fileIndex string
+	select {
+	case fileIndex = <-files:
+	case <-fctx.Done():
+		// A slow relay can outlast the wait after the block finished in time, and
+		// a scan that was cut off needs a moment to return what it has.
+		select {
+		case fileIndex = <-files:
+		case <-time.After(contextFilesGrace):
+		}
+	}
+	if fileIndex = strings.TrimSpace(fileIndex); fileIndex != "" && len(fileIndex) <= MaxContextFiles {
+		if text != "" {
+			text += "\n\n"
+		}
+		text += fileIndex
 	}
 	if text != "" && deps.Tag != "" {
 		text = deps.Tag + " " + text

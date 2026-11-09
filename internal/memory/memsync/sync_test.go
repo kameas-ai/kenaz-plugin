@@ -529,3 +529,53 @@ func TestOrgPausedStillDeletes(t *testing.T) {
 		t.Fatalf("status = %+v", s)
 	}
 }
+
+// Over a Fleet limit, a note stays on this device, whatever Fleet's retry hint and however
+// many tries it takes. Status says so, and it sends once there is room.
+func TestQuotaNoteWaitsAndSendsWhenThereIsRoom(t *testing.T) {
+	f := fleetapitest.NewMemoryFleet()
+	f.MaxRecords = 1
+	a := newDevice(t, f, alice)
+	a.enable()
+	a.save("one", "first", true)
+	two := a.save("two", "second", true)
+	a.sync()
+	before := f.Calls("push")
+	for i := 0; i < 3; i++ {
+		a.sync()
+	}
+	if f.Calls("push") != before {
+		t.Fatalf("hot loop: %d more pushes", f.Calls("push")-before)
+	}
+	st, err := a.st.Status(context.Background())
+	if err != nil || !st.QuotaReached {
+		t.Fatalf("%+v %v", st, err)
+	}
+	n, _ := a.get(two)
+	if n.SyncState != memory.StatePending {
+		t.Fatalf("%+v", n)
+	}
+	// Each try leaves it waiting, however many: more than the attempts that end in a refusal.
+	later := time.Duration(0)
+	nextDay := func() {
+		later += 24 * time.Hour
+		a.st.SetClock(func() time.Time { return time.Now().Add(later) })
+	}
+	for i := 0; i < memory.MaxOpAttempts+2; i++ {
+		nextDay()
+		a.sync()
+		if n, _ = a.get(two); n.SyncState != memory.StatePending {
+			t.Fatalf("try %d: %+v", i, n)
+		}
+	}
+	// The limit rises.
+	f.MaxRecords = 10
+	nextDay()
+	a.sync()
+	if n, _ = a.get(two); n.SyncState != memory.StateSynced {
+		t.Fatalf("%+v", n)
+	}
+	if st, _ = a.st.Status(context.Background()); st.QuotaReached {
+		t.Fatalf("%+v", st)
+	}
+}

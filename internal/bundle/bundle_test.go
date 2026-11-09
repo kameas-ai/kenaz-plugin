@@ -3,6 +3,7 @@ package bundle
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -60,6 +61,48 @@ func TestRenderOnlyRewritesLaunchCommands(t *testing.T) {
 		if err != nil || string(a) != string(c) {
 			t.Errorf("%s not copied verbatim", rel)
 		}
+	}
+}
+
+// The staff bundle script's output is a bundle this program accepts, and it renders.
+func TestStaffBundleScript(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("no python3")
+	}
+	if variant.Current.BundleName != variant.Kenaz.BundleName {
+		t.Skip("staff bundles are of the public identity")
+	}
+	bin := filepath.Join(t.TempDir(), "program")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "with space", "b")
+	script := filepath.Join("..", "..", "scripts", "staff-bundle.py")
+	if out, err := exec.Command(python, script, "--binary", bin, "--out", dir, "--suffix", "staff.test").CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	b, err := LoadBundle(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(b.Version, "-staff.test") {
+		t.Errorf("version %q", b.Version)
+	}
+	// What only staff get is laid over plugin/ and covered by the manifest.
+	if _, err := os.Stat(filepath.Join(dir, "plugin", "skills", "draft-context", "SKILL.md")); err != nil {
+		t.Error(err)
+	}
+	overlay, err := os.ReadFile(filepath.Join(dir, "plugin", ".codex-mcp.json"))
+	if err != nil || !strings.Contains(string(overlay), `"context_share_file"`) {
+		t.Errorf("the staff bundle lost the Codex prompt: %v", err)
+	}
+	manifest, err := os.ReadFile(filepath.Join(dir, "bundle.json"))
+	if err != nil || !strings.Contains(string(manifest), "plugin/skills/draft-context/SKILL.md") {
+		t.Errorf("bundle.json does not cover the skill: %v", err)
+	}
+	if _, err := Render(b, filepath.Join(t.TempDir(), "r"), true); err != nil {
+		t.Error(err)
 	}
 }
 

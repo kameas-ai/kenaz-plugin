@@ -48,6 +48,9 @@ func registeredTools(t *testing.T) map[string]*sdk.Tool {
 	return got
 }
 
+// contextFileTools are served only in builds with features.ContextLibrary.
+var contextFileTools = map[string]bool{"context_list": true, "context_read": true, "context_write": true, "context_share_file": true, "context_pull_files": true}
+
 // The Claude Desktop manifest lists exactly the tools `kenaz mcp` serves,
 // each described by the tool's own title, so the two cannot drift.
 func TestMCPBManifestToolsMatchServer(t *testing.T) {
@@ -70,6 +73,9 @@ func TestMCPBManifestToolsMatchServer(t *testing.T) {
 	}
 	var missing, extra []string
 	for name := range served {
+		if contextFileTools[name] {
+			continue // not in shipped builds yet: see features.ContextLibrary
+		}
 		if _, ok := listed[name]; !ok {
 			missing = append(missing, name)
 		}
@@ -85,6 +91,9 @@ func TestMCPBManifestToolsMatchServer(t *testing.T) {
 		t.Fatalf("mcpb/manifest.json.tmpl tools drifted from kenaz mcp: missing %v, not served %v", missing, extra)
 	}
 	for name, tool := range served {
+		if contextFileTools[name] {
+			continue
+		}
 		want := tool.Title
 		if want == "" && tool.Annotations != nil {
 			want = tool.Annotations.Title
@@ -112,16 +121,17 @@ func TestEveryToolAnnotated(t *testing.T) {
 		"approval_status": {false, false}, "fleet_status": {false, false},
 		"context_search": {false, true}, "context_pull": {false, true}, "team_members": {false, true},
 		"context_share": {false, true}, "context_promote": {false, true},
-		"memory_search": {false, false}, "memory_get": {false, false}, "memory_recent": {false, false},
+		"memory_search": {false, false}, "memory_get": {false, false}, "memory_recent": {false, false}, "memory_timeline": {false, false},
 		"memory_export": {false, false}, "memory_sync_status": {false, false},
 		"memory_save": {false, true}, "memory_update": {true, true}, "memory_forget": {true, true},
 		"memory_forget_all": {true, true}, "memory_sync_settings": {false, true},
 		"skills_search": {false, true}, "skills_install": {false, true}, "skills_publish": {false, true},
 		"skills_uninstall": {true, false},
+		"context_list":     {false, false}, "context_read": {false, false}, "context_write": {true, false}, "context_share_file": {true, true}, "context_pull_files": {true, true},
 	}
 	served := registeredTools(t)
 	for name := range want {
-		if _, ok := served[name]; !ok && name != "team_members" {
+		if _, ok := served[name]; !ok && name != "team_members" && !contextFileTools[name] {
 			t.Errorf("%s is pinned here but not served", name)
 		}
 	}

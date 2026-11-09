@@ -77,7 +77,8 @@ func (fakeAuth) Session(context.Context) (fleetapi.Session, error) {
 }
 
 func newFake(tier, role string, teams ...fleetapi.TeamRef) *fakeFleet {
-	keys := map[string]bool{}
+	// Fleet offers context files to this organization (a rollout key, not a tier).
+	keys := map[string]bool{fleetapi.CapContextFiles: true}
 	for _, k := range tierCaps[tier] {
 		keys[k] = true
 	}

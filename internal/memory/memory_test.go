@@ -110,24 +110,25 @@ func TestLimits(t *testing.T) {
 func TestStoreCap(t *testing.T) {
 	ctx := context.Background()
 	s := open(t)
-	// Fill to just under 16 MiB of content directly, then one small note
-	// still fits and a larger one does not.
+	// Fill to just under the byte cap directly, then one small note still
+	// fits and a larger one does not.
 	big := strings.Repeat("x", 4<<20)
-	for i := 0; i < 4; i++ {
-		if _, err := s.db.Exec(`INSERT INTO records(id, created_at, updated_at, project_key, title, content, content_hash, scope, source) VALUES (?, 0, 0, 'p', 't', ?, '', 'project', 'cli')`, fmt.Sprint("big", i), big[:len(big)-100]); err != nil {
+	blocks := MaxStoreBytes / (4 << 20)
+	for i := 0; i < blocks; i++ {
+		if _, err := s.db.Exec(`INSERT INTO records(id, created_at, updated_at, project_key, title, content, content_hash, scope, source) VALUES (?, 0, 0, 'p', 't', ?, '', 'project', 'cli')`, fmt.Sprint("big", i), big[:len(big)-40]); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if _, err := s.Save(ctx, note("p", "n", "small")); err != nil {
 		t.Fatalf("small note refused under the cap: %v", err)
 	}
-	if _, err := s.Save(ctx, note("p", "n", strings.Repeat("y", 1024))); err != ErrFull {
+	if _, err := s.Save(ctx, note("p", "n", strings.Repeat("y", 4096))); err != ErrFull {
 		t.Fatalf("over the byte cap: err = %v", err)
 	}
 	if !strings.Contains(ErrFull.Error(), "kenaz memory forget") || !strings.Contains(ErrFull.Error(), "kenaz memory purge") {
 		t.Fatal("full message must point to forget and purge")
 	}
-	if n, _ := s.Count(ctx); n != 5 {
+	if n, _ := s.Count(ctx); n != blocks+1 {
 		t.Fatalf("a full store deleted notes: %d", n)
 	}
 }

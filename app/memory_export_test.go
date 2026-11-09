@@ -21,3 +21,9 @@ func SetMemoryTerminalForTest(terminal bool) func() {
 	memoryStdinTerminal = func() bool { return terminal }
 	return func() { memoryStdinTerminal = old }
 }
+
+// KenazEnvVarForTest exposes kenazEnvVar.
+var KenazEnvVarForTest = kenazEnvVar
+
+// CaptureOfferedForTest exposes captureOffered: what the worker hears.
+func CaptureOfferedForTest(env Env) (bool, string, string) { return env.captureOffered(env.ctx()) }

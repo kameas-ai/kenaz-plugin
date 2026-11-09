@@ -14,9 +14,13 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi/stub"
 	"github.com/kameas-ai/kenaz-plugin/internal/canon"
+	"github.com/kameas-ai/kenaz-plugin/internal/config"
+	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
 	"github.com/kameas-ai/kenaz-plugin/internal/fixtures"
@@ -262,7 +266,9 @@ func (m *sessionMachine) waitFor(what string, wait time.Duration, cond func(daem
 }
 
 func signedOutAndWithdrawn(st daemon.Status) bool {
-	return st.Session == daemon.SessionSignedOut && st.Enroll == string(enroll.StateSignedOut) && laneHeld(st, "withdrawn")
+	// Tier and OrgName come from the account details, which a separate loop clears.
+	return st.Session == daemon.SessionSignedOut && st.Enroll == string(enroll.StateSignedOut) && laneHeld(st, "withdrawn") &&
+		st.Tier == "" && st.OrgName == ""
 }
 
 func signedInAndEnrolled(st daemon.Status) bool {
@@ -307,6 +313,9 @@ func TestLoginReachesRunningRelay(t *testing.T) {
 	if m.f.enrolled("sub-1") == 0 {
 		t.Fatal("the relay never enrolled the new session")
 	}
+	// The tier comes from a capability refresh that follows enrollment, so it can
+	// land just after the status above.
+	st, _ = m.waitFor("the capability refresh", 3*time.Second, func(st daemon.Status) bool { return st.Tier != "" })
 	if st.Tier != "team" {
 		t.Fatalf("tier = %q: the capability refresh did not follow the sign-in", st.Tier)
 	}
@@ -389,10 +398,7 @@ func TestRelaySelfHealsSignOut(t *testing.T) {
 	}
 
 	m.f.store("")
-	st, _ := m.waitFor("reported signed out", 5*time.Second, signedOutAndWithdrawn)
-	if st.Tier != "" || st.OrgName != "" {
-		t.Fatalf("signed-out status still names the old account's plan: tier=%q", st.Tier)
-	}
+	m.waitFor("reported signed out", 5*time.Second, signedOutAndWithdrawn)
 	if !spoolEmpty(t, spoolDir) {
 		t.Fatal("the sign-out did not purge what was queued for the old account")
 	}
@@ -469,5 +475,94 @@ func TestLogoutReachesRunningRelay(t *testing.T) {
 	var st daemon.Status
 	if code != ExitOK || json.Unmarshal([]byte(out), &st) != nil || st.Session != daemon.SessionSignedOut {
 		t.Fatalf("status after logout: %s", out)
+	}
+}
+
+// A sign-in in a terminal reaches a running MCP server on the next tool
+// call: Claude Desktop chat tells the user to sign in and "try again", and
+// its extension process lives as long as the app. The sign-out is seen too.
+func TestMCPToolCallSeesSessionChange(t *testing.T) {
+	var saw []string
+	p := newSessionFleet().proc(true)
+	next := func(ctx context.Context, _ string, _ sdk.Request) (sdk.Result, error) {
+		if _, err := p.Auth().Session(ctx); err != nil {
+			saw = append(saw, "out")
+		} else {
+			saw = append(saw, "in")
+		}
+		return nil, nil
+	}
+	h := reloadSessionOnToolCall(p)(next)
+	ctx := context.Background()
+	h(ctx, "tools/call", nil)
+	p.f.store("sub-1")
+	h(ctx, "tools/call", nil)
+	p.f.store("")
+	h(ctx, "tools/call", nil)
+	if got := strings.Join(saw, ","); got != "out,in,out" {
+		t.Fatalf("sessions seen = %s", got)
+	}
+
+	// A provider that cannot reload keeps working, as before.
+	st := newSessionFleet().proc(false)
+	if _, err := reloadSessionOnToolCall(st)(func(context.Context, string, sdk.Request) (sdk.Result, error) { return nil, nil })(ctx, "tools/call", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The same, through the server `kenaz mcp` really serves: removing the
+// middleware from runMCP fails this test. It uses the file store and an
+// in-memory key store, so it never reaches an OS keychain.
+func TestMCPServerSeesSessionChange(t *testing.T) {
+	home := t.TempDir()
+	if err := credstore.WriteMarker(filepath.Join(home, "plugin", config.CredentialsDir), credstore.Files); err != nil {
+		t.Fatal(err)
+	}
+	f := newSessionFleet()
+	var out, errb bytes.Buffer
+	env := Env{
+		Provider: f.proc(true), Stdout: &out, Stderr: &errb, Ctx: context.Background(),
+		Getenv: func(k string) string {
+			return map[string]string{variant.Shared.HomeVar: home, variant.Shared.EnvVar: "dev"}[k]
+		},
+		KeyStore:    &spool.Memory{},
+		OpenBrowser: func(string) error { return nil },
+		Spawn:       func(string, fleetapi.Env) error { return nil },
+	}
+	var saw []string
+	env.ServeMCP = func(ctx context.Context, srv *sdk.Server) error {
+		ct, st := sdk.NewInMemoryTransports()
+		if _, err := srv.Connect(ctx, st, nil); err != nil {
+			return err
+		}
+		cs, err := sdk.NewClient(&sdk.Implementation{Name: "claude-ai", Version: "1"}, nil).Connect(ctx, ct, nil)
+		if err != nil {
+			return err
+		}
+		defer cs.Close()
+		for _, user := range []string{"", "sub-1", ""} {
+			f.store(user)
+			res, err := cs.CallTool(ctx, &sdk.CallToolParams{Name: "fleet_status", Arguments: map[string]any{}})
+			if err != nil {
+				return err
+			}
+			raw, err := json.Marshal(res.StructuredContent)
+			if err != nil {
+				return err
+			}
+			var st daemon.Status
+			if err := json.Unmarshal(raw, &st); err != nil {
+				return err
+			}
+			saw = append(saw, st.Session)
+		}
+		return nil
+	}
+	if code := RunEnv(env, []string{"mcp"}); code != 0 {
+		t.Fatalf("mcp exit=%d err=%s", code, errb.String())
+	}
+	want := daemon.SessionSignedOut + "," + daemon.SessionSignedIn + "," + daemon.SessionSignedOut
+	if got := strings.Join(saw, ","); got != want {
+		t.Fatalf("sessions seen = %s, want %s", got, want)
 	}
 }

@@ -4,7 +4,9 @@ exit 0
 usage: kenaz-dev <command> [flags]
 
   approvals List write requests and open the approval page
+  approve   Approve what your agent asked to write
   daemon    Run the on-demand relay (started by mcp and hooks)
+  decline   Decline what your agent asked to write
   device    Show or rename this device's display name
   doctor    Diagnose installation and configuration
   hook      Harness hook entry point (SessionStart/SessionEnd)

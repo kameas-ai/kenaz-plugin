@@ -113,7 +113,7 @@ func TestToolsDeviceNotebook(t *testing.T) {
 		t.Fatalf("forget_all = %+v", fa)
 	}
 	var ss SyncSettingsOutput
-	if isErr, _ := call(t, cs, ToolSyncSettings, map[string]any{"enabled": true}, &ss); !isErr || ss.Error.Code != "not_signed_in" {
+	if isErr, _ := call(t, cs, ToolSyncSettings, map[string]any{"enabled": true}, &ss); !isErr || ss.Error.Code != "needs_terminal" {
 		t.Fatalf("sync enable signed out = %+v", ss)
 	}
 	var st SyncStatusOutput
@@ -190,7 +190,7 @@ func TestToolsAccountNeedsApproval(t *testing.T) {
 		t.Fatal("approved forget-all left notes")
 	}
 	var ss SyncSettingsOutput
-	if isErr, _ := call(t, cs, ToolSyncSettings, map[string]any{"enabled": true}, &ss); !isErr || ss.Error.Code != "sync_unavailable" {
+	if isErr, _ := call(t, cs, ToolSyncSettings, map[string]any{"enabled": true}, &ss); !isErr || ss.Error.Code != "needs_terminal" {
 		t.Fatalf("enable without remote = %+v", ss)
 	}
 }
@@ -257,5 +257,62 @@ func TestSourceDetection(t *testing.T) {
 	call(t, cs, ToolGet, map[string]any{"ids": []string{s.ID}}, &got)
 	if len(got.Notes) != 1 || got.Notes[0].Source != memory.SourceOpenCode {
 		t.Fatalf("source = %+v", got)
+	}
+}
+
+// An agent can't turn sync on: the tool refuses, names the command and prepares nothing.
+// Turning it off still works.
+func TestSyncSettingsRefusesEnableWithoutATerminal(t *testing.T) {
+	root := t.TempDir()
+	acct := memory.Profile{Env: "dev", OrgID: "o", UserID: "u"}
+	r := newRelay()
+	cs := gatedSession(t, root, acct, r)
+	var ss SyncSettingsOutput
+	if isErr, _ := call(t, cs, ToolSyncSettings, map[string]any{"enabled": true}, &ss); !isErr || ss.Error == nil || ss.Error.Code != "needs_terminal" || !strings.Contains(ss.Error.Message, "kenaz memory sync enable") {
+		t.Fatalf("%+v", ss)
+	}
+	if r.n != 0 {
+		t.Fatal("a request was prepared")
+	}
+	st, err := memory.OpenProfile(memory.ProfilePath(root, acct), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	set, err := st.SyncSettings(context.Background())
+	if err != nil || set.Enabled {
+		t.Fatalf("%+v %v", set, err)
+	}
+	if _, err := st.EnableSync(context.Background(), "memory-sync/v1", memory.MutateOptions{SyncApproved: true}); err != nil {
+		t.Fatal(err)
+	}
+	var off SyncSettingsOutput
+	if isErr, _ := call(t, cs, ToolSyncSettings, map[string]any{"enabled": false}, &off); isErr || off.Error != nil {
+		t.Fatalf("%+v", off)
+	}
+	if set, err = st.SyncSettings(context.Background()); err != nil || set.Enabled {
+		t.Fatalf("%+v %v", set, err)
+	}
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tl := range res.Tools {
+		if tl.Name == ToolSyncSettings && !strings.Contains(tl.Description, "can't turn it on") {
+			t.Errorf("%s", tl.Description)
+		}
+	}
+}
+
+// Over a limit, the status says so in one sentence, with no numbers assumed.
+func TestSyncSummaryQuota(t *testing.T) {
+	st := memory.SyncStatus{QuotaReached: true}
+	st.Enabled = true
+	if !strings.Contains(SyncSummary(st, true), "memory limit") {
+		t.Fatal(SyncSummary(st, true))
+	}
+	st.QuotaReached = false
+	if strings.Contains(SyncSummary(st, true), "memory limit") {
+		t.Fatal(SyncSummary(st, true))
 	}
 }

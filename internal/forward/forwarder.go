@@ -9,6 +9,7 @@ package forward
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -59,6 +60,8 @@ type Forwarder struct {
 	Current func(ctx context.Context, owner fleetapi.ExpectedSession) bool
 	Now     func() time.Time
 	Sleep   func(context.Context, time.Duration) error
+	// Logger, when set, reports records Fleet accepted the batch but dropped.
+	Logger *slog.Logger
 
 	mu     sync.Mutex
 	tokens float64
@@ -130,6 +133,7 @@ func (f *Forwarder) Send(ctx context.Context, owner fleetapi.ExpectedSession, b 
 	}
 	res, err := f.Poster.Post(fleetapi.WithExpectedSession(ctx, owner), b)
 	if err == nil {
+		f.noteDrops(b, res)
 		return Result{Disposition: Sent, Export: res}
 	}
 	if fleetapi.APICode(err) == fleetapi.CodeIdentityMismatch {
@@ -146,6 +150,16 @@ func (f *Forwarder) Send(ctx context.Context, owner fleetapi.ExpectedSession, b 
 		return Result{Disposition: Quarantine, Err: err}
 	}
 	return Result{Disposition: Retry, Err: err}
+}
+
+// noteDrops logs Fleet's drop counters: a 200 can still carry dropped records,
+// which nothing on the device would otherwise show. Counts only.
+func (f *Forwarder) noteDrops(b fleetapi.ProjectedBatch, res fleetapi.ExportResult) {
+	if f.Logger == nil || (res.DroppedInvalid == 0 && res.DroppedPII == 0 && res.DroppedClasses == 0) {
+		return
+	}
+	f.Logger.Warn("fleet dropped records", "signal", string(b.Signal), "records", b.Records, "accepted", res.Accepted,
+		"dropped_invalid", res.DroppedInvalid, "dropped_pii", res.DroppedPII, "dropped_classes", res.DroppedClasses)
 }
 
 // Backoff returns the retry delay for attempt n (0-based): exponential from

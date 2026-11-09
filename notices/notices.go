@@ -8,7 +8,10 @@
 // be updated.
 package notices
 
-import _ "embed"
+import (
+	_ "embed"
+	"strings"
+)
 
 // Edition is one resolved revision of the Agent Telemetry Notice. ID is
 // stored with an opt-in, so a change of edition forces re-display and
@@ -123,10 +126,17 @@ func AgentTelemetryAccepted(current string) []string {
 // codex or cli)", so the notice stays true for every Supported Tool. v2
 // shipped in v0.6.0, so it is not edited in place. Nothing new is sent:
 // enablements under v1 and v2 stand.
+//
+// v4 adds the project a note belongs to, says plainly that notes are not
+// end-to-end encrypted, and drops "notes that belong to a single project are
+// kept", because forget-all now erases them everywhere. That changes what is
+// sent, so earlier enablements do not stand: existing syncers confirm again. It
+// is not current until ProjectScopeRelease.
 const (
 	MemorySyncV1ID = "memory-sync/v1"
 	MemorySyncV2ID = "memory-sync/v2"
 	MemorySyncV3ID = "memory-sync/v3"
+	MemorySyncV4ID = "memory-sync/v4"
 )
 
 var (
@@ -136,14 +146,65 @@ var (
 	MemorySyncV2 string
 	//go:embed memory-sync/v3.md
 	MemorySyncV3 string
+	//go:embed memory-sync/v4.md
+	MemorySyncV4 string
 )
+
+// ProjectScopeRelease turns on memory-sync/v4, which says project notes sync. It
+// stays off until Kameas Fleet syncs them: v4 must not be shown before then, and
+// until it is, v3 and its enablements stand. The app sets it from the build.
+var ProjectScopeRelease = false
 
 // MemorySync returns the current Memory Sync Notice edition: the one shown
 // and recorded when a user turns memory sync on.
-func MemorySync() Edition { return Edition{MemorySyncV3ID, MemorySyncV3} }
+func MemorySync() Edition {
+	if ProjectScopeRelease {
+		return Edition{MemorySyncV4ID, MemorySyncV4}
+	}
+	return Edition{MemorySyncV3ID, MemorySyncV3}
+}
 
 // MemorySyncAccepted lists the editions whose enablements still stand: the
 // current edition and every earlier edition that changed only wording, not
 // what is sent. A store enabled under any of them keeps syncing without a
 // re-prompt.
-func MemorySyncAccepted() []string { return []string{MemorySyncV3ID, MemorySyncV2ID, MemorySyncV1ID} }
+func MemorySyncAccepted() []string {
+	if ProjectScopeRelease {
+		return []string{MemorySyncV4ID}
+	}
+	return []string{MemorySyncV3ID, MemorySyncV2ID, MemorySyncV1ID}
+}
+
+// Automatic memory capture notice. It is its own opt-in: capture changes what
+// is collected, so accepting memory sync or telemetry never accepts it.
+// {Model line} is filled with the line for the note writer the member chose,
+// and changing the writer shows the new line before it takes effect.
+const (
+	MemoryCaptureV1ID = "memory-capture/v1"
+	// MemoryCaptureModelPlaceholder is replaced by the model line.
+	MemoryCaptureModelPlaceholder = "{Model line}"
+	// MemoryCaptureSessionAgent is the model line for the session's own agent.
+	MemoryCaptureSessionAgent = "Your AI tool's own session writes the notes. This uses your plan with that tool and may appear in your session, and nothing extra is sent to another company."
+	// MemoryCaptureLocal is the model line for a model on this device.
+	MemoryCaptureLocal = "A model on your device writes the notes, so this step sends nothing to another company."
+)
+
+//go:embed memory-capture/v1.md
+var memoryCaptureV1 string
+
+// MemoryCaptureAPIKey is the model line for a third party's model reached with
+// a key the member or organization set up.
+func MemoryCaptureAPIKey(provider string) string {
+	return "This uses " + provider + " with the key you or your organization set up, so that session content goes to " + provider + " under your or your organization's arrangement with them."
+}
+
+// MemoryCaptureHostCLI is the model line for a vendor's CLI under the member's
+// own account on this device.
+func MemoryCaptureHostCLI(tool, vendor string) string {
+	return "This runs " + tool + " under your own " + vendor + " account on this device, so session content goes to " + vendor + " under your arrangement with them, and it counts against your plan. " + vendor + "'s terms and limits apply, and " + vendor + " may restrict this kind of use. Kameas can't promise it will keep working and isn't responsible for action " + vendor + " takes on your account. An API key is the alternative."
+}
+
+// MemoryCapture renders the notice with its model line.
+func MemoryCapture(modelLine string) Edition {
+	return Edition{MemoryCaptureV1ID, strings.Replace(memoryCaptureV1, MemoryCaptureModelPlaceholder, modelLine, 1)}
+}

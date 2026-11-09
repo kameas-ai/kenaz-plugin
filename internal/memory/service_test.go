@@ -3,12 +3,15 @@ package memory
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // relay simulates the daemon's approval service: the tool side submits
@@ -52,7 +55,7 @@ func (r *relay) Status(_ context.Context, id string) (ApprovalStatus, []byte, er
 	return r.state[id], r.res[id], nil
 }
 
-// approve is the verified WebAuthn assertion: the executor runs.
+// approve is the person pressing Approve: the executor runs.
 func (r *relay) approve(t *testing.T, ctx context.Context, id string) ([]byte, error) {
 	t.Helper()
 	r.mu.Lock()
@@ -653,5 +656,489 @@ func TestHeldUpsertShowsPayloadTitle(t *testing.T) {
 	ops, err := st.HeldOps(ctx)
 	if err != nil || len(ops) != 1 || ops[0].Title != "sent title" {
 		t.Fatalf("held ops = %+v %v", ops, err)
+	}
+}
+
+// A forget-all clears capture's waiting events, and failing to doesn't lose it.
+func TestForgetAllClearsWhatCaptureHolds(t *testing.T) {
+	ctx := context.Background()
+	for _, fail := range []bool{false, true} {
+		e := newSvc(t, true)
+		called := 0
+		purge := func() error {
+			called++
+			if fail {
+				return errors.New("disk")
+			}
+			return nil
+		}
+		active := func(context.Context) Profile { return e.active }
+		RegisterExecutors(e.relay, ExecOptions{StateRoot: e.root, Active: active, Remote: e.remote, ConsentVersion: "memory-sync/v1", AfterForgetAll: purge})
+		st, err := OpenProfile(ProfilePath(e.root, acct), acct)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.SaveNote(ctx, note(GlobalProject, "t", "b"), SaveOptions{SyncApproved: true}); err != nil {
+			t.Fatal(err)
+		}
+		st.Close()
+		out, err := e.svc.ForgetAll(ctx)
+		if err != nil || out.RequestID == "" {
+			t.Fatalf("%+v %v", out, err)
+		}
+		b, err := e.relay.approve(t, ctx, out.RequestID)
+		if err != nil {
+			t.Fatalf("fail=%v: %v", fail, err)
+		}
+		if called != 1 {
+			t.Errorf("purged %d times", called)
+		}
+		if n, _ := e.svc.Count(ctx); n != 0 {
+			t.Errorf("fail=%v: %d notes left", fail, n)
+		}
+		if got := strings.Contains(string(b), "couldn't be cleared"); got != fail {
+			t.Errorf("fail=%v: %s", fail, b)
+		}
+	}
+}
+
+// With no approval possible the note is hidden, and the output says Kameas Fleet still
+// holds it only when that can be so.
+func TestForgetWithNoApprovalSaysWhatFleetHolds(t *testing.T) {
+	ctx := context.Background()
+	e := newSvc(t, false)
+	e.syncOn(t)
+	st, err := OpenProfile(ProfilePath(e.root, acct), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := st.SaveNote(ctx, note(GlobalProject, "held", "held text"), SaveOptions{SyncApproved: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE records SET sync_state = 'synced', server_seq = '5' WHERE id = ?`, held.ID); err != nil {
+		t.Fatal(err)
+	}
+	never, err := st.SaveNote(ctx, note(GlobalProject, "never sent", "never sent text"), SaveOptions{SyncApproved: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	const says = "Kameas Fleet still holds it."
+	out, err := e.svc.Forget(ctx, held.ID)
+	if err != nil || !out.Hidden || !strings.Contains(out.Message, "Hidden on this device. "+says) {
+		t.Errorf("held: %+v %v", out, err)
+	}
+	out, err = e.svc.Forget(ctx, never.ID)
+	if err != nil || !out.Hidden || strings.Contains(out.Message, says) || !strings.Contains(out.Message, "Hidden on this device.") {
+		t.Errorf("never sent: %+v %v", out, err)
+	}
+}
+
+func strandedStore(t *testing.T) (*Store, string, Lease) {
+	t.Helper()
+	old := ProjectScopeRelease
+	ProjectScopeRelease = true
+	t.Cleanup(func() { ProjectScopeRelease = old })
+	ctx := context.Background()
+	st, err := OpenProfile(filepath.Join(t.TempDir(), "m.db"), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	if _, err := st.EnableSync(ctx, "memory-sync/v4", MutateOptions{SyncApproved: true}); err != nil {
+		t.Fatal(err)
+	}
+	const key = "rk1-0123456789abcdef0123456789abcdef"
+	if err := st.SetProject(ctx, key, "11111111-1111-4111-8111-111111111111", "active", ""); err != nil {
+		t.Fatal(err)
+	}
+	l, err := st.AcquireLease(ctx, "h", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st, key, l
+}
+
+func opStates(t *testing.T, st *Store) map[string]string {
+	t.Helper()
+	rows, err := st.db.QueryContext(context.Background(), `SELECT CAST(payload AS TEXT), state FROM outbox ORDER BY op_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var p, s string
+		if err := rows.Scan(&p, &s); err != nil {
+			t.Fatal(err)
+		}
+		out[p] = s
+	}
+	return out
+}
+
+// An edit swept up in an older relay's refusal comes back asking, not ready to send.
+func TestReleaseLeavesAnUnapprovedEditAsking(t *testing.T) {
+	st, key, l := strandedStore(t)
+	ctx := context.Background()
+	r, err := st.SaveNote(ctx, NewNote{ProjectKey: key, Title: "t", Body: "b", Source: SourceCLI}, SaveOptions{SyncApproved: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := st.LeasePushBatch(ctx, l)
+	if err != nil || len(b.Ops) != 1 {
+		t.Fatalf("%v %+v", err, b)
+	}
+	title := "an edit nobody approved"
+	if _, err := st.UpdateNote(ctx, r.ID, Update{Title: &title}, MutateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	no := false
+	if _, err := st.ApplyPushResults(ctx, l, b.Ops, []PushResult{{ID: r.ID, Status: "rejected", Code: "invalid_field", Field: "scope_id", Retry: &no}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReleaseStrandedProjectNotes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for p, state := range opStates(t, st) {
+		if strings.Contains(p, "nobody approved") {
+			found = true
+			if state != "unapproved" {
+				t.Errorf("the unapproved edit is %s", state)
+			}
+		} else if state != "ready" {
+			t.Errorf("the create is %s", state)
+		}
+	}
+	if !found {
+		t.Fatal("the edit's op is gone")
+	}
+}
+
+// A blocked automatic note goes only under the grant, and no note goes if it no longer
+// passes the scan.
+func TestReleaseKeepsItsGates(t *testing.T) {
+	st, key, l := strandedStore(t)
+	ctx := context.Background()
+	id, _, err := st.SaveAuto(ctx, AutoNote{ProjectKey: key, Title: "o", Body: "b", Source: SourceCLI, Kind: KindObservation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.GrantSaves(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if q, err := st.QueueAutoBacklog(ctx, l); q != 1 || err != nil {
+		t.Fatal(q, err)
+	}
+	strand := func() {
+		t.Helper()
+		if _, err := st.db.ExecContext(ctx, `UPDATE outbox SET state = 'blocked', ever_sent = 1, attempt = 1, last_code = 'invalid_field'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.db.ExecContext(ctx, `UPDATE records SET sync_state = 'rejected', sync_code = 'invalid_field'`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	strand()
+	if err := st.RevokeSaveGrant(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReleaseStrandedProjectNotes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range opStates(t, st) {
+		if state != "blocked" {
+			t.Errorf("released with the grant gone: %s", state)
+		}
+	}
+	if err := st.GrantSaves(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE records SET content = 'key AKIAABCDEFGHIJKLMNOP' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReleaseStrandedProjectNotes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range opStates(t, st) {
+		if state != "blocked" {
+			t.Errorf("released despite the scan: %s", state)
+		}
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE records SET content = 'b' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReleaseStrandedProjectNotes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range opStates(t, st) {
+		if state != "ready" {
+			t.Errorf("not released under the grant: %s", state)
+		}
+	}
+}
+
+// A pulled erase with no time still records one.
+func TestPulledEraseWithNoTimestampRecordsOne(t *testing.T) {
+	st, _, l := strandedStore(t)
+	ctx := context.Background()
+	gen, err := st.BeginReset(ctx, l, "erased", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CommitReset(ctx, l, gen, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	if st.ErasedAt(ctx).IsZero() {
+		t.Error("no erase time")
+	}
+}
+
+// What a forget-all covers, with the clock ahead, and without.
+func TestEraseCutoff(t *testing.T) {
+	ctx := context.Background()
+	st, err := OpenProfile(filepath.Join(t.TempDir(), "m.db"), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	t0 := time.Now()
+	if st.EraseCutoffNow(ctx).Covers(t0.Add(24 * time.Hour)) {
+		t.Error("a store never erased covers nothing")
+	}
+	ahead := t0.Add(24 * time.Hour)
+	st.SetClock(func() time.Time { return ahead })
+	if _, err := st.ForgetAll(ctx, MutateOptions{SyncApproved: true}); err != nil {
+		t.Fatal(err)
+	}
+	st.SetClock(func() time.Time { return t0 })
+	cut := st.EraseCutoffNow(ctx)
+	for _, c := range []struct {
+		name string
+		at   time.Time
+		want bool
+	}{
+		{"before the corrected time", t0.Add(-time.Minute), true},
+		{"stamped before the erase on the clock that was ahead", ahead.Add(-time.Hour), true},
+		{"a little ahead of the clock, right after correcting", t0.Add(time.Second), true},
+		{"after the erase on the clock that was ahead", ahead.Add(2 * time.Minute), true},
+	} {
+		if got := cut.Covers(c.at); got != c.want {
+			t.Errorf("%s: %v", c.name, got)
+		}
+	}
+	// New activity once the clock has moved on is new.
+	st.SetClock(func() time.Time { return t0.Add(time.Minute) })
+	cut = st.EraseCutoffNow(ctx)
+	if cut.Covers(t0.Add(30 * time.Second)) {
+		t.Error("new activity was refused")
+	}
+	if cut.Covers(t0.Add(time.Minute)) {
+		t.Error("an event from now was refused")
+	}
+
+	// With the clock right at the forget-all: only a stamp well ahead of it.
+	right, err := OpenProfile(filepath.Join(t.TempDir(), "m.db"), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer right.Close()
+	right.SetClock(func() time.Time { return t0 })
+	if _, err := right.ForgetAll(ctx, MutateOptions{SyncApproved: true}); err != nil {
+		t.Fatal(err)
+	}
+	right.SetClock(func() time.Time { return t0.Add(time.Second) })
+	c := right.EraseCutoffNow(ctx)
+	if c.Covers(t0.Add(30 * time.Second)) {
+		t.Error("small clock movement dropped an event")
+	}
+	if !c.Covers(t0.Add(time.Hour)) {
+		t.Error("a stamp an hour ahead passed")
+	}
+}
+
+// sendingStore has automatic notes queued: two whose outcome is unknown, if unknown is
+// set, and one never sent.
+func sendingStore(t *testing.T, e *svcEnv, unknown bool) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := OpenProfile(ProfilePath(e.root, acct), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.GrantSaves(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.tx(ctx, func(tx *sql.Tx) error { return saveClass(ctx, tx, syncClassAuto, classState{Confirmed: true}) }); err != nil {
+		t.Fatal(err)
+	}
+	save := func(n int) {
+		for i := 0; i < n; i++ {
+			if _, _, err := st.SaveAuto(ctx, AutoNote{ProjectKey: GlobalProject, Title: "o", Body: fmt.Sprint("note ", n, i, time.Now().UnixNano()), Source: SourceCLI, Kind: KindObservation}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	l, err := st.AcquireLease(ctx, "h", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown {
+		save(2)
+		if q, err := st.QueueAutoBacklog(ctx, l); q != 2 || err != nil {
+			t.Fatal(q, err)
+		}
+		b, err := st.LeasePushBatch(ctx, l)
+		if err != nil || len(b.Ops) != 2 {
+			t.Fatalf("%+v %v", b, err)
+		}
+		if err := st.ReturnUnknown(ctx, l, b.Ops, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save(1)
+	if q, err := st.QueueAutoBacklog(ctx, l); q != 1 || err != nil {
+		t.Fatal(q, err)
+	}
+	if err := st.ReleaseLease(ctx, l); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func queuedNow(t *testing.T, e *svcEnv) int {
+	t.Helper()
+	st, err := OpenProfile(ProfilePath(e.root, acct), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	s, err := st.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s.Queue["ready"]
+}
+
+// Stopping says how many notes stay queued because Fleet may hold them, and only then.
+func TestStoppingSaysWhatFinishesSending(t *testing.T) {
+	ctx := context.Background()
+	stop := map[string]struct {
+		run func(*svcEnv) (Outcome, error)
+		two string
+	}{
+		"auto off": {func(e *svcEnv) (Outcome, error) { return e.svc.SetSyncAuto(ctx, false) },
+			"2 notes may already have reached Kameas Fleet, so they'll finish sending. You can delete any of them with `kenaz memory forget`."},
+		"sync off": {func(e *svcEnv) (Outcome, error) { return e.svc.DisableSync(ctx) },
+			"2 notes may already have reached Kameas Fleet. They'll finish sending if you turn sync back on. You can delete any of them with `kenaz memory forget`."},
+	}
+	for name, c := range stop {
+		for _, unknown := range []bool{false, true} {
+			e := newSvc(t, false)
+			e.syncOn(t)
+			sendingStore(t, e, unknown)
+			out, err := c.run(e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			says := strings.Contains(out.Message, c.two)
+			if says != unknown || (!unknown && strings.Contains(out.Message, "may already have reached")) {
+				t.Errorf("%s, unknown=%v: %q", name, unknown, out.Message)
+			}
+			want := 0
+			if unknown {
+				want = 2
+			}
+			if got := queuedNow(t, e); got != want {
+				t.Errorf("%s, unknown=%v: %d stay queued, want %d", name, unknown, got, want)
+			}
+		}
+	}
+}
+
+// Legal's four sentences, and nothing at all for none.
+func TestStopWording(t *testing.T) {
+	for _, c := range []struct{ got, want string }{
+		{StillSendingMessage(0), ""},
+		{StillQueuedMessage(0), ""},
+		{StillSendingMessage(1), "1 note may already have reached Kameas Fleet, so it'll finish sending. You can delete it with `kenaz memory forget`."},
+		{StillSendingMessage(3), "3 notes may already have reached Kameas Fleet, so they'll finish sending. You can delete any of them with `kenaz memory forget`."},
+		{StillQueuedMessage(1), "1 note may already have reached Kameas Fleet. It'll finish sending if you turn sync back on. You can delete it with `kenaz memory forget`."},
+		{StillQueuedMessage(3), "3 notes may already have reached Kameas Fleet. They'll finish sending if you turn sync back on. You can delete any of them with `kenaz memory forget`."},
+	} {
+		if c.got != c.want {
+			t.Errorf("%q, want %q", c.got, c.want)
+		}
+	}
+}
+
+// A new notice ends the grant too, and says the same.
+func TestNewNoticeSaysWhatFinishesSending(t *testing.T) {
+	ctx := context.Background()
+	e := newSvc(t, false)
+	e.syncOn(t)
+	sendingStore(t, e, true)
+	st, err := OpenProfile(ProfilePath(e.root, acct), acct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	r, err := st.EnableSync(ctx, "memory-sync/v9", MutateOptions{SyncApproved: true})
+	if err != nil || r.StillSending != 2 {
+		t.Errorf("%+v %v", r, err)
+	}
+}
+
+// An unknown outcome, then a refusal from an older relay, a release, and the grant ending:
+// the note may be on Fleet, so it isn't treated as never sent.
+func TestReleaseKeepsAnUnknownOutcomeOnRecord(t *testing.T) {
+	st, key, l := strandedStore(t)
+	ctx := context.Background()
+	if err := st.GrantSaves(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := st.SaveAuto(ctx, AutoNote{ProjectKey: key, Title: "o", Body: "b", Source: SourceCLI, Kind: KindObservation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q, err := st.QueueAutoBacklog(ctx, l); q != 1 || err != nil {
+		t.Fatal(q, err)
+	}
+	reset := func() {
+		t.Helper()
+		if _, err := st.db.ExecContext(ctx, `DELETE FROM meta WHERE key LIKE 'sync_class:%'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.db.ExecContext(ctx, `UPDATE outbox SET next_attempt_at = 0`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reset()
+	b, err := st.LeasePushBatch(ctx, l)
+	if err != nil || len(b.Ops) != 1 {
+		t.Fatalf("%+v %v", b, err)
+	}
+	if err := st.ReturnUnknown(ctx, l, b.Ops, 0); err != nil {
+		t.Fatal(err)
+	}
+	reset()
+	if b, err = st.LeasePushBatch(ctx, l); err != nil || len(b.Ops) != 1 {
+		t.Fatalf("%+v %v", b, err)
+	}
+	no := false
+	if _, err := st.ApplyPushResults(ctx, l, b.Ops, []PushResult{{ID: id, Status: "rejected", Code: "invalid_field", Field: "scope_id", Retry: &no}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReleaseStrandedProjectNotes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := st.EndSaveGrant(ctx)
+	if err != nil || unknown != 1 {
+		t.Errorf("told of %d, %v", unknown, err)
+	}
+	if may, err := st.FleetMayHold(ctx, id); err != nil || !may {
+		t.Errorf("may hold %v %v", may, err)
 	}
 }

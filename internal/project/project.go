@@ -90,7 +90,7 @@ func Project(outs []session.Out, opt Options) []Record {
 			}
 			body := []Field{
 				str("conversation_id", o.Hash),
-				i64("duration_ms", max64(o.Duration.Milliseconds(), 1)),
+				i64("duration_ms", clamp(max64(o.Duration.Milliseconds(), 1), fleetschema.MaxDurationMS)),
 				i64("token_in", max64(o.TokenIn, 0)),
 				i64("token_out", max64(o.TokenOut, 0)),
 				f64("cost_usd", cost),

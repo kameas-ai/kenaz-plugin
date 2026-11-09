@@ -7,8 +7,10 @@ import (
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	logsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcev1 "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/canon"
+	"github.com/kameas-ai/kenaz-plugin/internal/decode/attr"
 	"github.com/kameas-ai/kenaz-plugin/internal/fixtures"
 )
 
@@ -97,5 +99,60 @@ func TestVersionRe(t *testing.T) {
 		if versionRe.MatchString(bad) {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// Codex 0.166 puts a tracing callsite in the OTLP event_name field; the event's
+// real name is the event.name attribute.
+func TestCodexCallsiteEventNameIgnored(t *testing.T) {
+	r := Decoder{}.Logs(logs("codex_exec", &logsv1.LogRecord{
+		EventName: "event otel/src/tool_result.rs:54",
+		Attributes: []*commonv1.KeyValue{
+			kv("event.name", "codex.tool_result"), kv("conversation.id", "c"), kv("tool_name", "exec_command"), kv("success", "true"),
+		},
+	}))
+	if kinds(r.Events)[canon.KindToolCall] != 1 {
+		t.Fatalf("%+v", r)
+	}
+	// A prefixed event_name still wins, and an unprefixed one with no
+	// attribute is still the name (it matches no decoder case).
+	r = Decoder{}.Logs(logs("codex_exec", &logsv1.LogRecord{
+		EventName:  "codex.tool_result",
+		Attributes: []*commonv1.KeyValue{kv("event.name", "codex.other"), kv("conversation.id", "c")},
+	}))
+	if kinds(r.Events)[canon.KindToolCall] != 1 {
+		t.Fatalf("prefixed event_name: %+v", r)
+	}
+	if got := logEventName("event x.rs:1", attr.Of(nil), nil); got != "event x.rs:1" {
+		t.Fatalf("name = %q", got)
+	}
+}
+
+func TestCodexIntegerThreadIDOpensNoSession(t *testing.T) {
+	intID := &commonv1.KeyValue{Key: "thread.id", Value: &commonv1.AnyValue{Value: &commonv1.AnyValue_IntValue{IntValue: 17}}}
+	span := func(attrs ...*commonv1.KeyValue) *tracev1.TracesData {
+		return &tracev1.TracesData{ResourceSpans: []*tracev1.ResourceSpans{{
+			Resource:   &resourcev1.Resource{Attributes: []*commonv1.KeyValue{kv("service.name", "codex_exec")}},
+			ScopeSpans: []*tracev1.ScopeSpans{{Spans: []*tracev1.Span{{Name: "x", Attributes: attrs}}}},
+		}}}
+	}
+	if r := (Decoder{}).Traces(span(intID)); len(r.Events) != 0 {
+		t.Fatalf("OS thread number opened a session: %+v", r.Events)
+	}
+	r := Decoder{}.Traces(span(intID, kv("conversation.id", "conv")))
+	if len(r.Events) != 1 || r.Events[0].SessionID != "conv" {
+		t.Fatalf("conversation.id not used: %+v", r.Events)
+	}
+	r = Decoder{}.Traces(span(kv("thread.id", "conv")))
+	if len(r.Events) != 1 || r.Events[0].SessionID != "conv" {
+		t.Fatalf("string thread.id not used: %+v", r.Events)
+	}
+	// Codex records both on one span, the integer first (session_task.turn).
+	r = Decoder{}.Traces(span(intID, kv("thread.id", "conv")))
+	if len(r.Events) != 1 || r.Events[0].SessionID != "conv" {
+		t.Fatalf("string thread.id after the integer not used: %+v", r.Events)
+	}
+	if r := (Decoder{}).Traces(span(kv("thread.id", "17"))); len(r.Events) != 0 {
+		t.Fatalf("all-digit id opened a session: %+v", r.Events)
 	}
 }

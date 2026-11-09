@@ -110,7 +110,7 @@ func TestTemplatePlaceholders(t *testing.T) {
 
 // approvedDescription is the Claude desktop app extension description
 // Kameas approved. Use it exactly.
-const approvedDescription = "Kenaz, a Kameas AI product. Brings your organization's Kameas Fleet skills, team context and your Kenaz memory to chat in the Claude desktop app. Sends no usage telemetry. Requires the kenaz program and a Kameas Fleet account. Claude is a trademark of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic."
+const approvedDescription = "Kenaz, a Kameas AI product. Brings your organization's Kameas Fleet skills, team context and your Kenaz memory to chat in the Claude desktop app. Sends no usage telemetry. Includes the kenaz program. Requires a Kameas Fleet account. Claude is a trademark of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic."
 
 func TestRenderEveryPlatform(t *testing.T) {
 	var plugin struct {
@@ -173,8 +173,8 @@ func TestRenderEveryPlatform(t *testing.T) {
 			if !reflect.DeepEqual(s.MCPConfig.Args, []string{"mcp"}) || !reflect.DeepEqual(s.MCPConfig.Args, cc.Args) {
 				t.Errorf("args %v, plugin %v", s.MCPConfig.Args, cc.Args)
 			}
-			// The Claude Code plugin's env, plus the host marker.
-			want := map[string]string{"KENAZ_MCP_HOST": "claude-desktop"}
+			// The Claude Code plugin's env, plus the host marker and chat's own setting.
+			want := map[string]string{"KENAZ_MCP_HOST": "claude-desktop", "KENAZ_MEMORY_RECALL": "${user_config.memory_chat_recall}"}
 			for k, v := range cc.Env {
 				want[k] = v
 			}
@@ -208,7 +208,10 @@ func TestRenderEveryPlatform(t *testing.T) {
 			}
 			var keys, pkeys []string
 			for k := range m.UserConfig {
-				keys = append(keys, k)
+				// Only chat, which has no plugin, reads this one.
+				if k != "memory_chat_recall" {
+					keys = append(keys, k)
+				}
 			}
 			for k := range plugin.UserConfig {
 				pkeys = append(pkeys, k)
@@ -218,7 +221,13 @@ func TestRenderEveryPlatform(t *testing.T) {
 			if !reflect.DeepEqual(keys, pkeys) {
 				t.Fatalf("user_config %v, plugin userConfig %v", keys, pkeys)
 			}
+			if u, ok := m.UserConfig["memory_chat_recall"]; !ok || u.Default != "" || u.Type != "string" || u.Description == "" {
+				t.Errorf("memory_chat_recall = %+v", u)
+			}
 			for k, u := range m.UserConfig {
+				if k == "memory_chat_recall" {
+					continue
+				}
 				p := plugin.UserConfig[k]
 				// Claude Desktop requires a title and a description for every field.
 				if u.Type != "string" || u.Title != p.Title || u.Description == "" || u.Required == nil || *u.Required {

@@ -11,6 +11,9 @@ import (
 	"sync"
 	"time"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/logx"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
@@ -80,6 +83,33 @@ func (l *daemonLink) ping(ctx context.Context) {
 	}
 }
 
+// reloadSessionOnToolCall re-reads the stored session before each tool call,
+// without network I/O. The provider loads the session once per process, and
+// an MCP server lives as long as its host, so without this a `kenaz login`
+// or logout in a terminal is not seen until the host restarts: Claude Desktop
+// chat's "run kenaz login, then try again" would fail the second time too.
+//
+// Known limits: where no credential store is recorded and mcp may not probe
+// (a first sign-in on Linux with a Secret Service), this process has no
+// keychain to read and still needs a restart. After a store read error the
+// provider's periodic reload backs off for 5 minutes. The read has no timeout
+// and the official provider holds its lock across it, so a hung keychain
+// stalls tool calls; a bounded wait here would not help, because each tool
+// then blocks on that same lock when it asks for the session.
+func reloadSessionOnToolCall(p fleetapi.Provider) sdk.Middleware {
+	return func(next sdk.MethodHandler) sdk.MethodHandler {
+		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
+			if method == "tools/call" && p != nil {
+				// A store that cannot be read changes nothing. An identity
+				// mismatch clears the session and fails closed. Either way the
+				// tool reports what is left, so the error needs no handling.
+				_ = fleetapi.ReloadSession(ctx, p.Auth())
+			}
+			return next(ctx, method, req)
+		}
+	}
+}
+
 // runMCP serves MCP on stdio. It must never write anything but protocol
 // to stdout; diagnostics go to relay.log. The daemon is lazily spawned and
 // a failure to reach it never fails the MCP handshake.
@@ -140,8 +170,12 @@ func runMCP(env Env, args []string) int {
 
 	menv := env
 	menv.Provider = provider
-	groups := append(append([]mcp.Group(nil), mcpGroups...), memoryGroup(menv))
+	local, team := menv.contextFilesGroups(ctx)
+	mcp.ContextFilesServed = len(local) > 0 // the local tools; no text names the team ones
+	groups := append(append([]mcp.Group(nil), mcpGroups...), memoryGroup(menv, len(local) > 0))
+	groups = append(append(groups, local...), team...)
 	srv := mcp.NewServer(Version, mcp.Deps{Provider: provider, Env: r.Env, Status: link, StateDir: r.StateDir, Approvals: approvalsClient(link.client)}, groups...)
+	srv.AddReceivingMiddleware(reloadSessionOnToolCall(provider))
 	serve := env.ServeMCP
 	if serve == nil {
 		serve = mcp.ServeStdio

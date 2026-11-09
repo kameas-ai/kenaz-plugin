@@ -10,7 +10,7 @@ import (
 // Memory writes that reach Kameas Fleet, or that are irreversible for an
 // account, are authorized only through the relay's approval service: the
 // user approves the exact stored payload on the local approval page with a
-// WebAuthn authenticator. No CLI prompt, flag or MCP argument approves
+// button or the `kenaz approve` command. No flag or MCP argument approves
 // anything. This package stays free of the approvals package (and its
 // dependencies) and codes against two narrow sides:
 //
@@ -31,19 +31,24 @@ import (
 //     before sync existed. forget-all, sync-enable, sync-approve and adopt
 //     are refused there (the notebook's own delete-all is `kenaz memory
 //     purge`).
-//   - An account profile: forget-all, sync-enable, sync-approve and adopt
-//     are always submitted for approval. A save, update or forget is
-//     submitted only when it reaches Fleet: sync is on for the account,
-//     or (update, forget) Fleet may hold the note. Otherwise it is device
-//     data and runs directly, like the notebook. The approval's
+//   - An account profile: forget-all, sync-enable, sync-approve, adopt and
+//     the standing grant for saves are always submitted for approval. A save,
+//     update or forget is submitted only when it reaches Fleet: sync is on and
+//     the note's scope syncs, or (update, forget) Fleet may hold the note.
+//     Otherwise it is device data and runs directly, like the notebook. With
+//     the standing grant, a save that would reach Fleet runs directly and
+//     syncs, up to an hourly cap; an update or forget still needs approval. The approval's
 //     idempotency key is derived from the operation, the payload and the
 //     store's clock, so an agent's retry returns the same request.
-//   - If approval is unavailable (no authenticator enrolled, relay not
+//   - If approval is unavailable (no OS keychain, relay not
 //     running): forget-all, sync-enable, sync-approve and adopt are
 //     refused (approval_unavailable). Save, update and forget apply on the
 //     device only, and whatever they would change on Fleet (an upload, a
 //     title write, a forget of a synced note) is queued "unapproved" and
 //     is not sent until the user approves it with memory.sync_approve.
+//   - Turning sync on and giving the standing grant take a person's typed answer at a
+//     terminal instead. Only the CLI offers that, and only with a real terminal on
+//     stdin; the same executor code then runs.
 //   - Turning sync off, reverting a refused edit, reading, searching and
 //     exporting are never gated: they send nothing new.
 
@@ -56,10 +61,12 @@ const (
 	OpSyncEnable  = "memory.sync_enable"
 	OpSyncApprove = "memory.sync_approve"
 	OpAdopt       = "memory.adopt"
+	// OpSyncAuto grants, once, that saves may sync without their own approval.
+	OpSyncAuto = "memory.sync_auto"
 )
 
 // Operations lists every gated operation (RegisterExecutors covers them).
-var Operations = []string{OpSave, OpUpdate, OpForgetOne, OpForgetAll, OpSyncEnable, OpSyncApprove, OpAdopt}
+var Operations = []string{OpSave, OpUpdate, OpForgetOne, OpForgetAll, OpSyncEnable, OpSyncApprove, OpAdopt, OpSyncAuto}
 
 // ApprovalRequest mirrors approvals.Request.
 type ApprovalRequest struct {
@@ -121,7 +128,7 @@ var ErrOutcomeUnknown = errors.New("memory write outcome unknown")
 // alwaysHuman reports operations that never run without an approval.
 func alwaysHuman(op string) bool {
 	switch op {
-	case OpForgetAll, OpSyncEnable, OpSyncApprove, OpAdopt:
+	case OpForgetAll, OpSyncEnable, OpSyncApprove, OpAdopt, OpSyncAuto:
 		return true
 	}
 	return false
@@ -133,6 +140,8 @@ type ExecOptions struct {
 	Active         func(ctx context.Context) Profile
 	Remote         Remote
 	ConsentVersion string
+	// AfterForgetAll: see ServiceOptions.
+	AfterForgetAll func() error
 }
 
 // RegisterExecutors installs the memory executors and reconcilers in the
@@ -141,7 +150,7 @@ type ExecOptions struct {
 // reports applied=true with the stored result when the key was applied,
 // and applied=false otherwise so the relay retries the executor once.
 func RegisterExecutors(r Registrar, o ExecOptions) {
-	s := NewService(ServiceOptions{StateRoot: o.StateRoot, Active: o.Active, Remote: o.Remote, ConsentVersion: o.ConsentVersion})
+	s := NewService(ServiceOptions{StateRoot: o.StateRoot, Active: o.Active, Remote: o.Remote, AfterForgetAll: o.AfterForgetAll, ConsentVersion: o.ConsentVersion})
 	for _, op := range Operations {
 		op := op
 		r.Register(op, func(ctx context.Context, payload []byte, key string) ([]byte, error) {

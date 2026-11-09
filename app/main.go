@@ -23,6 +23,7 @@ import (
 
 	kenaz "github.com/kameas-ai/kenaz-plugin"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/memory/capture"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
@@ -57,6 +58,8 @@ type Env struct {
 	Spawn         func(stateDir string, e fleetapi.Env) error // nil: detached self-exec
 	ServeMCP      func(context.Context, *sdk.Server) error    // nil: stdio
 	Now           func() time.Time                            // nil: time.Now
+	// StartCaptureWorker replaces starting the detached capture worker.
+	StartCaptureWorker func() error
 
 	cred   *credStore   // set once by RunEnv
 	layout *layoutState // set once by RunEnv
@@ -81,6 +84,7 @@ var commands = map[string]Command{
 	"login":    {"Sign in to Kameas Fleet", runLogin},
 	"logout":   {"Sign out and purge local queued data", runLogout},
 	"migrate":  {"Move files from an earlier release to ~/.kenaz/plugin (close your AI apps first)", runMigrate},
+	"context":  {"List your context files and this project's", runContext},
 	"memory":   {"Manage memories (on this device; optional sync to your Kameas Fleet account)", runMemory},
 	"status":   {"Show sign-in, telemetry and consent state (--json)", runStatus},
 	"optin":    {"Choose which usage data to share (shows the notice)", runOptin},
@@ -96,6 +100,8 @@ var commands = map[string]Command{
 
 	// Approving happens only on the approval page, never in the CLI.
 	"approvals": {"List write requests and open the approval page", runApprovals},
+	"approve":   {"Approve what your agent asked to write", runApprove},
+	"decline":   {"Decline what your agent asked to write", runDecline},
 }
 
 // Main runs the CLI with p and returns the process exit code. SIGINT and
@@ -124,8 +130,26 @@ func RunEnv(env Env, args []string) int {
 	if args[0] == "--version" {
 		return runVersion(env, nil)
 	}
+	// Every hook does nothing inside a capture worker's own model call: such a
+	// call must leave no trace, not even a relay start.
+	if args[0] == "hook" && env.getenv(capture.WorkerEnv) != "" {
+		return ExitOK
+	}
+	// Capture hooks fire on every tool call, so they skip the set-up below.
+	if isCaptureHook(args) {
+		if !captureHookWanted(env, args[1]) {
+			return ExitOK
+		}
+		// The index shows the signed-in account's notes, so it needs the account:
+		// the same set-up as any command that reads it. The rest only queue.
+		if args[1] == capture.HookIndex {
+			env.Provider = guardSessionEnv(env.Provider)
+			env = env.withCredentialStore(args[0])
+		}
+		return runCaptureHook(env, args[1:])
+	}
 	cmd, ok := commands[args[0]]
-	if !ok {
+	if !ok || commandHidden(args[0]) {
 		fmt.Fprintf(stderr, variant.Current.Binary+": unknown command %q\n\n", args[0])
 		usage(stderr)
 		return ExitUsage
@@ -146,7 +170,9 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w)
 	names := make([]string, 0, len(commands))
 	for n := range commands {
-		names = append(names, n)
+		if !commandHidden(n) {
+			names = append(names, n)
+		}
 	}
 	sort.Strings(names)
 	for _, n := range names {

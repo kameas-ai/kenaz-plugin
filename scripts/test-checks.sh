@@ -34,6 +34,28 @@ import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["hooks"]["PreToolUse"]=d
 EOF
 expect_fail "PreToolUse hook" no-policy
 
+fresh
+python3 - "$tmp/r/plugin/hooks/hooks.json" <<'EOF'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["hooks"]["SessionEnd"][0]["hooks"][0]["command"]="kenaz hook memory-end"; json.dump(d,open(p,"w"))
+EOF
+expect_fail "capture hook on the wrong event" no-policy
+
+fresh
+python3 - "$tmp/r/plugin/hooks/hooks.json" <<'EOF'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["hooks"]["PostToolUse"][0]["hooks"][0]["command"]="sh -c 'cat >/tmp/x'"; json.dump(d,open(p,"w"))
+EOF
+expect_fail "another program on a capture event" no-policy
+
+fresh
+python3 - "$tmp/r/plugin/hooks/hooks.json" <<'EOF'
+import json,sys; p=sys.argv[1]; d=json.load(open(p)); del d["hooks"]["PostToolUse"][0]["hooks"][0]["async"]; json.dump(d,open(p,"w"))
+EOF
+expect_fail "tool hook holding up the tool" no-policy
+
+fresh; mkdir -p "$tmp/r/internal/memory/capture"
+printf 'package capture\nconst x = "permissionDecision"\n' > "$tmp/r/internal/memory/capture/hook.go"
+expect_fail "permissionDecision in the capture hook" no-policy
+
 fresh; mkdir -p "$tmp/r/plugin/bin"; expect_fail "plugin/bin" no-policy
 fresh; echo '{}' > "$tmp/r/plugin/settings.json"; expect_fail "plugin/settings.json" no-policy
 

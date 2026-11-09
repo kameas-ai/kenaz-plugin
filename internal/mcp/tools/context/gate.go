@@ -10,6 +10,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 )
 
 // Error codes returned in ToolError.Code.
@@ -161,6 +162,18 @@ func orgPaused(category string) *ToolError {
 	return e
 }
 
+// CodeContextFilesNotOffered: Fleet's capabilities don't carry context_files.
+const CodeContextFilesNotOffered = "context_files_not_offered"
+
+// RequireContextFiles refuses, fail closed, unless Fleet offers context files to the
+// organization (context_files). Sharing, pulling and syncing files all ask it.
+func RequireContextFiles(caps fleetapi.Capabilities) *ToolError {
+	if fleetapi.HasKey(caps, fleetapi.CapContextFiles) {
+		return nil
+	}
+	return &ToolError{Code: CodeContextFilesNotOffered, Message: usertext.ContextFilesNotOffered}
+}
+
 func tierRequired(need string) *ToolError {
 	plan := map[string]string{"team": "Team", "enterprise": "Enterprise"}[need]
 	return &ToolError{Code: CodeTierRequired, Need: need, Message: "This needs the Kameas Fleet " + plan + " plan.", Remedy: "Ask your Kameas Fleet administrator about upgrading."}
@@ -205,6 +218,13 @@ func MapError(err error) *ToolError {
 			return &ToolError{Code: CodeLockdown, Message: "Your organization has paused sharing from Kameas Fleet (emergency lockdown)."}
 		case "tier_required", "capability_required":
 			return tierRequired("team")
+		}
+		// A stale write or someone else's node: neither is about the person's role.
+		if ae.Code == "not_permitted" {
+			return &ToolError{Code: CodeNotYours, Need: safeCode(ae.Code), Message: "Nothing changed: Kameas Fleet lets only the author change this.", Remedy: "For a file, share your version as a new file of your own with as_new."}
+		}
+		if ae.Code == "version_conflict" || ae.Status == http.StatusConflict {
+			return &ToolError{Code: failNodeChanged, Need: safeCode(ae.Code), Message: "Nothing changed: Kameas Fleet holds a newer version of this.", Remedy: "Pull it, redo your change and try again."}
 		}
 		switch ae.Status {
 		case http.StatusUnauthorized:

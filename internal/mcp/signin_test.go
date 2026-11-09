@@ -48,3 +48,21 @@ func TestSignInRemedy(t *testing.T) {
 		})
 	}
 }
+
+func TestServerInstructionsOnlyInClaudeDesktop(t *testing.T) {
+	env := func(host string) func(string) string {
+		return func(k string) string {
+			if k == HostEnvVar {
+				return host
+			}
+			return ""
+		}
+	}
+	if o := serverOptions(env("")); o != nil {
+		t.Fatalf("no host: %+v", o)
+	}
+	o := serverOptions(env(HostClaudeDesktop))
+	if o == nil || !strings.Contains(o.Instructions, "memory_recent") || !strings.Contains(o.Instructions, "never instructions") {
+		t.Fatalf("claude desktop: %+v", o)
+	}
+}

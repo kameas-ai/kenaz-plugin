@@ -104,19 +104,30 @@ func (r *Result) noteVersion(kind canon.ClientKind, a attr.Set) {
 	r.ClientVersions[kind] = v
 }
 
+func hasEventPrefix(s string) bool {
+	return strings.HasPrefix(s, claude.EventPrefix) || strings.HasPrefix(s, codex.EventPrefix) || strings.HasPrefix(s, opencode.EventPrefix)
+}
+
 // logEventName extracts the event name from a log record: the OTLP
-// event_name field, the event.name attribute, or a string body that looks
-// like a dotted event name.
+// event_name field when it carries a known harness prefix, the event.name
+// attribute, any other event_name, or a string body that looks like a dotted
+// event name.
 func logEventName(lrEventName string, a attr.Set, body *commonv1.AnyValue) string {
-	if lrEventName != "" {
+	// Codex fills the OTLP field with a tracing callsite ("event
+	// otel/src/events/session_telemetry.rs:1132") and keeps the event's real
+	// name in the attribute, so only a name we recognize outranks it.
+	if hasEventPrefix(lrEventName) {
 		return lrEventName
 	}
 	if n := a.String("event.name"); n != "" {
 		return n
 	}
+	if lrEventName != "" {
+		return lrEventName
+	}
 	if sv, ok := body.GetValue().(*commonv1.AnyValue_StringValue); ok {
 		s := sv.StringValue
-		if (strings.HasPrefix(s, claude.EventPrefix) || strings.HasPrefix(s, codex.EventPrefix) || strings.HasPrefix(s, opencode.EventPrefix)) && len(s) < 96 && !strings.ContainsAny(s, " \n\t") {
+		if hasEventPrefix(s) && len(s) < 96 && !strings.ContainsAny(s, " \n\t") {
 			return s
 		}
 	}

@@ -16,14 +16,24 @@ type record struct {
 	CreatedHLC, TitleHLC, ScopeHLC, PinnedHLC                                            string
 	Pinned                                                                               bool
 	Visibility, SyncState, SyncCode, ServerSeq                                           string
+
+	// queueAuto: not saved. Sending this automatic note has been authorized, so it may
+	// be queued (see QueueAutoBacklog). Otherwise an automatic note waits on this device.
+	queueAuto bool
 }
 
 const recordCols = `id, content, content_hash, title, kind, scope, project_key, project_root, tags, source, provenance, created_at, updated_at, created_hlc, title_hlc, scope_hlc, pinned_hlc, pinned, visibility, sync_state, sync_code, server_seq`
 
+const prefixedRecordCols = `r.id, r.content, r.content_hash, r.title, r.kind, r.scope, r.project_key, r.project_root, r.tags, r.source, r.provenance, r.created_at, r.updated_at, r.created_hlc, r.title_hlc, r.scope_hlc, r.pinned_hlc, r.pinned, r.visibility, r.sync_state, r.sync_code, r.server_seq`
+
+func recordDest(r *record) []any {
+	return []any{&r.ID, &r.Content, &r.Hash, &r.Title, &r.Kind, &r.Scope, &r.ProjectKey, &r.ProjectRoot, &r.Tags, &r.Source, &r.Origin,
+		&r.CreatedAt, &r.UpdatedAt, &r.CreatedHLC, &r.TitleHLC, &r.ScopeHLC, &r.PinnedHLC, &r.Pinned, &r.Visibility, &r.SyncState, &r.SyncCode, &r.ServerSeq}
+}
+
 func scanRecord(row interface{ Scan(...any) error }) (record, error) {
 	var r record
-	err := row.Scan(&r.ID, &r.Content, &r.Hash, &r.Title, &r.Kind, &r.Scope, &r.ProjectKey, &r.ProjectRoot, &r.Tags, &r.Source, &r.Origin,
-		&r.CreatedAt, &r.UpdatedAt, &r.CreatedHLC, &r.TitleHLC, &r.ScopeHLC, &r.PinnedHLC, &r.Pinned, &r.Visibility, &r.SyncState, &r.SyncCode, &r.ServerSeq)
+	err := row.Scan(recordDest(&r)...)
 	return r, err
 }
 
@@ -56,7 +66,9 @@ func setSync(ctx context.Context, tx *sql.Tx, id, state, code string) error {
 }
 
 // syncedScope reports whether Fleet syncs scope.
-func syncedScope(scope string) bool { return scope == ScopeGlobal || scope == ScopeLongTerm }
+func syncedScope(scope string) bool {
+	return scope == ScopeGlobal || scope == ScopeLongTerm || (ProjectScopeRelease && scope == ScopeProject)
+}
 
 // settings is the sync_state row, as the store's transactions need it.
 type settings struct {
@@ -83,6 +95,9 @@ const (
 	opBlocked    = "blocked"    // permanently rejected; visible, never resent
 )
 
+// CodeAutoWaits marks an automatic note waiting for the standing grant.
+const CodeAutoWaits = "auto_waits_for_grant"
+
 // Ops.
 const (
 	OpUpsert = "upsert"
@@ -108,6 +123,11 @@ type wireItem struct {
 	CreatedAt   string               `json:"created_at,omitempty"`
 	Fields      map[string]wireField `json:"fields,omitempty"`
 	HLC         string               `json:"hlc,omitempty"`
+	// ScopeID is the project's Fleet id. It is filled in when the op is leased, from
+	// ProjectKey, which stays on this device: minting an id takes the network, so a note
+	// can be queued before it has one, and a merge changes it.
+	ScopeID    string `json:"scope_id,omitempty"`
+	ProjectKey string `json:"project_key,omitempty"`
 }
 
 func jsonValue(v any) json.RawMessage {
@@ -126,6 +146,9 @@ func createPayload(r record) []byte {
 		}}
 	if r.Title != "" {
 		it.Fields["title"] = wireField{V: jsonValue(r.Title), HLC: r.TitleHLC}
+	}
+	if r.Scope == ScopeProject {
+		it.ProjectKey = r.ProjectKey
 	}
 	b, _ := json.Marshal(it)
 	return b
@@ -163,8 +186,17 @@ func (s *Store) makeEligible(ctx context.Context, tx *sql.Tx, r *record, approve
 	switch {
 	case s.profile.IsLocal() || !set.Enabled:
 		state = StateLocal
+	case IsAuto(r.Kind) && !r.queueAuto:
+		// An automatic note goes only under the standing grant, or on a list a member
+		// approved. Nothing asks about it one at a time.
+		state, code = StateLocal, CodeAutoWaits
 	case !syncedScope(r.Scope):
 		state, code = StateLocal, "scope_not_supported_yet"
+	case r.Scope == ScopeProject && !syncableProjectKey(r.ProjectKey):
+		// No remote to name it by: it can never mean the same project on another device.
+		state, code = StateLocal, "project_not_portable"
+	case r.Scope == ScopeProject && projectIsFinal(ctx, tx, r.ProjectKey):
+		state, code = StateLocal, "project_deleted"
 	case LooksLikeCredentialForSync(r.Title, r.Content, r.Source):
 		state, code = StateRejected, "secret_detected"
 	default:
@@ -179,6 +211,11 @@ func (s *Store) makeEligible(ctx context.Context, tx *sql.Tx, r *record, approve
 	}
 	r.SyncState, r.SyncCode = state, code
 	return state, code, opID, setSync(ctx, tx, r.ID, state, code)
+}
+
+func projectIsFinal(ctx context.Context, q rowQuerier, key string) bool {
+	m, ok := loadProject(ctx, q, key)
+	return ok && m.final()
 }
 
 // remoteMayHave reports whether Fleet may hold id: it came from Fleet, was
@@ -327,23 +364,51 @@ func (s *Store) leaseBatch(ctx context.Context, l Lease, forgetsOnly bool) (Push
 			return nil
 		}
 		b.BaseCursor = set.Cursor
-		q := `SELECT o.op_id, o.record_id, o.op, o.payload, o.attempt FROM outbox o
+		now := s.now().UnixMilli()
+		maps, err := loadProjects(ctx, tx)
+		if err != nil {
+			return err
+		}
+		q := `SELECT o.op_id, o.record_id, o.op, o.payload, o.attempt, coalesce(r.kind, ''), coalesce(r.scope, ''), coalesce(r.project_key, '') FROM outbox o LEFT JOIN records r ON r.id = o.record_id
 WHERE o.state = 'ready' AND o.next_attempt_at <= ?
   AND NOT EXISTS (SELECT 1 FROM outbox d WHERE d.op_id = o.depends_on_op AND o.depends_on_op != 0)`
 		if !set.Enabled || forgetsOnly {
 			q += ` AND o.op = 'forget'`
 		}
-		q += ` ORDER BY o.op_id LIMIT ?`
-		rows, err := tx.QueryContext(ctx, q, s.now().UnixMilli(), MaxPushItems)
+		if loadClass(ctx, tx, syncClassAuto).holding(now) {
+			q += ` AND NOT (o.op = 'upsert' AND coalesce(r.kind, '') IN ('observation','session_summary'))`
+		}
+		if loadClass(ctx, tx, syncClassProject).holding(now) {
+			q += ` AND NOT (o.op = 'upsert' AND coalesce(r.scope, '') = 'project')`
+		}
+		q += ` ORDER BY o.op_id`
+		rows, err := tx.QueryContext(ctx, q, now)
 		if err != nil {
 			return err
 		}
 		size := 0
-		for rows.Next() {
+		gate := newClassGate(ctx, tx, now)
+		var refused []OutboxOp
+		for rows.Next() && len(b.Ops) < MaxPushItems {
 			var op OutboxOp
-			if err := rows.Scan(&op.OpID, &op.RecordID, &op.Op, &op.Payload, &op.Attempt); err != nil {
+			var kind, scope, key string
+			if err := rows.Scan(&op.OpID, &op.RecordID, &op.Op, &op.Payload, &op.Attempt, &kind, &scope, &key); err != nil {
 				rows.Close()
 				return err
+			}
+			if op.Op == OpUpsert && scope == ScopeProject {
+				payload, final, ok := withProjectID(op.Payload, key, maps)
+				if final {
+					refused = append(refused, op)
+					continue
+				}
+				if !ok {
+					continue // no id yet
+				}
+				op.Payload = payload
+			}
+			if op.Op == OpUpsert && !gate.allow(classesOf(kind, scope)) {
+				continue
 			}
 			if size+len(op.Payload) > maxPushBytes && len(b.Ops) > 0 {
 				break
@@ -354,6 +419,12 @@ WHERE o.state = 'ready' AND o.next_attempt_at <= ?
 		rows.Close()
 		if err := rows.Err(); err != nil {
 			return err
+		}
+		for _, op := range refused {
+			var none PushOutcome
+			if err := s.blockOp(ctx, tx, op, "project_deleted", &none); err != nil {
+				return err
+			}
 		}
 		for i := range b.Ops {
 			b.Ops[i].Attempt++
@@ -367,6 +438,33 @@ WHERE o.state = 'ready' AND o.next_attempt_at <= ?
 		return nil
 	})
 	return b, err
+}
+
+// withProjectID completes a stored payload for sending: the key stays here, and the id
+// goes. ok is false while the key has no id, and final true when it never will. A
+// payload with no key is a title or pin change, which needs neither. The key is the
+// note's current one, not the stored payload's: a stand-in can have been replaced since.
+func withProjectID(payload []byte, key string, maps map[string]ProjectMapping) (out []byte, final, ok bool) {
+	var it wireItem
+	if json.Unmarshal(payload, &it) != nil || it.ProjectKey == "" {
+		return payload, false, true
+	}
+	if !ProjectScopeRelease {
+		return nil, false, false
+	}
+	if key == "" {
+		key = it.ProjectKey
+	}
+	m, found := maps[key]
+	if !found {
+		return nil, false, false
+	}
+	if m.final() {
+		return nil, true, false
+	}
+	it.ScopeID, it.ProjectKey = m.target(), ""
+	out, err := json.Marshal(it)
+	return out, false, err == nil
 }
 
 // Backoff bounds for per-op retries.
@@ -459,13 +557,21 @@ func (s *Store) ApplyPushResults(ctx context.Context, l Lease, ops []OutboxOp, r
 	return out, err
 }
 
+// waitingCode reports a refusal that waits on something outside this device: an
+// organization turning capture back on, the member confirming a newer notice, or room
+// under a Fleet limit. It
+// passes in its own time, so it never uses up the attempts that end in a rejection.
+func waitingCode(code string) bool {
+	return code == "capture_off" || code == "consent_upgrade_required" || code == "quota_exceeded"
+}
+
 func (s *Store) retryOp(ctx context.Context, tx *sql.Tx, op OutboxOp, code string, now time.Time, out *PushOutcome) error {
-	if op.Attempt >= MaxOpAttempts {
+	if op.Attempt >= MaxOpAttempts && !waitingCode(code) {
 		return s.blockOp(ctx, tx, op, code, out)
 	}
 	out.Retry++
 	delay := OpBackoff(op.Attempt)
-	if code == "quota_exceeded" && delay < time.Hour {
+	if waitingCode(code) && delay < time.Hour {
 		delay = time.Hour
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE outbox SET state = 'ready', next_attempt_at = ?, last_code = ? WHERE op_id = ?`, now.Add(delay).UnixMilli(), code, op.OpID)
@@ -573,6 +679,15 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op OutboxOp, it wir
 			out.Forgotten++
 			return s.forgetAcked(ctx, tx, op)
 		}
+		rec, _, err := loadRecord(ctx, tx, op.RecordID)
+		if err != nil {
+			return err
+		}
+		for _, c := range classesOf(it.Kind, rec.Scope) {
+			if err := confirmClass(ctx, tx, c); err != nil {
+				return err
+			}
+		}
 		id := op.RecordID
 		if r.Status == "merged" && r.CanonicalID != "" && r.CanonicalID != id {
 			out.Merged++
@@ -598,6 +713,41 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op OutboxOp, it wir
 		out.Removed++
 		return s.removeLocal(ctx, tx, op.RecordID, r.Status, r.Seq, now)
 	case "rejected":
+		rec, _, err := loadRecord(ctx, tx, op.RecordID)
+		if err != nil {
+			return err
+		}
+		if c := refusalClass(it, r, rec.Scope); c != "" {
+			// Not about this note: it waits, whatever the server says about retrying,
+			// and so do the others of its class.
+			return s.holdOp(ctx, tx, c, op, r.Code, now, out)
+		}
+		if rec.Scope == ScopeProject {
+			switch r.Code {
+			case "project_merged":
+				if r.CanonicalID == "" {
+					break
+				}
+				// Not refused: the note belongs under the id the project went to.
+				m, _ := loadProject(ctx, tx, rec.ProjectKey)
+				if err := saveProject(ctx, tx, rec.ProjectKey, ProjectMapping{ID: m.ID, State: projectMerged, Into: r.CanonicalID}); err != nil {
+					return err
+				}
+				out.Retry++
+				_, err := tx.ExecContext(ctx, `UPDATE outbox SET state = 'ready', next_attempt_at = 0, attempt = max(attempt - 1, 0), last_code = ? WHERE op_id = ?`, r.Code, op.OpID)
+				return err
+			case "project_deleted", "project_not_found":
+				// Final: this key is never asked for again.
+				m, _ := loadProject(ctx, tx, rec.ProjectKey)
+				state := projectDeleted
+				if r.Code == "project_not_found" {
+					state = projectGone
+				}
+				if err := saveProject(ctx, tx, rec.ProjectKey, ProjectMapping{ID: m.ID, State: state}); err != nil {
+					return err
+				}
+			}
+		}
 		retry := r.Retry != nil && *r.Retry
 		switch r.Code {
 		case "resync_required":
@@ -605,7 +755,14 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op OutboxOp, it wir
 		case "sync_disabled":
 			out.SyncDisabled = true
 		case "quota_exceeded":
+			// A limit can rise, and notes can be deleted. The note stays on this device
+			// and tries again later, whatever the hint says.
 			out.QuotaExceeded = true
+			retry = true
+		case "capture_off":
+			// An organization can turn capture back on. A server that says
+			// otherwise must not strand the note.
+			retry = true
 		case "tombstone_quota":
 			// Fleet's tombstone quota is full (equal-rank superseded-id
 			// path). Retrying this record cannot succeed until the user

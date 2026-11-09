@@ -49,6 +49,19 @@ type MemoryFleet struct {
 	// returned to the client. An error after=true means the server state
 	// changed but the client sees a failure.
 	Fault func(call string, after bool) error
+	// Erases counts forget-alls that erased, and ForgetAllIDs is the id each one carried.
+	Erases       int
+	ForgetAllIDs []string
+	// RefuseCaptureKinds answers observation and session_summary the way Fleet does
+	// with FLEET_MEMORY_CAPTURE_KINDS off. CaptureOff answers them the way it does while
+	// an organization has capture off.
+	RefuseCaptureKinds bool
+	CaptureOff         bool
+	// ProjectScope is FLEET_MEMORY_PROJECT_SCOPE: project notes, by registry id.
+	ProjectScope bool
+	// projects is the registry: id -> row, and client_request_id -> id.
+	projects   map[string]*fleetapi.Project
+	projectIDs map[string]string
 
 	// Env is the environment Client's credentials belong to (default
 	// dev).
@@ -71,6 +84,72 @@ func (f *MemoryFleet) Calls(call string) int {
 	return f.calls[call]
 }
 
+var memEraseIDRe = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
+
+var memUUIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// ProjectCalls counts POST /projects by client_request_id.
+func (f *MemoryFleet) ProjectCalls(requestID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls["project:"+requestID]
+}
+
+// SetProjectState changes a registry row, as a merge or a delete would.
+func (f *MemoryFleet) SetProjectState(id, state, into string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r := f.projects[id]; r != nil {
+		r.State, r.MergedInto = state, into
+	}
+}
+
+// RepointNotes moves a user's notes to another project id, as a merge does.
+func (f *MemoryFleet) RepointNotes(org, user, from, to string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u := f.user(org, user)
+	for _, r := range u.records {
+		if r.scopeID == from {
+			u.nextSeq++
+			r.scopeID, r.seq = to, u.nextSeq
+		}
+	}
+}
+
+// ProjectID is the id a client_request_id minted.
+func (f *MemoryFleet) ProjectID(requestID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.projectIDs[requestID]
+}
+
+// ProjectsClient is the registry as a client sees it. The same request id always gets
+// the same row, whatever its state.
+func (f *MemoryFleet) ProjectsClient() fleetapi.Projects { return fakeProjects{f} }
+
+type fakeProjects struct{ f *MemoryFleet }
+
+func (p fakeProjects) Create(_ context.Context, req fleetapi.ProjectCreateRequest) (fleetapi.Project, error) {
+	f := p.f
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls["project:"+req.ClientRequestID]++
+	if req.Name == "" || req.Audience != fleetapi.ProjectAudiencePrivate {
+		return fleetapi.Project{}, apiErr(400, "invalid_request", "bad project")
+	}
+	if id, ok := f.projectIDs[req.ClientRequestID]; ok {
+		return *f.projects[id], nil
+	}
+	if f.projects == nil {
+		f.projects, f.projectIDs = map[string]*fleetapi.Project{}, map[string]string{}
+	}
+	id := fmt.Sprintf("00000000-0000-4000-8000-%012d", len(f.projects)+1)
+	f.projects[id] = &fleetapi.Project{ID: id, State: fleetapi.ProjectActive}
+	f.projectIDs[req.ClientRequestID] = id
+	return *f.projects[id], nil
+}
+
 type memRec struct {
 	seq                                   int64
 	state                                 string
@@ -83,6 +162,7 @@ type memRec struct {
 	title, titleHLC                       string
 	pinned                                bool
 	pinnedHLC, scope, scopeHLC            string
+	scopeID                               string
 	lastAccessed                          string
 	reason, supersededBy                  string
 	recall                                map[string]int64
@@ -98,14 +178,17 @@ type memUser struct {
 	floor        int64
 	erasedAtSeq  int64
 	erasedBefore string
-	records      map[string]*memRec
-	aliases      map[string]string
-	liveRecords  int
-	liveBytes    int64
+	// The last forget-all's id and answer: a retry with the id gets the answer again.
+	forgetAllID   string
+	forgetAllResp fleetapi.MemoryForgetAllResponse
+	records       map[string]*memRec
+	aliases       map[string]string
+	liveRecords   int
+	liveBytes     int64
 }
 
 func (u *memUser) scopeEnabled(s string) bool {
-	if s != "long_term" && s != "global" {
+	if s != "long_term" && s != "global" && s != "project" {
 		return false
 	}
 	for _, x := range u.scopes {
@@ -140,6 +223,12 @@ func apiErr(status int, code, msg string) *fleetapi.APIError {
 // RateLimited is the error Fleet returns for 429 (for Fault).
 func RateLimited(retryAfterSeconds int) error {
 	return &fleetapi.APIError{Status: 429, Code: fleetapi.CodeRateLimited, Message: "too many requests; back off and retry later",
+		Details: map[string]string{"retry_after_seconds": strconv.Itoa(retryAfterSeconds)}}
+}
+
+// EraseInProgress is Fleet's answer while a large erase is still running (for Fault).
+func EraseInProgress(status, retryAfterSeconds int) error {
+	return &fleetapi.APIError{Status: status, Code: fleetapi.CodeEraseInProgress, Message: "erasing",
 		Details: map[string]string{"retry_after_seconds": strconv.Itoa(retryAfterSeconds)}}
 }
 
@@ -415,7 +504,7 @@ type prepared struct {
 
 func validKind(k string) bool {
 	switch k {
-	case "raw", "narrative_extractive", "narrative_synthesised", "narrative_extractive_fallback":
+	case "raw", "narrative_extractive", "narrative_synthesised", "narrative_extractive_fallback", "observation", "session_summary":
 		return true
 	}
 	return false
@@ -659,8 +748,37 @@ func (pt *pushTx) item(it fleetapi.MemoryPushItem) fleetapi.MemoryPushResult {
 	if rj != nil {
 		return rejected(it.ID, rj)
 	}
+	if it.Kind == "observation" || it.Kind == "session_summary" {
+		if pt.f.RefuseCaptureKinds {
+			return rejected(it.ID, &reject{code: "invalid_field", field: "kind"})
+		}
+		if pt.f.CaptureOff {
+			return rejected(it.ID, &reject{code: "capture_off", field: "kind", retry: true})
+		}
+	}
 	if p.scope != nil && p.scope.v == "project" {
-		return rejected(it.ID, &reject{code: "scope_not_supported_yet", field: "scope_kind"})
+		if !pt.f.ProjectScope {
+			return rejected(it.ID, &reject{code: "scope_not_supported_yet", field: "scope_kind"})
+		}
+		if pt.u.consent < "memory-sync/v4" {
+			return rejected(it.ID, &reject{code: "consent_upgrade_required", field: "scope_kind", retry: true})
+		}
+		if !memUUIDRe.MatchString(it.ScopeID) {
+			return rejected(it.ID, &reject{code: "invalid_field", field: "scope_id"})
+		}
+		row := pt.f.projects[it.ScopeID]
+		switch {
+		case row == nil:
+			return rejected(it.ID, &reject{code: "project_not_found", field: "scope_id"})
+		case row.State == fleetapi.ProjectDeleted:
+			return rejected(it.ID, &reject{code: "project_deleted", field: "scope_id"})
+		case row.State == fleetapi.ProjectMerged:
+			r := rejected(it.ID, &reject{code: "project_merged", field: "scope_id"})
+			r.CanonicalID = row.MergedInto
+			return r
+		}
+	} else if it.ScopeID != "" {
+		return rejected(it.ID, &reject{code: "invalid_field", field: "scope_id"})
 	}
 	target, isAlias := it.ID, false
 	if c, ok := pt.u.aliases[it.ID]; ok {
@@ -743,7 +861,7 @@ func (pt *pushTx) applyToLive(r *memRec, p *prepared) (changed, tomb bool, rj *r
 		changed = true
 	}
 	if p.scope != nil && (r.scopeHLC == "" || p.scope.hlc > r.scopeHLC) {
-		r.scope, r.scopeHLC = p.scope.v, p.scope.hlc
+		r.scope, r.scopeHLC, r.scopeID = p.scope.v, p.scope.hlc, p.it.ScopeID
 		changed, scopeChanged = true, true
 	}
 	if p.it.LastAccessed != "" && p.it.LastAccessed > r.lastAccessed {
@@ -871,7 +989,7 @@ func (pt *pushTx) create(p *prepared) fleetapi.MemoryPushResult {
 	}
 	r := &memRec{seq: pt.alloc(), state: "live", content: *it.Content, hash: p.hash, kind: it.Kind, turnID: it.TurnID,
 		source: it.Source, sourceTurn: it.SourceTurn, toolName: it.ToolName, filesRead: it.FilesRead, filesModified: it.FilesModified,
-		createdAt: created, weight: w, size: size, scope: p.scope.v, scopeHLC: p.scope.hlc, hasScope: true, lastAccessed: it.LastAccessed}
+		createdAt: created, weight: w, size: size, scope: p.scope.v, scopeHLC: p.scope.hlc, scopeID: it.ScopeID, hasScope: true, lastAccessed: it.LastAccessed}
 	if p.title != nil {
 		r.title, r.titleHLC, r.hasTitle = p.title.v, p.title.hlc, true
 	}
@@ -947,7 +1065,7 @@ func (pt *pushTx) wire(id string, r *memRec, device string) fleetapi.MemoryRecor
 	return fleetapi.MemoryRecord{ID: id, Seq: seqStr(r.seq), State: "live", Content: r.content, ContentHash: r.hash, Kind: r.kind,
 		RetrievalWeight: r.weight, TurnID: r.turnID, Source: r.source, SourceTurn: r.sourceTurn, ToolName: r.toolName,
 		FilesRead: nz(r.filesRead), FilesModified: nz(r.filesModified), CreatedAt: r.createdAt, Title: r.title, TitleHLC: r.titleHLC,
-		Pinned: r.pinned, PinnedHLC: r.pinnedHLC, ScopeKind: r.scope, ScopeHLC: r.scopeHLC, RecallCount: total,
+		Pinned: r.pinned, PinnedHLC: r.pinnedHLC, ScopeKind: r.scope, ScopeHLC: r.scopeHLC, ScopeID: r.scopeID, RecallCount: total,
 		RecallCountOthers: total - mine, LastAccessed: r.lastAccessed, Aliases: aliases}
 }
 
@@ -1082,7 +1200,22 @@ func (c *memClient) PutSettings(ctx context.Context, upd fleetapi.MemorySettings
 					seen[s] = true
 					scopes = append(scopes, s)
 				}
-			case "project", "session":
+			case "project":
+				if !f.ProjectScope {
+					return fleetapi.MemorySettings{}, apiErr(422, fleetapi.CodeScopeNotSupported, "only long_term and global memory can sync in v1")
+				}
+				consent := upd.ConsentVersion
+				if consent == "" {
+					consent = f.user(c.org, c.user).consent
+				}
+				if consent < "memory-sync/v4" {
+					return fleetapi.MemorySettings{}, apiErr(422, fleetapi.CodeConsentUpgradeRequired, "project notes need memory-sync/v4")
+				}
+				if !seen[s] {
+					seen[s] = true
+					scopes = append(scopes, s)
+				}
+			case "session":
 				return fleetapi.MemorySettings{}, apiErr(422, fleetapi.CodeScopeNotSupported, "only long_term and global memory can sync in v1")
 			default:
 				return fleetapi.MemorySettings{}, apiErr(400, fleetapi.CodeInvalidRequestBody, "unknown scope")
@@ -1103,6 +1236,8 @@ func (c *memClient) PutSettings(ctx context.Context, upd fleetapi.MemorySettings
 			u.consent = upd.ConsentVersion
 		}
 		u.enabled = *upd.Enabled
+	} else if upd.ConsentVersion != "" {
+		u.consent = upd.ConsentVersion
 	}
 	if scopes != nil {
 		u.scopes = scopes
@@ -1149,13 +1284,23 @@ func (c *memClient) ForgetAll(ctx context.Context, req fleetapi.MemoryForgetAllR
 		return fleetapi.MemoryForgetAllResponse{}, apiErr(422, fleetapi.CodeConfirmationRequired, `send {"confirm":"forget-all"} to erase all memory`)
 	}
 	u := f.user(c.org, c.user)
+	if req.RequestID != "" && !memEraseIDRe.MatchString(req.RequestID) {
+		return fleetapi.MemoryForgetAllResponse{}, apiErr(400, fleetapi.CodeInvalidRequestBody, "request_id, if sent, is 1-64 characters of A-Za-z0-9._:-")
+	}
+	// A repeat of the erase on record: the same id, or no id and no live note.
+	if u.erasedBefore != "" && (req.RequestID == u.forgetAllID && req.RequestID != "" || req.RequestID == "" && u.liveRecords == 0) {
+		return u.forgetAllResp, c.after("forget_all")
+	}
+	f.Erases++
+	f.ForgetAllIDs = append(f.ForgetAllIDs, req.RequestID)
 	n := u.liveRecords
 	u.records, u.aliases = map[string]*memRec{}, map[string]string{}
 	floor := u.nextSeq
 	u.floor, u.erasedAtSeq, u.nextSeq = floor, floor, floor+1
 	u.erasedBefore = fmt.Sprintf("%016d:%06d:fleet", f.now().UnixMilli(), 0)
 	u.liveRecords, u.liveBytes = 0, 0
-	return fleetapi.MemoryForgetAllResponse{Erased: n, ErasedBefore: u.erasedBefore}, c.after("forget_all")
+	u.forgetAllID, u.forgetAllResp = req.RequestID, fleetapi.MemoryForgetAllResponse{Erased: n, ErasedBefore: u.erasedBefore}
+	return u.forgetAllResp, c.after("forget_all")
 }
 
 func (c *memClient) Export(ctx context.Context, fn func(fleetapi.MemoryRecord) error) (fleetapi.MemoryExportTrailer, error) {

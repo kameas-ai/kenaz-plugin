@@ -14,6 +14,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 	"github.com/kameas-ai/kenaz-plugin/internal/memory"
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 )
 
 // panicProvider fails the test if any tool touches Kameas Fleet.
@@ -235,7 +236,7 @@ func TestDescriptionsSayOnDevice(t *testing.T) {
 			t.Errorf("%s: must not describe memory as private", tl.Name)
 		}
 	}
-	if n != 10 {
+	if n != 11 {
 		t.Fatalf("%d tools", n)
 	}
 }
@@ -260,6 +261,209 @@ func TestToolGroupNeverReachesFleet(t *testing.T) {
 		src, _ := os.ReadFile(f)
 		if strings.Contains(string(src), "d.Provider") || strings.Contains(string(src), ".Provider.") {
 			t.Errorf("%s uses the Fleet provider", f)
+		}
+	}
+}
+
+// Automatically captured notes carry the untrusted label wherever they are
+// recalled, and timeline finds what surrounds one.
+func TestRecallLabelsAutomaticNotes(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	path := filepath.Join(root, "memory", "memory.db")
+	workdir := t.TempDir()
+	o := Options{Path: path, Workdir: func() string { return workdir }, Enabled: func() bool { return true }}
+	svc := memory.NewService(memory.ServiceOptions{StateRoot: root})
+	p, err := o.project()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := memory.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var autoID string
+	for i, title := range []string{"before note", "captured signal", "after note"} {
+		id, _, err := st.SaveAuto(ctx, memory.AutoNote{ProjectKey: p.Key, Title: title, Body: "body", Source: memory.SourceCodex, Kind: memory.KindObservation, Tags: []string{memory.AutoTag}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 1 {
+			autoID = id
+		}
+	}
+	mine, err := st.Save(ctx, memory.NewNote{ProjectKey: p.Key, Title: "deliberate", Body: "body", Source: memory.SourceCLI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	got := runGet(ctx, o, svc, GetInput{IDs: []string{autoID, mine}})
+	if len(got.Notes) != 2 || got.Notes[0].Untrusted != memory.UntrustedLabel || got.Notes[1].Untrusted != "" {
+		t.Errorf("get: %+v", got)
+	}
+	found := runSearch(ctx, o, svc, SearchInput{Query: "captured"})
+	if len(found.Results) != 1 || found.Results[0].Untrusted != memory.UntrustedLabel {
+		t.Errorf("search: %+v", found)
+	}
+	tl := runTimeline(ctx, o, svc, TimelineInput{Anchor: autoID, Before: 1, After: 1})
+	if tl.Error != nil || len(tl.Entries) != 3 || tl.Entries[0].Title != "before note" || tl.Entries[1].Untrusted == "" {
+		t.Errorf("timeline: %+v", tl)
+	}
+	if q := runTimeline(ctx, o, svc, TimelineInput{Query: "captured", Before: -1, After: -1}); q.Anchor != autoID || len(q.Entries) != 1 {
+		t.Errorf("timeline by query: %+v", q)
+	}
+	if none := runTimeline(ctx, o, svc, TimelineInput{}); none.Error == nil {
+		t.Error("no anchor and no query should be refused")
+	}
+}
+
+// The member's setting limits every read in a chat app, even project=all, and only
+// in a chat app. Titles a chat app sees are scrubbed.
+func TestChatRecallSetting(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	path := filepath.Join(root, "memory", "memory.db")
+	workdir := t.TempDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	limited, chat := true, true
+	o := Options{Path: path, Workdir: func() string { return workdir }, Enabled: func() bool { return true },
+		Chat: func() bool { return chat }, RecallNoProject: func() bool { return limited }}
+	svc := memory.NewService(memory.ServiceOptions{StateRoot: root})
+	st, err := memory.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := st.Save(ctx, memory.NewNote{ProjectKey: "p1", Title: "shared word project", Body: "body", Source: memory.SourceCLI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	global, err := st.Save(ctx, memory.NewNote{ProjectKey: memory.GlobalProject, Title: "shared word global at " + home + "/x from a@example.com", Body: "body", Source: memory.SourceCLI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	for _, p := range []string{"", "all", "current"} {
+		if got := runSearch(ctx, o, svc, SearchInput{Query: "shared", Project: p}); len(got.Results) != 1 || got.Results[0].ID != global {
+			t.Errorf("search project=%q: %+v", p, got)
+		}
+		if got := runRecent(ctx, o, svc, RecentInput{Project: p}); len(got.Entries) != 1 || got.Entries[0].ID != global {
+			t.Errorf("recent project=%q: %+v", p, got)
+		}
+		if got := runTimeline(ctx, o, svc, TimelineInput{Anchor: global, Project: p, Before: 5, After: 5}); len(got.Entries) != 1 {
+			t.Errorf("timeline project=%q: %+v", p, got)
+		}
+	}
+	if got := runGet(ctx, o, svc, GetInput{IDs: []string{project, global}}); len(got.Notes) != 1 || got.Notes[0].ID != global || len(got.Missing) != 1 || got.Missing[0] != project {
+		t.Errorf("get: %+v", got)
+	}
+	if got := runExport(ctx, o, svc, ExportInput{}); got.Total != 1 || len(got.Notes) != 1 || got.Notes[0].ID != global {
+		t.Errorf("export: %+v", got)
+	}
+	if tl := runTimeline(ctx, o, svc, TimelineInput{Anchor: project, Project: "all"}); tl.Error == nil || len(tl.Entries) != 0 {
+		t.Errorf("timeline reached a project note: %+v", tl)
+	}
+	got := runRecent(ctx, o, svc, RecentInput{})
+	if title := got.Entries[0].Title; strings.Contains(title, home) || strings.Contains(title, "a@example.com") {
+		t.Errorf("chat title not scrubbed: %q", title)
+	}
+
+	// Default: every project.
+	limited = false
+	if got := runRecent(ctx, o, svc, RecentInput{}); len(got.Entries) != 2 {
+		t.Errorf("default in chat: %+v", got)
+	}
+	// Outside a chat app the setting does nothing, and titles are as saved.
+	limited, chat = true, false
+	if got := runRecent(ctx, o, svc, RecentInput{Project: "all"}); len(got.Entries) != 2 {
+		t.Errorf("outside chat: %+v", got)
+	}
+	if got := runGet(ctx, o, svc, GetInput{IDs: []string{global}}); !strings.Contains(got.Notes[0].Title, home) {
+		t.Errorf("outside chat the title changed: %q", got.Notes[0].Title)
+	}
+}
+
+// A note an agent saves while the session-agent writer is on is labelled like any
+// automatic note.
+func TestSessionAgentSavesAreLabelled(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	workdir := t.TempDir()
+	o := Options{Path: filepath.Join(root, "memory", "memory.db"), Workdir: func() string { return workdir }, Enabled: func() bool { return true },
+		Disclose: func() string { return "" }, AutoSaves: func() bool { return true }}
+	svc := memory.NewService(memory.ServiceOptions{StateRoot: root})
+	out := runSave(ctx, o, svc, memory.SourceCodex, SaveInput{Title: "t", Body: "b"})
+	if out.Error != nil {
+		t.Fatal(out.Error)
+	}
+	if got := runGet(ctx, o, svc, GetInput{IDs: []string{out.ID}}); len(got.Notes) != 1 || got.Notes[0].Untrusted == "" || got.Notes[0].Kind != memory.KindObservation {
+		t.Errorf("%+v", got)
+	}
+}
+
+// The first read across every project in chat carries the notice, once. A limited chat,
+// and a read that returned nothing, don't use it up.
+func TestRecallNoticeOnce(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	path := filepath.Join(root, "memory", "memory.db")
+	limited, chat, claims := true, true, 0
+	o := Options{Path: path, Workdir: func() string { return t.TempDir() }, Enabled: func() bool { return true },
+		Chat: func() bool { return chat }, RecallNoProject: func() bool { return limited },
+		RecallNotice: func() string {
+			claims++
+			if claims == 1 {
+				return "the notice"
+			}
+			return ""
+		}}
+	svc := memory.NewService(memory.ServiceOptions{StateRoot: root})
+	st, err := memory.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.Save(ctx, memory.NewNote{ProjectKey: "p1", Title: "shared word", Body: "body", Source: memory.SourceCLI})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	if got := runSearch(ctx, o, svc, SearchInput{Query: "shared"}); got.NoticeForUser != "" || len(got.Results) != 0 || claims != 0 {
+		t.Errorf("limited: %+v, %d claims", got, claims)
+	}
+	limited = false
+	if got := runSearch(ctx, o, svc, SearchInput{Query: "nothing-matches"}); got.NoticeForUser != "" || claims != 0 {
+		t.Errorf("no notes read: %+v, %d claims", got, claims)
+	}
+	if got := runRecent(ctx, o, svc, RecentInput{}); got.NoticeForUser != "the notice" || len(got.Entries) != 1 {
+		t.Errorf("first read: %+v", got)
+	}
+	if got := runSearch(ctx, o, svc, SearchInput{Query: "shared"}); got.NoticeForUser != "" || len(got.Results) != 1 {
+		t.Errorf("second read: %+v", got)
+	}
+	chat = false
+	claims = 0
+	if got := runGet(ctx, o, svc, GetInput{IDs: []string{id}}); got.NoticeForUser != "" || claims != 0 {
+		t.Errorf("not chat: %+v, %d claims", got, claims)
+	}
+}
+
+// However an attempt went, the status never says the erase failed or that notes were kept.
+func TestSyncSummaryWhileErasing(t *testing.T) {
+	for code, again := range map[string]bool{"": false, "erase_pending": false, "fleet_unavailable": true, "rate_limited": true} {
+		st := memory.SyncStatus{SyncSettings: memory.SyncSettings{Enabled: true, ErasePending: true, StatusCode: code}}
+		got := SyncSummary(st, true)
+		if strings.Contains(got, usertext.EraseTryingAgain) != again {
+			t.Errorf("%q: %s", code, got)
+		}
+		for _, bad := range []string{"failed", "kept", "couldn't", "didn't"} {
+			if strings.Contains(got, bad) {
+				t.Errorf("%q says %q: %s", code, bad, got)
+			}
 		}
 	}
 }

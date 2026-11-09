@@ -3,9 +3,7 @@ package approvals
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base32"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,10 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/go-webauthn/webauthn/webauthn"
-
 	"github.com/kameas-ai/kenaz-plugin/internal/clock"
-	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Request is one write a tool wants to make. Prepare stores it verbatim.
@@ -125,20 +120,6 @@ func (i Identity) key() string { return i.Env + "\x00" + i.OrgID + "\x00" + i.Us
 // I/O, or an error when signed out.
 type IdentitySource func(ctx context.Context) (Identity, error)
 
-// IdentityVerifier runs a fresh, browser-completed Fleet sign-in (its own
-// PKCE flow, forced re-authentication) and returns the verified subject without changing the active
-// session. openURL receives the authorization URL; the approval page shows
-// it to the user. It is the bootstrap proof for first enrollment and
-// recovery; an agent-supplied bearer is never accepted instead.
-//
-// completeURL is where the provider's redirect must finally send the
-// browser that completed sign-in (after the loopback callback). It carries
-// a one-time token that binds the enrollment ceremony to that browser; it
-// must never be shown, logged or returned anywhere else.
-type IdentityVerifier interface {
-	VerifyIdentity(ctx context.Context, openURL func(string) error, completeURL string) (Identity, error)
-}
-
 // Limits and timings.
 const (
 	DefaultTTL       = 5 * time.Minute
@@ -163,12 +144,9 @@ var (
 	ErrNotSignedIn         = errors.New("not signed in")
 	ErrIdempotencyConflict = errors.New("idempotency key was already used with a different payload")
 	ErrOutcomeUnknown      = errors.New("write outcome unknown")
-	ErrUnavailable         = errors.New("approval_unavailable: no authenticator is enrolled and this build cannot enroll one")
-	ErrEnrollmentRequired  = errors.New("enrollment_required: set up an authenticator first")
-	ErrChallenge           = errors.New("approval challenge is missing, used or stale")
-	ErrAssertion           = errors.New("authenticator assertion rejected")
-	ErrEnrollmentRace      = errors.New("another authenticator was registered at the same time; start again")
 	ErrExpired             = errors.New("approval request expired")
+	ErrPayloadChanged      = errors.New("the stored request no longer matches what was prepared")
+	ErrUnavailable         = errors.New("approval_unavailable: requests can't be kept safely here")
 )
 
 // codedError carries a machine error code from an executor.
@@ -188,6 +166,15 @@ func ErrorCode(code string) error {
 	return codedError{code}
 }
 
+// CodeOf is the code of an error made with ErrorCode, or "" for any other error.
+func CodeOf(err error) string {
+	var ce codedError
+	if errors.As(err, &ce) {
+		return ce.code
+	}
+	return ""
+}
+
 func errCode(err error) string {
 	var ce codedError
 	if errors.As(err, &ce) {
@@ -205,17 +192,10 @@ type Options struct {
 	Env string
 	// Identity reports the active session (required).
 	Identity IdentitySource
-	// Verifier performs browser identity verification for enrollment;
-	// nil means this build cannot enroll (approval_unavailable unless an
-	// authenticator is already enrolled).
-	Verifier IdentityVerifier
 	// BaseURL returns the page origin, e.g. "http://localhost:4318".
 	BaseURL func() string
 	Clock   clock.Clock
 	Logger  *slog.Logger
-	// RPDisplayName is shown by the authenticator (the build's display
-	// name, "Kenaz").
-	RPDisplayName string
 	// TTL overrides DefaultTTL (tests only).
 	TTL time.Duration
 	// StoreKey authenticates the pending-write store and the enrolled
@@ -260,15 +240,54 @@ type Manager struct {
 	log *slog.Logger
 	st  *store
 
-	mu         sync.Mutex
-	execs      map[string]Executor
-	recons     map[string]Reconciler
-	renderers  map[string]Renderer
-	challenges map[string]*challenge  // by request id + page session, one-use
-	receipts   map[string][]byte      // by request id, one-use, memory only
-	enrolls    map[string]*enrollment // by enrollment id
-	csrf       map[string]time.Time   // issued page tokens
-	running    map[string]bool        // request ids whose executor is running
+	mu        sync.Mutex
+	execs     map[string]Executor
+	recons    map[string]Reconciler
+	renderers map[string]Renderer
+	csrf      map[string]time.Time // issued page tokens
+	running   map[string]bool      // request ids whose executor is running
+	backoff   map[string]*reconcileWait
+}
+
+// reconcileWait spaces out reconcile attempts that got nowhere, in memory only. A
+// sweep runs every 30 seconds for up to a week, and a lookup can be costly.
+type reconcileWait struct {
+	until time.Time
+	delay time.Duration
+}
+
+const (
+	reconcileBackoffMin = time.Minute
+	reconcileBackoffMax = time.Hour
+)
+
+func (m *Manager) reconcileDue(id string, now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	w := m.backoff[id]
+	return w == nil || !now.Before(w.until)
+}
+
+func (m *Manager) reconcileStuck(id string, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.backoff == nil {
+		m.backoff = map[string]*reconcileWait{}
+	}
+	w := m.backoff[id]
+	if w == nil {
+		w = &reconcileWait{delay: reconcileBackoffMin}
+		m.backoff[id] = w
+	} else if w.delay *= 2; w.delay > reconcileBackoffMax {
+		w.delay = reconcileBackoffMax
+	}
+	w.until = now.Add(w.delay)
+}
+
+func (m *Manager) reconcileMoved(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.backoff, id)
 }
 
 // New opens the store and recovers interrupted records: approved requests
@@ -284,9 +303,6 @@ func New(opt Options) (*Manager, error) {
 	if opt.Logger == nil {
 		opt.Logger = slog.New(slog.DiscardHandler)
 	}
-	if opt.RPDisplayName == "" {
-		opt.RPDisplayName = variant.Current.DisplayName
-	}
 	if opt.TTL <= 0 {
 		opt.TTL = DefaultTTL
 	}
@@ -300,9 +316,7 @@ func New(opt Options) (*Manager, error) {
 	m := &Manager{
 		opt: opt, clk: opt.Clock, log: opt.Logger, st: st,
 		execs: map[string]Executor{}, recons: map[string]Reconciler{}, renderers: map[string]Renderer{},
-		challenges: map[string]*challenge{}, receipts: map[string][]byte{},
-		enrolls: map[string]*enrollment{}, csrf: map[string]time.Time{},
-		running: map[string]bool{},
+		csrf: map[string]time.Time{}, running: map[string]bool{},
 	}
 	now := m.clk.Now()
 	err = st.update(func(s *state) error {
@@ -313,7 +327,6 @@ func New(opt Options) (*Manager, error) {
 				r.purgeContent()
 			case StatusExecuting:
 				r.Status, r.UpdatedAt = StatusReconciling, now
-				r.ReceiptSHA256 = ""
 			}
 		}
 		return nil
@@ -454,7 +467,6 @@ func (m *Manager) current(ctx context.Context) (Identity, uint64, error) {
 		return nil
 	})
 	if err != nil {
-		m.dropEphemeral()
 		return Identity{}, 0, fmt.Errorf("%w: %v", ErrNotSignedIn, err)
 	}
 	if uerr != nil {
@@ -481,36 +493,10 @@ func hasOpen(s *state) bool {
 	return false
 }
 
-// dropEphemeral forgets every challenge, receipt and enrollment ceremony.
-func (m *Manager) dropEphemeral() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.challenges = map[string]*challenge{}
-	m.receipts = map[string][]byte{}
-	for _, e := range m.enrolls {
-		if e.cancel != nil {
-			e.cancel() // stop its identity sign-in; it can never complete
-		}
-	}
-	m.enrolls = map[string]*enrollment{}
-}
-
-func credentialsFor(s *state, id Identity) []webauthn.Credential {
-	var out []webauthn.Credential
-	for _, c := range s.Credentials {
-		if c.Identity == id {
-			out = append(out, c.Credential)
-		}
-	}
-	return out
-}
-
 // Prepare stores r as a pending write and returns its opaque id. It never
 // writes to the destination. A retry with the same operation, identity,
 // idempotency key and payload returns the existing request; the same key
-// with a different payload is refused. Without an enrolled authenticator
-// and without a way to enroll one, it stores nothing and returns
-// StatusApprovalUnavailable.
+// with a different payload is refused.
 func (m *Manager) Prepare(ctx context.Context, r Request) (string, Status, error) {
 	if err := validate(r); err != nil {
 		return "", "", err
@@ -560,10 +546,6 @@ func (m *Manager) Prepare(ctx context.Context, r Request) (string, Status, error
 				return nil
 			}
 		}
-		if len(credentialsFor(s, cur)) == 0 && m.opt.Verifier == nil {
-			outSt = StatusApprovalUnavailable
-			return nil
-		}
 		s.Records[id] = &record{
 			ID: id, Operation: r.Operation, Identity: cur,
 			TargetIDs: append([]string(nil), view.Targets...), Payload: append([]byte(nil), r.Payload...),
@@ -576,9 +558,6 @@ func (m *Manager) Prepare(ctx context.Context, r Request) (string, Status, error
 	})
 	if err != nil {
 		return "", "", err
-	}
-	if outSt == StatusApprovalUnavailable {
-		return "", outSt, nil
 	}
 	m.log.Info("approval prepared", "op", r.Operation, "request", outID, "state", string(outSt))
 	return outID, outSt, nil
@@ -639,22 +618,9 @@ func (m *Manager) List(ctx context.Context) []Info {
 	return out
 }
 
-// Enrolled reports whether the signed-in identity has an authenticator.
-func (m *Manager) Enrolled(ctx context.Context) bool {
-	cur, _, err := m.current(ctx)
-	if err != nil {
-		return false
-	}
-	n := 0
-	m.st.view(func(s *state) { n = len(credentialsFor(s, cur)) })
-	return n > 0
-}
-
 // SignOut cancels every request that has not started executing, purges
-// their content, forgets challenges, receipts and enrollment ceremonies and
-// bumps the profile generation (logout, node removal).
+// their content and bumps the profile generation (logout, node removal).
 func (m *Manager) SignOut() {
-	m.dropEphemeral()
 	now := m.clk.Now()
 	if err := m.st.update(func(s *state) error {
 		signOutState(s, now)
@@ -669,6 +635,7 @@ func (m *Manager) SignOut() {
 func (m *Manager) sweep(ctx context.Context) {
 	now := m.clk.Now()
 	var reconcile []string
+	stillOpen := map[string]bool{}
 	_ = m.st.update(func(s *state) error {
 		changed := false
 		for id, r := range s.Records {
@@ -681,6 +648,7 @@ func (m *Manager) sweep(ctx context.Context) {
 				delete(s.Records, id)
 				changed = true
 			case r.Status == StatusReconciling:
+				stillOpen[id] = true
 				if now.Sub(r.UpdatedAt) > retainUnresolved {
 					// Nothing resolved it in a week (no reconciler, or the
 					// destination never answered): it ends as failed with
@@ -702,19 +670,14 @@ func (m *Manager) sweep(ctx context.Context) {
 		return nil
 	})
 	m.mu.Lock()
-	for id, c := range m.challenges {
-		if !now.Before(c.expires) {
-			delete(m.challenges, id)
+	for id := range m.backoff {
+		if !stillOpen[id] {
+			delete(m.backoff, id)
 		}
 	}
 	for t, exp := range m.csrf {
 		if !now.Before(exp) {
 			delete(m.csrf, t)
-		}
-	}
-	for id, e := range m.enrolls {
-		if !now.Before(e.expires) {
-			delete(m.enrolls, id)
 		}
 	}
 	m.mu.Unlock()
@@ -766,75 +729,16 @@ func errResult(code string) []byte {
 	return b
 }
 
-// execute consumes the one-use receipt for an approved request, rechecks
-// identity, generation and payload hash, moves it to executing (CAS) and
-// runs the executor with the stored payload and key.
-func (m *Manager) execute(ctx context.Context, id string, receipt []byte) Status {
-	if !m.claimRun(id) {
-		return StatusExecuting
-	}
-	defer m.releaseRun(id)
-	m.mu.Lock()
-	held, ok := m.receipts[id]
-	delete(m.receipts, id)
-	m.mu.Unlock()
-	if !ok || len(receipt) == 0 || !equalBytes(held, receipt) {
-		return m.cancel(id, "receipt")
-	}
-	rh := sha256.Sum256(receipt)
-	cur, gen, err := m.current(ctx)
-	if err != nil {
-		return m.cancel(id, "signed_out")
-	}
-	verified, err := m.provenRecord(id, StatusApproved)
-	if err != nil {
-		return m.cancel(id, "proof")
-	}
-	now := m.clk.Now()
-	rec, err := m.st.transition(id, []Status{StatusApproved}, StatusExecuting, now, func(r *record) error {
-		switch {
-		case !sameProof(r.Proof, verified.Proof) || r.PayloadSHA256 != verified.PayloadSHA256:
-			return ErrAssertion
-		case r.ReceiptSHA256 != hex.EncodeToString(rh[:]):
-			return ErrChallenge
-		case r.Identity != cur || r.ProfileGen != gen:
-			return ErrIdentityMismatch
-		case payloadHash(r.Payload) != r.PayloadSHA256:
-			return ErrAssertion
-		case !now.Before(r.ExpiresAt):
-			return ErrExpired
-		}
-		r.ReceiptSHA256 = "" // consumed
-		r.Attempts++
-		return nil
-	})
-	if err != nil {
-		if errors.Is(err, ErrConflict) {
-			st, _, _ := m.Status(ctx, id)
-			return st
-		}
-		return m.cancel(id, "recheck_failed")
-	}
-	return m.run(ctx, rec)
-}
-
-// provenRecord returns a copy of record id in state want after
-// re-verifying its approval proof.
-func (m *Manager) provenRecord(id string, want Status) (*record, error) {
+// reconcilingRecord returns a copy of record id if it is waiting for a reconcile. Only
+// an approved request ever gets there.
+func (m *Manager) reconcilingRecord(id string) *record {
 	var rec *record
 	m.st.view(func(s *state) {
-		if r, ok := s.Records[id]; ok && r.Status == want {
+		if r, ok := s.Records[id]; ok && r.Status == StatusReconciling {
 			rec = r.clone()
 		}
 	})
-	if rec == nil {
-		return nil, ErrConflict
-	}
-	if err := m.verifyProof(rec); err != nil {
-		m.log.Warn("approval proof rejected", "request", id)
-		return nil, err
-	}
-	return rec, nil
+	return rec
 }
 
 func (m *Manager) cancel(id, why string) Status {
@@ -898,9 +802,12 @@ func (m *Manager) reconcile(ctx context.Context, id string) {
 		return
 	}
 	defer m.releaseRun(id)
-	rec, err := m.provenRecord(id, StatusReconciling)
-	if err != nil || len(rec.Payload) == 0 {
-		return // never act on a record without a verified approval
+	if !m.reconcileDue(id, m.clk.Now()) {
+		return
+	}
+	rec := m.reconcilingRecord(id)
+	if rec == nil || len(rec.Payload) == 0 {
+		return
 	}
 	_, recon := m.executor(rec.Operation)
 	if recon == nil {
@@ -913,23 +820,22 @@ func (m *Manager) reconcile(ctx context.Context, id string) {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), execTimeout)
 	res, applied, err := recon(rctx, rec.Payload, rec.IdempotencyKey)
 	cancel()
+	now := m.clk.Now()
 	if err != nil {
+		m.reconcileStuck(id, now)
 		return
 	}
-	now := m.clk.Now()
 	if applied {
+		m.reconcileMoved(id)
 		_, _ = m.st.transition(id, []Status{StatusReconciling}, StatusDone, now, func(r *record) error {
-			if !sameProof(r.Proof, rec.Proof) {
-				return ErrAssertion
-			}
 			r.Result = bounded(res)
 			return nil
 		})
 		return
 	}
 	next, err := m.st.transition(id, []Status{StatusReconciling}, StatusExecuting, now, func(r *record) error {
-		if !sameProof(r.Proof, rec.Proof) || r.PayloadSHA256 != rec.PayloadSHA256 {
-			return ErrAssertion
+		if r.PayloadSHA256 != rec.PayloadSHA256 {
+			return ErrPayloadChanged
 		}
 		if r.Attempts >= 3 {
 			return ErrConflict
@@ -938,8 +844,12 @@ func (m *Manager) reconcile(ctx context.Context, id string) {
 		return nil
 	})
 	if err != nil {
+		// Out of attempts: nothing more can happen but a later lookup finding it.
+		m.reconcileStuck(id, now)
 		return
 	}
+	// A failed retry comes back here, so each one waits longer.
+	m.reconcileStuck(id, now)
 	m.run(ctx, next)
 }
 

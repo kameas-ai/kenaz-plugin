@@ -206,6 +206,58 @@ func TestIdle(t *testing.T) {
 	}
 }
 
+// A busy lane keeps the daemon up past the idle timeout, until it is done.
+func TestIdleWaitsForBusyLane(t *testing.T) {
+	dir := t.TempDir()
+	clk := clock.NewFake(time.Unix(1_700_000_000, 0))
+	opt := testOpts(t, newFake(true), dir)
+	opt.Clock = clk
+	lane := &busyLane{}
+	lane.busy.Store(true)
+	opt.Lanes = []Lane{lane}
+	d := New(opt)
+	done := make(chan error, 1)
+	go func() { done <- d.Run(context.Background()) }()
+	waitFor(t, func() bool { _, err := Connect(context.Background(), dir); return err == nil })
+	advance := func(n int) {
+		for i := 0; i < n; i++ {
+			clk.Advance(time.Minute)
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	advance(20)
+	select {
+	case <-done:
+		t.Fatal("exited with a busy lane")
+	default:
+	}
+	lane.busy.Store(false)
+	// The exit comes from the idle timer on the fake clock, and a slow runner can take a
+	// while to act on a tick or to finish going down, so time keeps moving during the wait.
+	for end := time.Now().Add(30 * time.Second); ; advance(1) {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		if time.Now().After(end) {
+			// It may be on its way out already, with nothing left to connect to.
+			if c, err := Connect(context.Background(), dir); err == nil {
+				c.Shutdown(context.Background(), false)
+			}
+			<-done
+			t.Fatal("daemon did not idle-exit once the lane was done")
+		}
+	}
+}
+
+type busyLane struct {
+	fakeLane
+	busy atomic.Bool
+}
+
+func (l *busyLane) Busy() bool { return l.busy.Load() }
+
 // a foreign listener on the preferred port is skipped, and a stale
 // daemon.json pointing at it is not trusted.
 func TestForeignPort(t *testing.T) {

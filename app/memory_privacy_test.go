@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
@@ -18,6 +22,8 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/fixtures"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 	memorytools "github.com/kameas-ai/kenaz-plugin/internal/mcp/tools/memory"
+	"github.com/kameas-ai/kenaz-plugin/internal/memory"
+	"github.com/kameas-ai/kenaz-plugin/internal/memory/capture"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
 )
 
@@ -129,11 +135,26 @@ func checkSpooled(t *testing.T) {
 		t.Fatal("nothing spooled")
 	}
 	stop()
-	n := 0
+	n, bodies := 0, 0
 	if _, err := l2.sp.Drain(func(r spool.Record) error {
 		n++
 		if bytes.Contains(r.Payload, []byte(memoryMarker)) {
 			t.Fatalf("memory marker in a spooled %s payload", r.Lane)
+		}
+		// An owned batch holds its body base64-encoded in JSON, so the raw check
+		// above cannot see inside it.
+		if len(r.Payload) > 9 && r.Payload[0] == tagOwnedBatch {
+			var ob ownedBatch
+			if err := json.Unmarshal(r.Payload[9:], &ob); err != nil {
+				t.Fatalf("spooled batch: %v", err)
+			}
+			if len(ob.Batch.Body) == 0 {
+				t.Fatal("a spooled batch with no body checks nothing")
+			}
+			bodies++
+			if bytes.Contains(ob.Batch.Body, []byte(memoryMarker)) {
+				t.Fatalf("memory marker in a spooled %s batch body", ob.Batch.Signal)
+			}
 		}
 		return nil
 	}); err != nil {
@@ -141,5 +162,86 @@ func checkSpooled(t *testing.T) {
 	}
 	if n == 0 {
 		t.Fatal("no spooled payloads were checked")
+	}
+	if bodies == 0 {
+		t.Fatal("no spooled batch bodies were checked")
+	}
+}
+
+// canaryModel writes a note quoting the marker, as a model might.
+type canaryModel struct{ saw string }
+
+func (m *canaryModel) Complete(_ context.Context, r capture.Request) (capture.Response, error) {
+	m.saw += r.User
+	return capture.Response{Text: `{"title":"summary ` + memoryMarker + `","completed":"` + memoryMarker + `","observations":[{"type":"change","title":"note ` + memoryMarker + `","narrative":"quotes ` + memoryMarker + `"}]}`,
+		Usage: capture.Usage{In: 10, Out: 10}}, nil
+}
+
+// Telemetry canary. A marker capture has seen in a tool's output, that the worker
+// has sent to a model and written into a note, appears in nothing telemetry uploads
+// or spools, even when the harness's own telemetry quotes the same call, and in no
+// file on the device but the note's store.
+func TestCapturedTextNeverReachesTelemetry(t *testing.T) {
+	root := t.TempDir()
+	paths := capture.PathsIn(root)
+	if err := capture.RecordOffered(paths, time.Now(), "local"); err != nil {
+		t.Fatal(err)
+	}
+	settings := capture.Settings{On: true, Acked: true, Writer: capture.WriterLocal, Command: "x", Model: "m"}
+	cwd := t.TempDir()
+	send := func(event string, body map[string]any) {
+		b, _ := json.Marshal(body)
+		capture.Handle(context.Background(), event, bytes.NewReader(b), capture.HookDeps{Paths: paths, Settings: settings, Host: "codex", Now: time.Now})
+	}
+	send(capture.HookTool, map[string]any{"session_id": "s", "cwd": cwd, "tool_name": "Bash",
+		"tool_input": map[string]any{"command": "run " + memoryMarker}, "tool_response": map[string]any{"stdout": memoryMarker}})
+	send(capture.HookStop, map[string]any{"session_id": "s", "cwd": cwd, "last_assistant_message": memoryMarker})
+	if capture.QueueLen(paths) != 2 {
+		t.Fatal("capture did not see the marker")
+	}
+	t.Run("uploaded", func(t *testing.T) { checkUploaded(t) })
+	t.Run("spooled", func(t *testing.T) { checkSpooled(t) })
+
+	model := &canaryModel{}
+	db := filepath.Join(root, "memory", "memory.db")
+	w := &capture.Worker{Paths: paths, Settings: func() capture.Settings { return settings },
+		Offered:       func(context.Context) (bool, string, string) { return true, "", "local" },
+		NewSummarizer: func(capture.Settings) capture.Summarizer { return model },
+		Open: func(context.Context) (*memory.Store, string, error) {
+			st, err := memory.Open(db)
+			return st, "local", err
+		}}
+	w.Pass(context.Background())
+	if !strings.Contains(model.saw, memoryMarker) || capture.QueueLen(paths) != 0 {
+		t.Fatalf("the worker did not process the marker: queue %d", capture.QueueLen(paths))
+	}
+	if st := capture.LoadState(paths); st.Saved == 0 || st.FailedBatches != 0 {
+		t.Fatalf("the worker did not run cleanly: %+v", st)
+	}
+	report, _ := json.Marshal(capture.BuildReport(paths, settings, time.Now()))
+	state, _ := json.Marshal(capture.LoadState(paths))
+	if bytes.Contains(report, []byte(memoryMarker)) || bytes.Contains(state, []byte(memoryMarker)) {
+		t.Error("capture's status carries captured text")
+	}
+	stored := 0
+	if err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(path, db) {
+			stored += bytes.Count(b, []byte(memoryMarker))
+		} else if bytes.Contains(b, []byte(memoryMarker)) {
+			t.Errorf("%s holds captured text", path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stored == 0 {
+		t.Error("the note was not saved, so this checked nothing")
 	}
 }

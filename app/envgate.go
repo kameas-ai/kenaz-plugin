@@ -11,8 +11,9 @@ import (
 )
 
 // envGateSkip are the commands the env gate leaves alone: the hook must
-// never fail a harness session, and help-like commands select no env.
-var envGateSkip = map[string]bool{"hook": true, "licenses": true, "version": true, "migrate": true}
+// never fail a harness session, and help-like commands and the local context
+// library select no env.
+var envGateSkip = map[string]bool{"hook": true, "licenses": true, "version": true, "migrate": true, "context": true}
 
 // refuseEnv stops a command, with a usage error, when the Fleet
 // environment it would use (its --env flag, the env variables or

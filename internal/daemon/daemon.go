@@ -310,7 +310,7 @@ func (d *Daemon) wait(ctx context.Context, serveErr <-chan error) string {
 }
 
 // idle implements the idle rule: no live MCP client, no activity for IdleTimeout,
-// and an empty spool.
+// no busy lane, and an empty spool.
 func (d *Daemon) idle() bool {
 	now := d.clk.Now()
 	d.mu.Lock()
@@ -324,6 +324,11 @@ func (d *Daemon) idle() bool {
 	d.mu.Unlock()
 	if live > 0 || !quiet {
 		return false
+	}
+	for _, l := range d.opt.Lanes {
+		if b, ok := l.(BusyLane); ok && b.Busy() {
+			return false
+		}
 	}
 	return d.opt.Spool == nil || d.opt.Spool.Empty()
 }

@@ -1,10 +1,17 @@
 name: ci
+# kameas-ci: check
 
+# CI spend (owner decision 2026-10-30): every pipeline is manual. Run it with
+# workflow_dispatch on the branch to check; no push, pull_request or schedule
+# triggers.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
+
+# CI spend: every pipeline is manual. A new dispatch on the same branch
+# cancels the in-flight run; runs on main queue instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -67,6 +74,47 @@ jobs:
       # The release-mode check, offline, against the vendored docs list.
       - run: TAGS=kenaz_claude_desktop_chat scripts/check-supported-tools.sh internal/supported/testdata/supported-tools.json
 
+  # The local context file library's tag: it is off in shipped builds, so nothing
+  # else compiles it.
+  check-context-library:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet -tags kenaz_context_library ./...
+      - run: go test -race -tags kenaz_context_library ./app/ ./internal/contextlib/ ./internal/hook/ ./internal/mcp/...
+
+  # The project-scope release (build tag kenaz_memory_project_scope): memory-sync/v4
+  # and what forget-all erases. Off until Kameas Fleet syncs project notes.
+  check-memory-project-scope:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet -tags kenaz_memory_project_scope ./...
+      - run: go test -race -tags kenaz_memory_project_scope ./app/ ./internal/memory/... ./internal/mcp/... ./notices/
+
+  # Automatic memory capture (build tag kenaz_memory_capture): off in releases.
+  check-memory-capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet -tags kenaz_memory_capture ./...
+      - run: go test -race -tags kenaz_memory_capture ./app/ ./internal/hook/ ./internal/memory/... ./internal/mcp/...
+
   # Windows: the migration's renames, junctions and open-file refusals,
   # setup's path handling, the relay lock and the credential store behave
   # differently there. Both build variants.
@@ -95,6 +143,7 @@ jobs:
         # build conflict run from those two packages.
         run: |
           go test -race -tags "$TAGS" ./internal/config/... ./internal/daemon/... ./internal/skills/... ./internal/credstore/... ./internal/consent/...
+          go test -race -tags "$TAGS" ./internal/memory/... ./internal/safetext/... ./internal/mcp/tools/memory/
           go test -race -tags "$TAGS" ./internal/setup/ -run 'TestSetupStateOfOtherBuild|TestBrokenRegistrationsAfterMove|TestWithin|TestMovedStateLinkKeepsRegisteredCopy'
           go test -race -tags "$TAGS" ./app/ -run 'TestUpgradeKeepsFilesUntilMigrate|TestOldStateNotDeletableWhileRegistered|TestOtherBuildRelayInEnv|TestSessionOutsideAllowedEnvsIsSignedOut|TestConflictProviderAnswersEveryCall|TestSkillsWiringIsPerEnv|TestRunEnvGuardsSessionEnv|TestCredentialStore|TestDaemonStartsAndLogoutPurgesWithoutKeychain'
 

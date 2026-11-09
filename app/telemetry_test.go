@@ -536,6 +536,138 @@ func TestTelemetryLaneTransientFailureSpools(t *testing.T) {
 	}
 }
 
+// postClaudeLogs sends the Claude Code fixture and leaves the session open.
+func postClaudeLogs(t *testing.T, rx http.Handler) {
+	t.Helper()
+	body, err := proto.Marshal(fixtures.ClaudeLogs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:55555"
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	w := httptest.NewRecorder()
+	rx.ServeHTTP(w, req)
+	if w.Code/100 != 2 {
+		t.Fatalf("receiver status %d", w.Code)
+	}
+}
+
+// A relay that stops keeps the summary of each open session, and the next
+// relay uploads it.
+func TestTelemetryLaneStopSummarizesOpenSessions(t *testing.T) {
+	f := &laneFleet{Provider: stub.New(), optedIn: true}
+	dir, ks := t.TempDir(), &spool.Memory{}
+	l, rx, stop := newTestLaneIn(t, f, dir, ks, nil)
+	if !waitFor(t, func() bool { return l.dec.SignedIn() && admitted(l) }) {
+		t.Fatal("lane never admitted")
+	}
+	postClaudeLogs(t, rx)
+	if !l.Busy() {
+		t.Fatal("an open session must keep the daemon up")
+	}
+	stop()
+	if l.Busy() {
+		t.Fatal("session still open after Stop")
+	}
+	if l.sp.Empty() {
+		t.Fatal("summary was not kept")
+	}
+	l.sp.Close()
+
+	newTestLaneIn(t, f, dir, ks, nil)
+	ended := []byte(fleetschema.KindConversationEnded)
+	if !waitFor(t, func() bool {
+		for _, b := range f.batches() {
+			if bytes.Contains(b.Body, ended) {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatal("the next relay did not upload the summary")
+	}
+}
+
+func endedCount(f *laneFleet) int {
+	n := 0
+	for _, b := range f.batches() {
+		if bytes.Contains(b.Body, []byte(fleetschema.KindConversationEnded)) {
+			n++
+		}
+	}
+	return n
+}
+
+// An opt-out made while the relay is down reaches a batch the last relay
+// spooled: the next relay must not send it.
+func TestTelemetryLaneOptOutWhileDownDropsSpooledBatch(t *testing.T) {
+	f := &laneFleet{Provider: stub.New(), optedIn: true}
+	dir, ks := t.TempDir(), &spool.Memory{}
+	l, rx, stop := newTestLaneIn(t, f, dir, ks, nil)
+	if !waitFor(t, func() bool { return l.dec.SignedIn() && admitted(l) }) {
+		t.Fatal("lane never admitted")
+	}
+	postClaudeLogs(t, rx)
+	stop()
+	if l.sp.Empty() {
+		t.Fatal("summary was not kept")
+	}
+	l.sp.Close()
+	f.set(func(f *laneFleet) { f.optedIn = false })
+
+	next, _, _ := newTestLaneIn(t, f, dir, ks, nil)
+	if !waitFor(t, func() bool { return next.sp.Empty() }) {
+		t.Fatal("spooled batch was neither sent nor dropped")
+	}
+	if n := endedCount(f); n != 0 {
+		t.Fatalf("%d summaries uploaded after the opt-out", n)
+	}
+}
+
+// A refresh that fails leaves consent unknown, which is not a withdrawal: the
+// lane is not admitted yet, so the spooled summary waits.
+func TestTelemetryLaneSpoolKeptWhileRefreshFails(t *testing.T) {
+	f := &laneFleet{Provider: stub.New(), optedIn: true}
+	dir, ks := t.TempDir(), &spool.Memory{}
+	l, rx, stop := newTestLaneIn(t, f, dir, ks, nil)
+	if !waitFor(t, func() bool { return l.dec.SignedIn() && admitted(l) }) {
+		t.Fatal("lane never admitted")
+	}
+	postClaudeLogs(t, rx)
+	stop()
+	l.sp.Close()
+	f.set(func(f *laneFleet) { f.approvalsErr = &fleetapi.APIError{Status: 503} })
+
+	next, _, _ := newTestLaneIn(t, f, dir, ks, nil)
+	next.kick()
+	time.Sleep(150 * time.Millisecond)
+	if next.sp.Empty() {
+		t.Fatal("spooled batch dropped while the refresh was failing")
+	}
+	f.set(func(f *laneFleet) { f.approvalsErr = nil })
+	if !waitFor(t, func() bool { return endedCount(f) == 1 }) {
+		t.Fatalf("summary never uploaded; status %+v", next.Status())
+	}
+}
+
+// Logout stops the lane and then purges it: the summary Stop kept goes too.
+func TestTelemetryLaneStopThenPurgeKeepsNothing(t *testing.T) {
+	f := &laneFleet{Provider: stub.New(), optedIn: true}
+	l, rx, stop := newTestLane(t, f)
+	if !waitFor(t, func() bool { return l.dec.SignedIn() && admitted(l) }) {
+		t.Fatal("lane never admitted")
+	}
+	postClaudeLogs(t, rx)
+	stop()
+	if err := l.Purge(); err != nil {
+		t.Fatal(err)
+	}
+	if !l.sp.Empty() {
+		t.Fatal("data left after purge")
+	}
+}
+
 // shiftedClaudeLogs is fixtures.ClaudeLogs with every timestamp moved by d.
 func shiftedClaudeLogs(d time.Duration) *logsv1.LogsData {
 	m := fixtures.ClaudeLogs()

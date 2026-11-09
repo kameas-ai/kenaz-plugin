@@ -8,6 +8,7 @@ package secretscan
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -31,6 +32,12 @@ var credentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}`),
 }
 
+// credentialRules names credentialPatterns, in the same order.
+var credentialRules = []string{
+	"cloud_access_key", "github_token", "github_token", "private_key", "chat_token",
+	"payment_key", "ai_provider_key", "ai_provider_key", "json_web_token",
+}
+
 // syncCredentialPatterns extend credentialPatterns for anything about to
 // leave the device: assignments of passwords, secrets and tokens, bearer
 // headers and credentials in URLs.
@@ -40,6 +47,11 @@ var syncCredentialPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@`),
 	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`),
 	regexp.MustCompile(`(?i)\baws_secret_access_key\b`),
+}
+
+// syncCredentialRules names syncCredentialPatterns, in the same order.
+var syncCredentialRules = []string{
+	"assigned_secret", "bearer_token", "credentials_in_url", "google_api_key", "cloud_secret_name",
 }
 
 // Patterns returns the credential shapes LooksLikeSecret checks.
@@ -73,4 +85,47 @@ func LooksLikeCredentialForSync(parts ...string) bool {
 		}
 	}
 	return false
+}
+
+// Finding says where to look: the kind of credential and its line, counting from
+// 1. It deliberately has no field for the matched text, so nothing built on it
+// can show or send what it found.
+type Finding struct {
+	Rule string `json:"rule"`
+	Line int    `json:"line"`
+}
+
+// maxFindings bounds a report: past this the person has plenty to go on.
+const maxFindings = 20
+
+// Find reports where s matches what LooksLikeSecret checks.
+func Find(s string) []Finding { return find(s, credentialPatterns, credentialRules) }
+
+// FindForSync reports where s matches what LooksLikeCredentialForSync checks.
+func FindForSync(s string) []Finding {
+	return append(Find(s), find(s, syncCredentialPatterns, syncCredentialRules)...)
+}
+
+func find(s string, patterns []*regexp.Regexp, rules []string) []Finding {
+	var out []Finding
+	seen := map[Finding]bool{}
+	for i, re := range patterns {
+		for _, m := range re.FindAllStringIndex(s, maxFindings) {
+			f := Finding{Rule: rules[i], Line: strings.Count(s[:m[0]], "\n") + 1}
+			if !seen[f] {
+				seen[f] = true
+				out = append(out, f)
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Line != out[j].Line {
+			return out[i].Line < out[j].Line
+		}
+		return out[i].Rule < out[j].Rule
+	})
+	if len(out) > maxFindings {
+		out = out[:maxFindings]
+	}
+	return out
 }

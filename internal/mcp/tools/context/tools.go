@@ -17,7 +17,9 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/config"
+	"github.com/kameas-ai/kenaz-plugin/internal/contextlib"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 )
 
 // MetaRequiresUserInteraction makes Claude Code prompt the human on every
@@ -62,6 +64,11 @@ func NewGroup(opts Options) mcp.Group {
 	return mcp.GroupFunc(func(s *sdk.Server, d mcp.Deps) { register(s, d, opts) })
 }
 
+func defaultRand() io.Reader { return rand.Reader }
+
+// ConfiguredDefaultTeam is the default_team setting, or "".
+func ConfiguredDefaultTeam() string { return configuredDefaultTeam() }
+
 func configuredDefaultTeam() string {
 	p, err := config.DefaultPaths()
 	if err != nil {
@@ -97,7 +104,10 @@ type SearchOutput struct {
 	Team      string      `json:"team,omitempty"`
 	Results   []SearchHit `json:"results"`
 	Truncated bool        `json:"truncated"`
-	Error     *ToolError  `json:"error,omitempty"`
+	// Trust and Notice label the text: titles and snippets are written by teammates.
+	Trust  string     `json:"trust,omitempty"`
+	Notice string     `json:"notice,omitempty"`
+	Error  *ToolError `json:"error,omitempty"`
 }
 
 type PullInput struct {
@@ -119,7 +129,10 @@ type PullOutput struct {
 	Nodes     []PulledNode `json:"nodes"`
 	Missing   []string     `json:"missing,omitempty"`
 	Truncated bool         `json:"truncated"`
-	Error     *ToolError   `json:"error,omitempty"`
+	// Trust and Notice label the text: a teammate can write anything in a note.
+	Trust  string     `json:"trust,omitempty"`
+	Notice string     `json:"notice,omitempty"`
+	Error  *ToolError `json:"error,omitempty"`
 }
 
 type ShareArgs struct {
@@ -204,7 +217,7 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        ToolSearch,
 		Title:       "Search team context",
-		Description: "Search the notes your team has shared in Kameas Fleet (guidance, procedures, facts, glossary terms). Read-only: sends only your query to Kameas Fleet. Use scope=org to search organization-wide notes (Enterprise plan).",
+		Description: "Search the notes your team has shared in Kameas Fleet (guidance, procedures, facts, glossary terms). Read-only: sends only your query to Kameas Fleet. Use scope=org to search organization-wide notes (Enterprise plan). " + contextlib.TeamNotice,
 		Annotations: withTitle(readOnly, "Search team context"),
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in SearchInput) (*sdk.CallToolResult, SearchOutput, error) {
 		touch()
@@ -215,7 +228,7 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        ToolPull,
 		Title:       "Read team context",
-		Description: "Fetch the full text of shared Kameas Fleet context notes by id (ids come from context_search). Read-only.",
+		Description: "Fetch the full text of shared Kameas Fleet context notes by id (ids come from context_search). Read-only. " + contextlib.TeamNotice,
 		Annotations: withTitle(readOnly, "Read team context"),
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in PullInput) (*sdk.CallToolResult, PullOutput, error) {
 		touch()
@@ -227,9 +240,8 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 		Name:  ToolShare,
 		Title: "Share a note with your team",
 		Description: "Prepares sharing the given title and body to Kameas Fleet as a note visible to every member of the chosen team. " +
-			"Only share text the user wrote or asked to share; never share file contents, code, transcripts or anything containing secrets. " +
-			"Nothing is uploaded by this call: it returns request_id, status \"pending\" and approve_url. Give the user approve_url; they review the exact note there " +
-			"and approve with their security key or device unlock.",
+			"Only share text or files the user asked to share. Never include secrets. " +
+			usertext.ToolApproval,
 		Annotations: &sdk.ToolAnnotations{Title: "Share a note with your team", DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 		Meta:        writes,
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in ShareArgs) (*sdk.CallToolResult, ShareOutput, error) {
@@ -242,8 +254,7 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 		Name:  ToolPromote,
 		Title: "Share a team note with the whole organization",
 		Description: "Widens an existing team-shared Kameas Fleet note so the WHOLE ORGANIZATION can see it. " +
-			"Organization owners and admins only, Enterprise plan. Nothing changes by this call: it returns request_id, status \"pending\" and approve_url, " +
-			"where the user approves with their security key or device unlock.",
+			"Organization owners and admins only, Enterprise plan. " + usertext.ToolApproval,
 		Annotations: &sdk.ToolAnnotations{Title: "Share a team note with the whole organization", DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 		Meta:        writes,
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in PromoteInput) (*sdk.CallToolResult, PromoteOutput, error) {
@@ -267,7 +278,7 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 // ---- handlers (exported behaviour is tested through MCP) ----
 
 func runSearch(ctx context.Context, p fleetapi.Provider, st StatusSource, o Options, in SearchInput) SearchOutput {
-	out := SearchOutput{Results: []SearchHit{}}
+	out := SearchOutput{Results: []SearchHit{}, Trust: contextlib.SourceTeam.Trust(), Notice: contextlib.TeamNotice}
 	scope := Scope(strings.ToLower(strings.TrimSpace(in.Scope)))
 	if scope == "" {
 		scope = ScopeTeam
@@ -321,7 +332,7 @@ func runSearch(ctx context.Context, p fleetapi.Provider, st StatusSource, o Opti
 }
 
 func runPull(ctx context.Context, p fleetapi.Provider, st StatusSource, o Options, in PullInput) PullOutput {
-	out := PullOutput{Nodes: []PulledNode{}}
+	out := PullOutput{Nodes: []PulledNode{}, Trust: contextlib.SourceTeam.Trust(), Notice: contextlib.TeamNotice}
 	sess, terr := Check(ctx, p, st, OpPull)
 	if terr != nil {
 		out.Error = terr
@@ -348,7 +359,10 @@ func runPull(ctx context.Context, p fleetapi.Provider, st StatusSource, o Option
 	}
 	byID := map[string]fleetapi.NodeContent{}
 	for _, n := range nodes {
-		byID[n.Node.ID] = n
+		// A taken-down node has no text to give, so it counts as missing.
+		if !n.Node.Deleted {
+			byID[n.Node.ID] = n
+		}
 	}
 	size := 0
 	for _, id := range req.IDs {
@@ -382,7 +396,7 @@ const (
 func runShare(ctx context.Context, p fleetapi.Provider, ap approvals.Preparer, st StatusSource, o Options, in ShareArgs) ShareOutput {
 	var out ShareOutput
 	// in.UserConfirmed is deliberately ignored: only the user's
-	// authenticator on the approval page authorizes the upload.
+	// approval authorizes the upload.
 	// Credentials are not scanned on the device: Kameas Fleet checks every
 	// shared note on arrival and rejects one that looks like it holds a
 	// credential. The executor maps that rejection to a code.
@@ -495,7 +509,7 @@ func lookupNode(ctx context.Context, p fleetapi.Provider, id string) (fleetapi.N
 		return fleetapi.NodeContent{}, MapError(err)
 	}
 	for _, n := range nodes {
-		if n.Node.ID == id {
+		if n.Node.ID == id && !n.Node.Deleted {
 			if n.Node.TeamID == "" || n.Node.Classification != fleetapi.ClassificationTeamShared {
 				return fleetapi.NodeContent{}, invalid("only a team note can be shared with the whole organization")
 			}
@@ -529,6 +543,12 @@ func ExecuteShare(p fleetapi.Provider, st StatusSource) approvals.Executor {
 		if !member || node.Classification != string(fleetapi.ClassificationTeamShared) || node.LoadPolicy != "on_demand" {
 			return nil, approvals.ErrorCode("scope_changed")
 		}
+		// A share retried after an unknown outcome can find its node taken down
+		// meanwhile, and pushing would bring it back. Only that definite answer stops
+		// it: this read is a courtesy, and failing it must not cost the note.
+		if takenDown(ctx, p, node) {
+			return nil, approvals.ErrorCode(failNodeGone)
+		}
 		got, err := p.Context().Push(ctx, ToPushRequest(node))
 		if err != nil {
 			return nil, writeErr(err)
@@ -544,20 +564,45 @@ func ExecuteShare(p fleetapi.Provider, st StatusSource) approvals.Executor {
 	}
 }
 
+// shareReadTimeout bounds the read before a share. A client that pages through the
+// graph could otherwise spend the whole approval on it.
+const shareReadTimeout = 15 * time.Second
+
+// takenDown reports a definite answer that node was taken down on Fleet. A failed read
+// isn't one.
+func takenDown(ctx context.Context, p fleetapi.Provider, node NodeInput) bool {
+	rctx, cancel := context.WithTimeout(ctx, shareReadTimeout)
+	defer cancel()
+	nodes, err := p.Context().Pull(rctx, fleetapi.PullRequest{IDs: []string{node.ID}, TeamID: node.TeamID})
+	if err != nil {
+		return false
+	}
+	for _, n := range nodes {
+		if n.Node.ID == node.ID && n.Node.Deleted {
+			return true
+		}
+	}
+	return false
+}
+
 // ReconcileShare reports whether an interrupted share reached Fleet (the
-// client-generated node id exists), without writing.
+// client-generated node id exists), without writing. A read that fails counts as not
+// there: the relay then retries a push of the same id and version, which is safe if it
+// landed, instead of repeating a read that may keep failing.
 func ReconcileShare(p fleetapi.Provider) approvals.Reconciler {
 	return func(ctx context.Context, payload []byte, _ string) ([]byte, bool, error) {
 		var node NodeInput
 		if err := json.Unmarshal(payload, &node); err != nil {
 			return nil, false, err
 		}
-		nodes, err := p.Context().Pull(ctx, fleetapi.PullRequest{IDs: []string{node.ID}, TeamID: node.TeamID})
+		rctx, cancel := context.WithTimeout(ctx, shareReadTimeout)
+		defer cancel()
+		nodes, err := p.Context().Pull(rctx, fleetapi.PullRequest{IDs: []string{node.ID}, TeamID: node.TeamID})
 		if err != nil {
-			return nil, false, err
+			return nil, false, nil
 		}
 		for _, n := range nodes {
-			if n.Node.ID == node.ID {
+			if n.Node.ID == node.ID && !n.Node.Deleted {
 				res, err := json.Marshal(map[string]string{"id": n.Node.ID, "classification": string(n.Node.Classification)})
 				return res, err == nil, err
 			}
@@ -677,7 +722,9 @@ func ReconcilePromote(p fleetapi.Provider) approvals.Reconciler {
 			return nil, false, err
 		}
 		for _, n := range nodes {
-			if n.Node.ID == pp.NodeID && n.Node.Classification == fleetapi.ClassificationOrgShared {
+			// A tombstone keeps its classification, so check it's still there: a
+			// promoted note taken down since isn't a promote that succeeded.
+			if n.Node.ID == pp.NodeID && !n.Node.Deleted && n.Node.Classification == fleetapi.ClassificationOrgShared {
 				res, err := json.Marshal(map[string]string{"id": n.Node.ID, "classification": string(n.Node.Classification)})
 				return res, err == nil, err
 			}

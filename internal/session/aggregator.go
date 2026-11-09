@@ -93,18 +93,23 @@ const maxSeen = 1024
 
 // State is the persisted per-session state (JSON-safe; no native ids).
 type State struct {
-	Client      canon.ClientKind `json:"client"`
-	Hash        string           `json:"hash"`
-	Provider    string           `json:"provider"`
-	First       time.Time        `json:"first"`
-	Last        time.Time        `json:"last"`
-	TokenIn     int64            `json:"token_in"`
-	TokenOut    int64            `json:"token_out"`
-	Cost        float64          `json:"cost"`
-	CostMissing bool             `json:"cost_missing"`
-	TurnCost    float64          `json:"turn_cost"`
-	HasTurnCost bool             `json:"has_turn_cost"`
-	SawSSEUsage bool             `json:"saw_sse_usage"`
+	Client   canon.ClientKind `json:"client"`
+	Hash     string           `json:"hash"`
+	Provider string           `json:"provider"`
+	First    time.Time        `json:"first"`
+	Last     time.Time        `json:"last"`
+	// Arrived is when the relay last received a record for the session, by
+	// its own clock. First and Last are the harness's timestamps, so idleness
+	// must not be judged from them: a future-dated record would hold the
+	// session, and with it the daemon, open indefinitely.
+	Arrived     time.Time `json:"arrived"`
+	TokenIn     int64     `json:"token_in"`
+	TokenOut    int64     `json:"token_out"`
+	Cost        float64   `json:"cost"`
+	CostMissing bool      `json:"cost_missing"`
+	TurnCost    float64   `json:"turn_cost"`
+	HasTurnCost bool      `json:"has_turn_cost"`
+	SawSSEUsage bool      `json:"saw_sse_usage"`
 	// Fallback holds Codex turn-span usage until close; it is used only if
 	// no sse_event usage arrived for the session.
 	Fallback []Out `json:"fallback,omitempty"`
@@ -194,6 +199,7 @@ func (a *Aggregator) ingestOne(h string, e canon.Event) []Out {
 	}
 	provider := defaultProvider[e.Client]
 	if st != nil {
+		st.Arrived = a.cfg.Now()
 		if e.Time.After(st.Last) {
 			st.Last = e.Time
 		}
@@ -316,7 +322,7 @@ func (a *Aggregator) Tick() []Out {
 	now := a.cfg.Now()
 	var out []Out
 	for _, h := range a.sortedLive() {
-		if now.Sub(a.live[h].Last) >= a.cfg.Idle {
+		if now.Sub(a.live[h].Arrived) >= a.cfg.Idle {
 			out = append(out, a.close(h)...)
 		}
 	}
@@ -336,6 +342,13 @@ func (a *Aggregator) Reset() {
 	defer a.mu.Unlock()
 	a.live = map[string]*State{}
 	a.local = map[string]string{}
+}
+
+// OpenCount returns the number of open sessions.
+func (a *Aggregator) OpenCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.live)
 }
 
 // CloseAll closes every open session (explicit shutdown flush).
@@ -408,6 +421,9 @@ func (a *Aggregator) Restore(states []State) {
 	defer a.mu.Unlock()
 	for i := range states {
 		s := states[i]
+		if s.Arrived.IsZero() {
+			s.Arrived = a.cfg.Now()
+		}
 		a.live[s.Hash] = &s
 	}
 }

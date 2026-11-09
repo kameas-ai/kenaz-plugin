@@ -3,6 +3,7 @@ package kenaz
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -152,19 +153,25 @@ func TestPluginLaunchesInstalledBinary(t *testing.T) {
 		}
 	}
 	readJSON(t, "plugin/hooks/hooks.json", &hooks)
-	want := map[string]string{
-		"SessionStart": "kenaz hook session-start",
-		"SessionEnd":   "kenaz hook session-end",
+	want := map[string][]string{
+		"SessionStart":     {"kenaz hook session-start", "kenaz hook memory-index"},
+		"SessionEnd":       {"kenaz hook session-end"},
+		"UserPromptSubmit": {"kenaz hook memory-prompt"},
+		"PostToolUse":      {"kenaz hook memory-tool"},
+		"Stop":             {"kenaz hook memory-stop"},
 	}
-	for event, cmd := range want {
+	if len(hooks.Hooks) != len(want) {
+		t.Errorf("hooks.json registers %d events, want %d", len(hooks.Hooks), len(want))
+	}
+	for event, cmds := range want {
 		var got []string
 		for _, m := range hooks.Hooks[event] {
 			for _, h := range m.Hooks {
 				got = append(got, h.Command)
 			}
 		}
-		if len(got) != 1 || got[0] != cmd {
-			t.Errorf("hooks.json %s: want [%q], got %q", event, cmd, got)
+		if !slices.Equal(got, cmds) {
+			t.Errorf("hooks.json %s: want %q, got %q", event, cmds, got)
 		}
 	}
 
@@ -228,5 +235,46 @@ func readJSON(t *testing.T, path string, v any) {
 	}
 	if err := json.Unmarshal(b, v); err != nil {
 		t.Fatalf("%s: %v", path, err)
+	}
+}
+
+// plugin/ is what customers install. The draft skill stays out of it until its
+// tools ship; the staff bundle lays it over plugin/.
+func TestDraftContextSkillIsNotInTheCustomerPlugin(t *testing.T) {
+	if _, err := os.Stat("plugin/skills/draft-context"); !os.IsNotExist(err) {
+		t.Fatalf("plugin/skills/draft-context: %v", err)
+	}
+	overlay, err := os.ReadFile("plugin/.codex-mcp.json")
+	if err != nil || strings.Contains(string(overlay), "context_share_file") {
+		t.Fatalf("plugin/.codex-mcp.json names a tool customers don't have: %v", err)
+	}
+}
+
+// The draft skill runs only when the user asks: the host must not pick it on its
+// own, and the text must keep the conditions for drawing on private notes.
+func TestDraftContextSkillRunsOnlyWhenAsked(t *testing.T) {
+	b, err := os.ReadFile("staff/plugin/skills/draft-context/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(b)
+	front, _, ok := strings.Cut(strings.TrimPrefix(doc, "---\n"), "\n---\n")
+	if !ok || !strings.Contains(front, "\ndisable-model-invocation: true\n") {
+		t.Fatalf("the skill must switch off model invocation:\n%s", front)
+	}
+	for _, want := range []string{
+		"If they did not ask for that in their latest message, stop",
+		"note ids",
+		"Show the exact text",
+		"`from_memory: true`",
+		"never approve for them",
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("skill lost %q", want)
+		}
+	}
+	codex, err := os.ReadFile("staff/plugin/skills/draft-context/agents/openai.yaml")
+	if err != nil || !strings.Contains(string(codex), "allow_implicit_invocation: false") {
+		t.Fatalf("Codex must not pick it on its own: %s %v", codex, err)
 	}
 }

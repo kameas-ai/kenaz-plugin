@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // MutateOptions qualify update, forget and forget-all.
@@ -277,6 +278,7 @@ func (s *Store) editInPlace(ctx context.Context, tx *sql.Tx, r record, may, body
 		}
 		// New content never inherits an earlier approval: the superseded
 		// create is dropped and the new text waits for its own approval.
+		r.queueAuto = approved
 		st, code, _, err := s.makeEligible(ctx, tx, &r, approved, 0)
 		if err != nil {
 			return res, err
@@ -318,6 +320,7 @@ func (s *Store) replace(ctx context.Context, tx *sql.Tx, old record, body, hlc s
 	if _, err := tx.ExecContext(ctx, `UPDATE records SET visibility = 'replaced', updated_at = ? WHERE id = ?`, now, old.ID); err != nil {
 		return UpdateResult{}, err
 	}
+	nr.queueAuto = approved
 	st, code, newOp, err := s.makeEligible(ctx, tx, &nr, approved, 0)
 	if err != nil {
 		return UpdateResult{}, err
@@ -423,6 +426,12 @@ func (s *Store) ForgetAll(ctx context.Context, o MutateOptions) (ForgetAllResult
 		if err := dropHeldLabels(ctx, tx, ""); err != nil {
 			return err
 		}
+		if err := clearSaveGrant(ctx, tx); err != nil {
+			return err
+		}
+		if err := markErased(ctx, tx, s.now()); err != nil {
+			return err
+		}
 		for _, q := range []string{`DELETE FROM records`, `DELETE FROM outbox`, `DELETE FROM replacements`, `DELETE FROM aliases`, `DELETE FROM tombstones`, `DELETE FROM snapshot_stage`} {
 			if _, err := tx.ExecContext(ctx, q); err != nil {
 				return err
@@ -439,6 +448,11 @@ func (s *Store) ForgetAll(ctx context.Context, o MutateOptions) (ForgetAllResult
 profile_generation = profile_generation + 1, lease_holder = '', lease_until = 0 WHERE singleton = 1`, string(h)); err != nil {
 				return err
 			}
+			// This confirmation's own id, whatever an earlier one had: a retry after a
+			// restart must send the same one, and a new forget-all must not.
+			if err := setEraseRequestID(ctx, tx, newEraseRequestID(), string(h)); err != nil {
+				return err
+			}
 		}
 		if o.RequestKey != "" {
 			return recordApplied(ctx, tx, o.RequestKey, "memory.forget_all", res, s.now().UnixMilli())
@@ -446,6 +460,53 @@ profile_generation = profile_generation + 1, lease_holder = '', lease_until = 0 
 		return nil
 	})
 	return res, err
+}
+
+// metaEraseRequestID names the forget-all waiting for Fleet's answer, and
+// metaEraseRequestBarrier is the barrier that id was minted for.
+const (
+	metaEraseRequestID      = "erase_request_id"
+	metaEraseRequestBarrier = "erase_request_barrier"
+)
+
+func setEraseRequestID(ctx context.Context, tx *sql.Tx, id, barrier string) error {
+	if err := setMeta(ctx, tx, metaEraseRequestID, id); err != nil {
+		return err
+	}
+	return setMeta(ctx, tx, metaEraseRequestBarrier, barrier)
+}
+
+func newEraseRequestID() string { return strings.TrimPrefix(newID(), "mem-") }
+
+// EraseRequestID is the id to send with the forget-all waiting for Fleet's answer. Retries of
+// one barrier share an id. A barrier with none of its own gets one here, kept from then on:
+// it went up before ids existed, or an older binary took a forget-all and left the last id
+// behind. Sending that id would get the old result back, and erase nothing.
+func (s *Store) EraseRequestID(ctx context.Context, l Lease) (string, error) {
+	var id string
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		if err := checkLease(ctx, tx, l); err != nil {
+			return err
+		}
+		var barrier string
+		if err := tx.QueryRowContext(ctx, `SELECT erase_barrier_hlc FROM sync_state WHERE singleton = 1`).Scan(&barrier); err != nil {
+			return err
+		}
+		var err error
+		if id, err = readMeta(ctx, tx, metaEraseRequestID); err != nil {
+			return err
+		}
+		minted, err := readMeta(ctx, tx, metaEraseRequestBarrier)
+		if err != nil {
+			return err
+		}
+		if id != "" && minted == barrier {
+			return nil
+		}
+		id = newEraseRequestID()
+		return setEraseRequestID(ctx, tx, id, barrier)
+	})
+	return id, err
 }
 
 // ErasePending reports whether a forget-all still has to reach Fleet.
@@ -460,6 +521,9 @@ func (s *Store) ErasePending(ctx context.Context) (bool, error) {
 func (s *Store) CompleteErase(ctx context.Context, l Lease, erasedBefore string) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		if err := checkLease(ctx, tx, l); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM meta WHERE key IN (?, ?)`, metaEraseRequestID, metaEraseRequestBarrier); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE sync_state SET erase_pending = 0, own_erase_before = ?, erased_before = ? WHERE singleton = 1`, erasedBefore, erasedBefore)

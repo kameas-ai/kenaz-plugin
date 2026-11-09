@@ -10,6 +10,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/consent"
 	"github.com/kameas-ai/kenaz-plugin/internal/credstore"
+	"github.com/kameas-ai/kenaz-plugin/internal/memory/capture"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
@@ -65,7 +66,15 @@ func runLogout(env Env, args []string) int {
 			errs = append(errs, fmt.Errorf("remove credential store marker: %w", err))
 		}
 	}
-	// Memory is local user data, not Fleet data: logout keeps it.
+	// What capture queued is still unprocessed session data of the account
+	// signing out. It goes, and so does Fleet's answer for that account: capture
+	// doesn't carry on signed out unless it is turned on signed out. Memory itself
+	// is local user data, not Fleet data, and logout keeps it.
+	if mp, err := env.memoryPaths(); err == nil {
+		if err := capture.ResetOffer(mp.captureRoot()); err != nil {
+			errs = append(errs, fmt.Errorf("purge memory capture queue: %w", err))
+		}
+	}
 	if l := env.keptMemoryLine(); l != "" {
 		defer fmt.Fprintln(env.Stdout, l)
 	}

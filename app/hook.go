@@ -24,6 +24,7 @@ func runHook(env Env, args []string) int {
 	if mp, err := env.memoryPaths(); err == nil {
 		deps.Memory = memoryIndex{mp: mp}
 	}
+	deps.ContextFiles = env.contextFilesHook()
 	if r, err := env.resolve(""); err == nil {
 		deps.Daemon = relayDaemon{stateDir: r.StateDir, spawn: r.spawner(env)}
 		deps.Banners = consentBanners{env: env, r: r}

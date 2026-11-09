@@ -296,7 +296,7 @@ func TestForgetAllBarrier(t *testing.T) {
 		t.Fatal("erased note still on the other device")
 	}
 	if _, ok := b.get(bProject); !ok {
-		t.Fatal("remote erase touched a project (local-only) note")
+		t.Fatal("remote erase touched a project note while notice v3 says they are kept")
 	}
 	if _, ok := b.get(bPending); ok {
 		t.Fatal("an unsynced note created before the erase survived it")
@@ -365,5 +365,53 @@ func TestSingleSender(t *testing.T) {
 	}
 	if f.Calls("push") != 0 {
 		t.Fatal("pushed without the lease")
+	}
+}
+
+// A forget-all from another device ends this device's grant for saves.
+func TestPulledForgetAllClearsTheGrant(t *testing.T) {
+	ctx := context.Background()
+	f := fleetapitest.NewMemoryFleet()
+	a, b := newDevice(t, f, alice), newDevice(t, f, alice)
+	a.enable()
+	b.enable()
+	a.save("one", "erase me", true)
+	a.sync()
+	b.sync()
+	if err := b.st.GrantSaves(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.st.ForgetAll(ctx, memory.MutateOptions{SyncApproved: true}); err != nil {
+		t.Fatal(err)
+	}
+	a.sync()
+	b.sync()
+	st, err := b.st.Status(ctx)
+	if err != nil || st.SaveGrant {
+		t.Errorf("grant after a pulled forget-all: %v %v", st.SaveGrant, err)
+	}
+}
+
+// At the project-scope release, forget-all reaches project notes on other devices.
+func TestForgetAllReachesProjectNotesAtTheRelease(t *testing.T) {
+	memory.ProjectScopeRelease = true
+	defer func() { memory.ProjectScopeRelease = false }()
+	ctx := context.Background()
+	f := fleetapitest.NewMemoryFleet()
+	f.ProjectScope = true // the release: Fleet syncs project notes, and says so
+	a, b := newDevice(t, f, alice), newDevice(t, f, alice)
+	a.enable()
+	b.enable()
+	a.save("one", "erase me", true)
+	a.sync()
+	b.sync()
+	project := b.save("p", "b project note", false)
+	if _, err := a.st.ForgetAll(ctx, memory.MutateOptions{SyncApproved: true}); err != nil {
+		t.Fatal(err)
+	}
+	a.sync()
+	b.sync()
+	if _, ok := b.get(project); ok {
+		t.Fatal("forget-all left a project note on the other device")
 	}
 }
