@@ -51,5 +51,5 @@ go mod tidy >/dev/null 2>&1 || true
 make licenses PUBLIC="$work/public" >/dev/null
 sha="$(git -C "$src" rev-parse --short HEAD 2>/dev/null || echo local)"
 P="$public_mod/app"; C="$client_mod/env"
-go build -trimpath -tags fleet,kenaz_memory_capture,kenaz_memory_project_scope,kenaz_context_library -ldflags "-X $P.Version=0.8.0-staff.$sha -X $P.BuildCommit=$sha -X $P.PublicModuleVersion=staff -X $P.PrivateModuleVersion=staff -X $P.PrivateCommit=staff -X $C.devClientID=$FLEET_DEV_CLIENT_ID -X $C.prodClientID=$FLEET_PROD_CLIENT_ID" -o "$work/kenaz" ./cmd/kenaz
+go build -trimpath -tags fleet,kenaz_memory_capture,kenaz_memory_project_scope,kenaz_context_library -ldflags "-X $P.Version=0.8.1-staff.$sha -X $P.BuildCommit=$sha -X $P.PublicModuleVersion=staff -X $P.PrivateModuleVersion=staff -X $P.PrivateCommit=staff -X $C.devClientID=$FLEET_DEV_CLIENT_ID -X $C.prodClientID=$FLEET_PROD_CLIENT_ID" -o "$work/kenaz" ./cmd/kenaz
 python3 "$src/scripts/staff-bundle.py" --binary "$work/kenaz" --out "$out" --suffix "staff.$sha"

@@ -11,6 +11,7 @@ import (
 
 	"github.com/kameas-ai/kenaz-plugin/app"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi/stub"
+	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/mcpb"
 )
 
@@ -48,7 +49,15 @@ func registeredTools(t *testing.T) map[string]*sdk.Tool {
 	return got
 }
 
-// contextFileTools are served only in builds with features.ContextLibrary.
+// localContextTools are served in every build with features.ContextLibrary (the
+// official build has it), so the manifest lists them.
+var localContextTools = map[string]bool{"context_list": true, "context_read": true, "context_write": true}
+
+// teamContextTools are served only while Kameas Fleet offers context_files to the
+// signed-in member's organization, so the manifest leaves them out.
+var teamContextTools = map[string]bool{"context_share_file": true, "context_pull_files": true}
+
+// contextFileTools are all of them: served only in builds with features.ContextLibrary.
 var contextFileTools = map[string]bool{"context_list": true, "context_read": true, "context_write": true, "context_share_file": true, "context_pull_files": true}
 
 // The Claude Desktop manifest lists exactly the tools `kenaz mcp` serves,
@@ -73,14 +82,17 @@ func TestMCPBManifestToolsMatchServer(t *testing.T) {
 	}
 	var missing, extra []string
 	for name := range served {
-		if contextFileTools[name] {
-			continue // not in shipped builds yet: see features.ContextLibrary
+		if teamContextTools[name] {
+			continue
 		}
 		if _, ok := listed[name]; !ok {
 			missing = append(missing, name)
 		}
 	}
 	for name := range listed {
+		if localContextTools[name] && !features.ContextLibrary {
+			continue // a build without the library doesn't serve them
+		}
 		if _, ok := served[name]; !ok {
 			extra = append(extra, name)
 		}
@@ -91,7 +103,7 @@ func TestMCPBManifestToolsMatchServer(t *testing.T) {
 		t.Fatalf("mcpb/manifest.json.tmpl tools drifted from kenaz mcp: missing %v, not served %v", missing, extra)
 	}
 	for name, tool := range served {
-		if contextFileTools[name] {
+		if teamContextTools[name] {
 			continue
 		}
 		want := tool.Title
