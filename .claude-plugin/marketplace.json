@@ -11,7 +11,7 @@
     {
       "name": "kenaz",
       "source": "./plugin",
-      "version": "0.8.1",
+      "version": "0.8.2",
       "description": "Kenaz, a Kameas AI product. Connects AI tools such as Claude Code and Codex to your organization's Kameas Fleet: shared skills, team context, your private memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
       "license": "Apache-2.0",
       "homepage": "https://kameas.ai"

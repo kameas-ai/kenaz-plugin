@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # go-version-file honours the toolchain line in go.mod (go1.27.3), so CI
+      # go-version-file honours the toolchain line in go.mod (go1.27.4), so CI
       # builds and tests with the same Go as release builds.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

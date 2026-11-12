@@ -38,6 +38,15 @@ func TestVersionReportsFlavor(t *testing.T) {
 	}
 }
 
+// winget's validation runs every installed executable with no arguments and
+// flags the package unless one exits 0.
+func TestBareInvocationShowsUsageAndSucceeds(t *testing.T) {
+	code, out, _ := run()
+	if code != app.ExitOK || !strings.Contains(out, "usage: ") {
+		t.Fatalf("exit=%d out=%q", code, out)
+	}
+}
+
 func TestHookNeverFails(t *testing.T) {
 	for _, ev := range []string{"session-start", "session-end", "bogus"} {
 		if code, out, _ := run("hook", ev); code != 0 || out != "" {

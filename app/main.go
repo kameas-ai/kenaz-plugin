@@ -120,11 +120,11 @@ func Run(ctx context.Context, p fleetapi.Provider, args []string, stdout, stderr
 // RunEnv is Run with every test seam available.
 func RunEnv(env Env, args []string) int {
 	stdout, stderr := env.Stdout, env.Stderr
+	// A bare invocation shows the usage and succeeds: package validators (winget
+	// runs every executable an installer adds, with no arguments, and wants at
+	// least one to exit 0) treat a non-zero exit as a broken install.
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		usage(stdout)
-		if len(args) == 0 {
-			return ExitUsage
-		}
 		return ExitOK
 	}
 	if args[0] == "--version" {
