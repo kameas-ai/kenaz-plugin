@@ -650,6 +650,21 @@ func printNote(w io.Writer, n memory.Note) {
 	fmt.Fprintf(w, "source:   %s\n\n%s\n", n.Source, n.Body)
 }
 
+// writeRefusedCodes prints `sync status`'s line of codes Kameas Fleet
+// refused for good. The raw codes stay on that line so support can match
+// them; the ones with plain wording are explained underneath.
+func writeRefusedCodes(w io.Writer, codes []string) {
+	if len(codes) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "refused:  %s\n", strings.Join(codes, ", "))
+	for _, c := range codes {
+		if why := memory.RefusalExplanation(c); why != "" {
+			fmt.Fprintf(w, "          %s: %s\n", c, why)
+		}
+	}
+}
+
 func showDisclosure(env Env, mp memoryPaths) {
 	if d := mp.discloseOnce(env.now()); d != "" {
 		fmt.Fprintln(env.Stderr, d)
@@ -743,9 +758,7 @@ func memorySync(ctx context.Context, env Env, mp memoryPaths, args []string) int
 		if st.ForgetsPending > 0 || st.EditsInProgress > 0 || st.EditsBlocked > 0 {
 			fmt.Fprintf(env.Stdout, "changes:  %d deletions and %d edits on their way, %d edits refused\n", st.ForgetsPending, st.EditsInProgress, st.EditsBlocked)
 		}
-		if len(st.BlockedCodes) > 0 {
-			fmt.Fprintf(env.Stdout, "refused:  %s\n", strings.Join(st.BlockedCodes, ", "))
-		}
+		writeRefusedCodes(env.Stdout, st.BlockedCodes)
 		if st.LastPushAt != nil || st.LastPullAt != nil {
 			fmt.Fprintf(env.Stdout, "last:     sent %s, received %s\n", when(st.LastPushAt), when(st.LastPullAt))
 		}

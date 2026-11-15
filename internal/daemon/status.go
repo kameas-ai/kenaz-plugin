@@ -44,6 +44,8 @@ type Status struct {
 	DashboardURL string `json:"dashboard_url,omitempty"`
 	// Reporting says whether telemetry reporting to Fleet is working.
 	Reporting *Reporting `json:"reporting,omitempty"`
+	// ContextShareGrant is set in builds with the context library.
+	ContextShareGrant *ContextShareGrant `json:"context_share_grant,omitempty"`
 	// Hosts is the per-host setup state (`kenaz setup`).
 	Hosts []HostSetup `json:"hosts,omitempty"`
 	Notes []string    `json:"notes,omitempty"`
@@ -98,6 +100,14 @@ type Reporting struct {
 	LastErrorAt *time.Time `json:"last_error_at,omitempty"`
 	// ReceiverPort is the loopback OTLP receiver port (0: not running).
 	ReceiverPort int `json:"receiver_port,omitempty"`
+}
+
+// ContextShareGrant says whether the member's AI tool can share context files with
+// a team without an approval for each (`kenaz context grant`).
+type ContextShareGrant struct {
+	On           bool `json:"on"`
+	HourlyCap    int  `json:"hourly_cap"`
+	UsedThisHour int  `json:"used_this_hour"`
 }
 
 // HostSetup is one host's `kenaz setup` state.

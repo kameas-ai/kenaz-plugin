@@ -83,7 +83,7 @@ type NodeContent struct {
 // private implementation sends these fields as is and adds nothing.
 type PushRequest struct {
 	ID             string // client-generated UUIDv7
-	Kind           string // guidance | procedure | fact | glossary_term | doc
+	Kind           string // glossary | explanation | guidance | procedure | doc
 	Title          string
 	Body           string
 	Metadata       map[string]any // always non-nil; empty for a note, a shared file's short name for a file

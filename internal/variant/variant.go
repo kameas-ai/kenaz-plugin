@@ -15,6 +15,7 @@
 package variant
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -140,8 +141,37 @@ func (i Identity) PluginID() string { return i.Plugin + "@" + i.Marketplace }
 // Allowed reports whether env is one of AllowedEnvs.
 func (i Identity) Allowed(env string) bool { return slices.Contains(i.AllowedEnvs, env) }
 
+// RetiredEnvs are Fleet environments that no longer exist. No build
+// connects to one, and selecting one is refused with RetiredMessage. The
+// name stays known so that what an earlier setup or sign-in left for it on
+// this device can still be removed (setup --undo, logout).
+var RetiredEnvs = []string{"stage"}
+
+// Retired reports whether env is one of RetiredEnvs.
+func Retired(env string) bool { return slices.Contains(RetiredEnvs, env) }
+
+// RetiredMessage tells a person who selected the retired env which
+// environments this build can use instead.
+func (i Identity) RetiredMessage(env string) string {
+	use := slices.Clone(i.AllowedEnvs)
+	slices.Sort(use)
+	return fmt.Sprintf("The %s environment has been retired. Use %s.", env, strings.Join(use, " or "))
+}
+
 // EnvChoices lists AllowedEnvs joined by sep.
 func (i Identity) EnvChoices(sep string) string { return strings.Join(i.AllowedEnvs, sep) }
+
+// Command is the command line that runs sub ("init", "setup opencode") with
+// this build in Fleet environment env: sub alone for DefaultEnv, which is
+// what the build uses when nothing selects one, and with --env otherwise.
+// An env the build does not connect to gets no flag: it would be refused.
+func (i Identity) Command(sub, env string) string {
+	cmd := i.Binary + " " + sub
+	if env != i.DefaultEnv && i.Allowed(env) {
+		cmd += " --env " + env
+	}
+	return cmd
+}
 
 // ApprovalsName is the approval page's name.
 func (i Identity) ApprovalsName() string { return i.DisplayName + " approvals" }
@@ -170,12 +200,12 @@ var Kenaz = Identity{
 	CaskToken:       "kenaz",
 
 	DefaultEnv:  "prod",
-	AllowedEnvs: []string{"prod", "stage", "dev"},
+	AllowedEnvs: []string{"prod", "dev"},
 }
 
 // KenazDev is the staff-only dev build (build tag kenaz_dev). It installs
 // side by side with kenaz under its own executable and host plugin names,
-// connects only to the dev and stage Fleet environments, and is never
+// connects only to the dev Fleet environment, and is never
 // published to a public marketplace. It shares everything else with kenaz
 // (Shared): its dev state is the same ~/.kenaz/plugin/dev a kenaz --env dev
 // uses.
@@ -191,7 +221,7 @@ var KenazDev = Identity{
 	CaskToken:   "kenaz-dev",
 
 	DefaultEnv:  "dev",
-	AllowedEnvs: []string{"dev", "stage"},
+	AllowedEnvs: []string{"dev"},
 
 	StaffOnly: true,
 	BannerTag: "kenaz-dev",

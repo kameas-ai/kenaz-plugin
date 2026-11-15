@@ -50,7 +50,9 @@ func (e Env) keyStore() spool.KeyStore {
 	if e.KeyStore != nil {
 		return e.KeyStore
 	}
-	return spool.Keychain{}
+	// Bounded by spool.KeychainTimeout, and ended with the command (a
+	// signal cancels Ctx): a keychain that never answers holds nothing up.
+	return spool.Keychain{Ctx: e.Ctx}
 }
 
 // resolved is the per-invocation env + paths.
@@ -64,7 +66,8 @@ type resolved struct {
 	Conflict error
 }
 
-// resolve applies the env precedence and creates the state directory. It
+// resolve applies the env precedence and creates the state directory
+// (except for the cleanup of a retired environment: resolveState). It
 // refuses an environment another build is using (Conflict).
 func (e Env) resolve(flagEnv string) (resolved, error) {
 	r, err := e.resolveState(flagEnv)
@@ -86,13 +89,22 @@ func (e Env) resolveState(flagEnv string) (resolved, error) {
 	if err != nil {
 		return resolved{}, err
 	}
-	env, src, err := config.ResolveEnv(flagEnv, e.getenv, file)
+	env, src, err := e.resolveEnv(flagEnv, file)
 	if err != nil {
+		if e.retired != nil && errors.Is(err, config.ErrEnvRetired) {
+			// A host-started command for a retired environment: there is
+			// nothing to resolve, and whoever asks hears why and the fix.
+			return resolved{}, e.retired
+		}
 		return resolved{}, err
 	}
-	dir, err := paths.EnsureState(env)
-	if err != nil {
-		return resolved{}, err
+	// Cleaning up after a retired environment never makes its folder: where
+	// nothing was left for it, the cleanup leaves no trace either.
+	dir := paths.State(env)
+	if !(e.cleanup && variant.Retired(string(env))) {
+		if dir, err = paths.EnsureState(env); err != nil {
+			return resolved{}, err
+		}
 	}
 	return resolved{Env: env, Source: src, Paths: paths, StateDir: dir, Conflict: otherBuildRelay(dir)}, nil
 }

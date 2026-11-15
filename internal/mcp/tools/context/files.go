@@ -112,7 +112,7 @@ func NewFilesGroup(o FilesOptions) mcp.Group {
 type ShareFileInput struct {
 	Path string `json:"path" jsonschema:"the file to share, a path from context_list such as personal/company.md"`
 	Team string `json:"team,omitempty" jsonschema:"team name or id; defaults to your configured or only team. A file already shared stays with its team."`
-	Kind string `json:"kind,omitempty" jsonschema:"one of guidance, procedure, fact, glossary_term, doc (default)"`
+	Kind string `json:"kind,omitempty" jsonschema:"one of glossary, explanation, guidance, procedure, doc (default); the old names fact and glossary_term are still taken and sent as explanation and glossary"`
 	// AsNew shares a copy under this person's own name.
 	AsNew bool `json:"as_new,omitempty" jsonschema:"share as a new file of your own instead of updating the one this copy came from"`
 	// FromMemory also shows the approval page's warning for a file context_write
@@ -121,7 +121,9 @@ type ShareFileInput struct {
 }
 
 // ShareFileOutput is context_share_file's result. Nothing is uploaded when the
-// tool returns: status is "pending" until the user approves at approve_url.
+// tool returns with status "pending": that waits for the user's approval at
+// approve_url. Under the context share grant the share has already run, and
+// shared_under_grant and the message say so.
 type ShareFileOutput struct {
 	RequestID  string `json:"request_id,omitempty"`
 	Status     string `json:"status,omitempty"`
@@ -132,6 +134,8 @@ type ShareFileOutput struct {
 	Slug       string `json:"slug,omitempty"`
 	Team       string `json:"team,omitempty"`
 	Update     bool   `json:"update,omitempty"`
+	// SharedUnderGrant says the context share grant ran this with no approval of its own.
+	SharedUnderGrant bool `json:"shared_under_grant,omitempty"`
 	// Findings say where to look when a credential stopped the share, in this
 	// result only: the kind and the line, never the text.
 	Findings []secretscan.Finding `json:"findings,omitempty"`
@@ -168,8 +172,9 @@ func registerFiles(s *sdk.Server, d mcp.Deps, o FilesOptions) {
 		Title: "Share a context file with your team",
 		Description: "Prepares sharing one local context file, picked by the user, with a team in Kameas Fleet, or updating the copy already shared. " +
 			"Only share files the user asked to share. Never include secrets. " +
-			usertext.ToolApproval + " " +
-			"The file reaches Fleet under a short name shown on that page, never its path on this device.",
+			"Unless the exception below applies: " + usertext.ToolApproval + " " +
+			"The file reaches Fleet under a short name shown on that page, never its path on this device. " +
+			ShareGrantDescription,
 		Annotations: &sdk.ToolAnnotations{Title: "Share a context file with your team", DestructiveHint: ptr(true), OpenWorldHint: ptr(true)},
 		Meta:        sdk.Meta{MetaRequiresUserInteraction: true},
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in ShareFileInput) (*sdk.CallToolResult, ShareFileOutput, error) {
@@ -244,7 +249,8 @@ func runShareFile(ctx context.Context, p fleetapi.Provider, ap approvals.Prepare
 	if kind == "" {
 		kind = "doc"
 	}
-	if !validShareKind(kind) {
+	kind, ok := CanonicalShareKind(kind)
+	if !ok {
 		out.Error = invalid("kind must be one of " + strings.Join(ShareKinds, ", "))
 		return out
 	}
@@ -340,11 +346,14 @@ func runShareFile(ctx context.Context, p fleetapi.Provider, ap approvals.Prepare
 			return out
 		}
 	}
+	// Whether this team is the organization's all-members team, as Kameas Fleet
+	// marks it: then the whole organization reads what is shared with it.
+	everyone, known := SharedWithWholeOrg(sess.Me.Teams, team.ID)
 	pend, terr := submit(ctx, p, ap, approvals.Request{
 		Operation: ShareFileOperation, TargetIDs: []string{"team:" + team.Name, "file:" + slug},
 		Payload: raw, IdempotencyKey: ShareFileOperation + ":" + nodeID + ":" + contextlib.HashOf(raw)[:32],
 		Summary: fmt.Sprintf("Share the file %q with the team %q in Kameas Fleet.", slug, team.Name),
-		Impact:  "Every member of " + team.Name + " will be able to read this file.",
+		Impact:  shareFileImpact(team.Name, everyone, known),
 	})
 	if terr != nil {
 		out.Error = terr
@@ -352,6 +361,16 @@ func runShareFile(ctx context.Context, p fleetapi.Provider, ap approvals.Prepare
 	}
 	out.RequestID, out.Status, out.ApproveURL, out.Message = pend.RequestID, string(pend.Status), pend.ApproveURL, pend.Message
 	out.ID, out.Path, out.Slug, out.Team, out.Update = nodeID, pg.Path, slug, team.Name, update
+	switch note, ran := shareGrantNote(ctx, ap, st, pend, slug, team.Name, everyone, known, payload.FromMemory); {
+	case ran:
+		out.SharedUnderGrant, out.Message = true, note
+	case note != "":
+		out.Message += " " + note
+	}
+	if pend.Status == approvals.StatusPending && known && everyone {
+		// Waiting for the person: what approving will do, as the approval itself says.
+		out.Message += fmt.Sprintf(" %s is the organization's all-members team: once the user approves, everyone in the organization will be able to read the file, so say so.", team.Name)
+	}
 	return out
 }
 
@@ -430,8 +449,9 @@ func BuildFileNode(in ShareInput, slug, teamID, id string, version int) (NodeInp
 	case !contextlib.ValidSlug(slug):
 		return NodeInput{}, errors.New("invalid short name")
 	}
+	kind, _ := CanonicalShareKind(in.Kind)
 	return NodeInput{
-		ID: id, Kind: in.Kind, Title: title, Body: in.Body,
+		ID: id, Kind: kind, Title: title, Body: in.Body,
 		Metadata:       map[string]any{MetadataSlug: slug},
 		Classification: string(fleetapi.ClassificationTeamShared),
 		TeamID:         teamID, Version: version,
@@ -478,17 +498,27 @@ func FromMemoryBanner(team string) string {
 }
 
 // RenderShareFile describes a file share for the approval page from the payload
-// alone: the short name, who can read it and the exact text.
-func RenderShareFile(teamName func(id string) string) approvals.Renderer {
+// alone: the short name, who can read it and the exact text. teams, when given,
+// is the member's teams as Kameas Fleet lists them now, asked once per request:
+// it names the team, and a share with the one Fleet marks as the organization's
+// all-members team (SharedWithWholeOrg) says that everyone in the organization
+// will be able to read the file.
+func RenderShareFile(teams func() []fleetapi.TeamRef) approvals.Renderer {
 	return func(payload []byte) (approvals.Rendered, error) {
 		sp, slug, err := decodeShareFile(payload)
 		if err != nil {
 			return approvals.Rendered{}, err
 		}
 		n := sp.Node
+		var listed []fleetapi.TeamRef
+		if teams != nil {
+			listed = teams()
+		}
 		name := ""
-		if teamName != nil {
-			name = teamName(n.TeamID)
+		for _, t := range listed {
+			if t.ID == n.TeamID {
+				name = t.Name
+			}
 		}
 		team, shown := n.TeamID, "this team"
 		if name != "" {
@@ -498,7 +528,8 @@ func RenderShareFile(teamName func(id string) string) approvals.Renderer {
 		if sp.Update {
 			verb = "Update the shared file"
 		}
-		impact := "Every member of " + team + " will be able to read this file. Kameas Fleet stores it under the short name " + slug + ", never its full path on your device."
+		everyone, known := SharedWithWholeOrg(listed, n.TeamID)
+		impact := shareFileImpact(team, everyone, known) + " Kameas Fleet stores it under the short name " + slug + ", never its full path on your device."
 		if sp.FromMemory {
 			impact = FromMemoryBanner(shown) + "\n\n" + impact
 		}

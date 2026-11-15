@@ -39,18 +39,42 @@ const (
 	MaxPullResultLen = 48 << 10
 )
 
-// ShareKinds are the knowledge kinds a user may share. All
-// ride unit_kind=doc, which Fleet accepts for curated kinds (guidance,
-// procedure) and for fact/glossary_term/doc (context_kinds.go lane mapping).
-var ShareKinds = []string{"guidance", "procedure", "fact", "glossary_term", "doc"}
+// ShareKinds are the kinds a person may share: Kameas Fleet's canonical
+// set for shared, human-curated context. All ride unit_kind=doc.
+var ShareKinds = []string{"glossary", "explanation", "guidance", "procedure", "doc"}
 
-func validShareKind(k string) bool {
+// legacyKinds are the names this plugin used before Fleet settled the
+// canonical set. They are still taken as input, and still read, as the new
+// name.
+var legacyKinds = map[string]string{"fact": "explanation", "glossary_term": "glossary"}
+
+// CanonicalShareKind returns the kind to send for k: k itself when it is a
+// ShareKind, or the new name of an old one. ok is false for anything else.
+func CanonicalShareKind(k string) (kind string, ok bool) {
+	if to, old := legacyKinds[k]; old {
+		return to, true
+	}
 	for _, s := range ShareKinds {
 		if s == k {
-			return true
+			return k, true
 		}
 	}
-	return false
+	return "", false
+}
+
+// ReadKind is the kind to show for a node Kameas Fleet served. A reader
+// never drops or refuses a node over its kind: an old name reads as its new
+// one, and a kind this build doesn't know (or none) reads as doc.
+func ReadKind(k string) string {
+	if kind, ok := CanonicalShareKind(k); ok {
+		return kind
+	}
+	return "doc"
+}
+
+func validShareKind(k string) bool {
+	_, ok := CanonicalShareKind(k)
+	return ok
 }
 
 // NodeInput is the complete context node a share pushes, in Fleet's
@@ -103,9 +127,10 @@ func BuildShareNode(in ShareInput, teamID string, now time.Time, rnd io.Reader) 
 	if err != nil {
 		return NodeInput{}, err
 	}
+	kind, _ := CanonicalShareKind(in.Kind)
 	return NodeInput{
 		ID:             id,
-		Kind:           in.Kind,
+		Kind:           kind,
 		Title:          title,
 		Body:           in.Body,
 		Metadata:       map[string]any{},
@@ -119,11 +144,17 @@ func BuildShareNode(in ShareInput, teamID string, now time.Time, rnd io.Reader) 
 }
 
 // ToPushRequest maps a built node onto fleetapi.PushRequest, which carries
-// the complete node; the private implementation sends it as is.
+// the complete node; the private implementation sends it as is. A share
+// approved under an older build may still hold an old kind name: it is
+// sent as the new one.
 func ToPushRequest(n NodeInput) fleetapi.PushRequest {
+	kind := n.Kind
+	if k, ok := CanonicalShareKind(kind); ok {
+		kind = k
+	}
 	return fleetapi.PushRequest{
 		ID:             n.ID,
-		Kind:           n.Kind,
+		Kind:           kind,
 		Title:          n.Title,
 		Body:           n.Body,
 		Metadata:       n.Metadata,

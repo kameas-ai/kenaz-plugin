@@ -1263,6 +1263,29 @@ func explain(op string, o Outcome) string {
 	return StateExplanation(o.SyncState, o.SyncCode)
 }
 
+// clockAheadExplanation is shared by Fleet's two "this device's time is
+// ahead" refusals: both mean the same thing to the person and have the same fix.
+const clockAheadExplanation = "The note stays on this device and was not synced, because this device's clock looks ahead of Kameas Fleet's. Check this device's date and time; after that, editing the note's text saves it as a new note that can sync."
+
+// RefusalExplanation says in plain words why Kameas Fleet refused a note
+// for good and what the person can do. It is "" for a code with no wording
+// of its own; callers then show the raw code.
+func RefusalExplanation(code string) string {
+	switch code {
+	case "erased_before_cutoff":
+		// The note was created before the account's erase took effect on
+		// Fleet, which includes up to five minutes after it. An edited
+		// body is sent as a new note with a new creation time.
+		return "The note stays on this device and was not synced, because it was written before, or within a few minutes of, a \"forget everything\" on your account. Editing the note's text saves it as a new note that can sync."
+	case "created_at_in_future", "clock_in_future":
+		// More than five minutes ahead of Fleet's clock: the note's
+		// creation time (created_at_in_future) or its edit clock
+		// (clock_in_future).
+		return clockAheadExplanation
+	}
+	return ""
+}
+
 // StateExplanation is the user-facing meaning of a note's sync state.
 func StateExplanation(state, code string) string {
 	switch state {
@@ -1281,6 +1304,10 @@ func StateExplanation(state, code string) string {
 	case StateRejected:
 		if code == "secret_detected" {
 			return "Saved on this device only: it looks like it contains a credential, so it will not be synced."
+		}
+		if why := RefusalExplanation(code); why != "" {
+			// The code stays alongside so support can match it.
+			return why + " (" + code + ")"
 		}
 		return "Saved on this device only: Kameas Fleet refused it (" + code + ")."
 	case StateDenied:

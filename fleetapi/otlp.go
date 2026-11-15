@@ -16,8 +16,9 @@ const ContentTypeProtobuf = "application/x-protobuf"
 
 // ProjectedBatch is a serialized OTLP Export*ServiceRequest that the public
 // projector has already projected onto Fleet's closed schema,
-// with the kameas.* identity resource attributes already stamped. The
-// implementation posts Body unchanged.
+// with the kameas.* identity resource attributes and the request's random
+// kameas.batch.id already stamped. The implementation posts Body unchanged:
+// a retry must send the same bytes, so that it carries the same batch id.
 type ProjectedBatch struct {
 	Signal      Signal
 	ContentType string

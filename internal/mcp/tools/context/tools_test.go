@@ -13,6 +13,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/fleetapi/fleetapitest"
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 )
@@ -61,7 +62,7 @@ func TestSearch(t *testing.T) {
 	f := newFake("team", "member", platform, payments)
 	long := strings.Repeat("s", 2*MaxSnippetLen)
 	for i := 0; i < 60; i++ {
-		f.search = append(f.search, fleetapi.SearchResult{Node: fleetapi.ContextNode{ID: "n", Title: "t", Kind: "fact", Classification: "team_shared"}, Snippet: long, Rank: float64(i)})
+		f.search = append(f.search, fleetapi.SearchResult{Node: fleetapi.ContextNode{ID: "n", Title: "t", Kind: "explanation", Classification: "team_shared"}, Snippet: long, Rank: float64(i)})
 	}
 	cs := session(t, f, nil, "")
 	var out SearchOutput
@@ -100,7 +101,7 @@ func TestSearch(t *testing.T) {
 func TestPull(t *testing.T) {
 	f := newFake("team", "member", platform)
 	f.nodes = []fleetapi.NodeContent{
-		{Node: fleetapi.ContextNode{ID: "a", Title: "A", Kind: "fact", UpdatedAt: fixedNow}, Body: strings.Repeat("é", MaxPullBodyLen)},
+		{Node: fleetapi.ContextNode{ID: "a", Title: "A", Kind: "explanation", UpdatedAt: fixedNow}, Body: strings.Repeat("é", MaxPullBodyLen)},
 		{Node: fleetapi.ContextNode{ID: "zzz", Title: "not requested"}, Body: "x"},
 	}
 	cs := session(t, f, nil, "")
@@ -161,7 +162,7 @@ func TestModelSuppliedUserConfirmedIgnored(t *testing.T) {
 	f := newFake("enterprise", "org_admin", platform)
 	cs := session(t, f, nil, "")
 	var sh ShareOutput
-	call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "fact", "user_confirmed": true}, &sh)
+	call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "explanation", "user_confirmed": true}, &sh)
 	var pr PromoteOutput
 	call(t, cs, ToolPromote, map[string]any{"node_id": "n1", "user_confirmed": true}, &pr)
 	if sh.Status != "pending" || pr.Status != "pending" || f.writeCalls() != 0 {
@@ -177,7 +178,7 @@ func TestShareFleetCredentialRejection(t *testing.T) {
 	f.opErr = &fleetapi.APIError{Status: http.StatusUnprocessableEntity, Code: "lint_blocked", Message: "content blocked by lint"}
 	cs := session(t, f, nil, "")
 	var out ShareOutput
-	call(t, cs, ToolShare, map[string]any{"title": "note", "body": "aws_access_key_id = AKIAIOSFODNN7EXAMPLE", "kind": "fact"}, &out)
+	call(t, cs, ToolShare, map[string]any{"title": "note", "body": "aws_access_key_id = AKIAIOSFODNN7EXAMPLE", "kind": "explanation"}, &out)
 	r := f.approvals.last()
 	_, err := ExecuteShare(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey)
 	if err == nil || !strings.Contains(err.Error(), CodeCredentialDetected) || strings.Contains(err.Error(), "AKIA") {
@@ -191,7 +192,7 @@ func TestShareFleetRejectionMessage(t *testing.T) {
 	f := newFake("enterprise", "org_admin", platform)
 	cs := session(t, f, nil, "")
 	var out ShareOutput
-	call(t, cs, ToolShare, map[string]any{"title": "note", "body": "text", "kind": "fact"}, &out)
+	call(t, cs, ToolShare, map[string]any{"title": "note", "body": "text", "kind": "explanation"}, &out)
 	r := f.approvals.last()
 	f.opErr = &fleetapi.APIError{Status: http.StatusBadRequest, Code: "body_too_long", Message: "body exceeds the maximum length: SECRET-ECHO"}
 	_, err := ExecuteShare(f, nil)(approvedCtx, r.Payload, r.IdempotencyKey)
@@ -278,7 +279,7 @@ func TestTierRoleMatrix(t *testing.T) {
 		{ToolSearch, map[string]any{"query": "q"}},
 		{ToolSearch + ":org", map[string]any{"query": "q", "scope": "org"}},
 		{ToolPull, map[string]any{"ids": []string{"a"}}},
-		{ToolShare, map[string]any{"title": "t", "body": "b", "kind": "fact", "user_confirmed": true}},
+		{ToolShare, map[string]any{"title": "t", "body": "b", "kind": "explanation", "user_confirmed": true}},
 		{ToolPromote, map[string]any{"node_id": "n", "user_confirmed": true}},
 		{ToolTeamMembers, map[string]any{}},
 	}
@@ -343,7 +344,7 @@ func TestHeldStatesBlockWritesOnly(t *testing.T) {
 		f := newFake("enterprise", "org_admin", platform)
 		cs := session(t, f, fakeStatus{st}, "")
 		var sh ShareOutput
-		call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "fact", "user_confirmed": true}, &sh)
+		call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "explanation", "user_confirmed": true}, &sh)
 		var pr PromoteOutput
 		call(t, cs, ToolPromote, map[string]any{"node_id": "n", "user_confirmed": true}, &pr)
 		if sh.Error == nil || sh.Error.Code != want || pr.Error == nil || pr.Error.Code != want {
@@ -395,7 +396,7 @@ func TestFleetErrorsMapped(t *testing.T) {
 	f.meErr = fleetapi.ErrNotSignedIn
 	cs := session(t, f, nil, "")
 	var out ShareOutput
-	call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "fact", "user_confirmed": true}, &out)
+	call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "explanation", "user_confirmed": true}, &out)
 	if out.Error == nil || out.Error.Code != CodeNotSignedIn || f.networkCalls() != 0 {
 		t.Fatalf("me error: %+v", out.Error)
 	}
@@ -418,6 +419,41 @@ func TestTeamMembers(t *testing.T) {
 	}
 }
 
+// With Fleet's team tree, team_members gives each team's id, parent, depth, role
+// and whether it is the all-members team, so an agent can pick a share target by
+// id. Without it (an older Fleet) the entries are id and name, as before.
+func TestTeamMembersTeamTree(t *testing.T) {
+	tree := fleetapitest.SampleTeams()
+	f := newFake("team", "member", tree...)
+	cs := session(t, f, nil, "")
+	var out TeamMembersOutput
+	// Three teams and none named: the list still comes back, with the refusal.
+	call(t, cs, ToolTeamMembers, map[string]any{}, &out)
+	if out.Error == nil || out.Error.Code != CodeTeamRequired || len(out.Teams) != 3 {
+		t.Fatalf("out = %+v", out)
+	}
+	raw, _ := json.Marshal(out.Teams)
+	want := `[{"id":"` + tree[0].ID + `","name":"Everyone","is_default":true,"role":"member","depth":0},` +
+		`{"id":"` + tree[1].ID + `","name":"Platform","is_default":false,"role":"lead","depth":1},` +
+		`{"id":"` + tree[2].ID + `","name":"Payments","is_default":false,"role":"member","parent_team_id":"` + tree[1].ID + `","depth":2}]`
+	if string(raw) != want {
+		t.Fatalf("teams:\n got %s\nwant %s", raw, want)
+	}
+	// The id from that list picks the team.
+	out = TeamMembersOutput{}
+	if call(t, cs, ToolTeamMembers, map[string]any{"team": tree[2].ID}, &out); out.Error != nil || out.Team != "Payments" {
+		t.Fatalf("by id: %+v", out)
+	}
+
+	old := newFake("team", "member", platform, payments)
+	out = TeamMembersOutput{}
+	call(t, session(t, old, nil, "Platform"), ToolTeamMembers, map[string]any{}, &out)
+	raw, _ = json.Marshal(out.Teams)
+	if string(raw) != `[{"id":"team-plat","name":"Platform"},{"id":"team-pay","name":"Payments"}]` {
+		t.Fatalf("older Fleet: %s", raw)
+	}
+}
+
 // approvedCtx is the context the relay runs an executor in for the fake's
 // approved request.
 var approvedCtx = approvals.ContextWithIdentity(context.Background(), approvals.Identity{Env: "dev", OrgID: "o1", UserID: "sub-1"})
@@ -426,7 +462,7 @@ func TestExecutorsRecheckAccount(t *testing.T) {
 	f := newFake("enterprise", "org_admin", platform)
 	cs := session(t, f, nil, "")
 	var out ShareOutput
-	call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "fact"}, &out)
+	call(t, cs, ToolShare, map[string]any{"title": "t", "body": "b", "kind": "explanation"}, &out)
 	r := f.approvals.last()
 	other := approvals.ContextWithIdentity(context.Background(), approvals.Identity{Env: "dev", OrgID: "o1", UserID: "sub-2"})
 	if _, err := ExecuteShare(f, nil)(other, r.Payload, r.IdempotencyKey); err == nil || !strings.Contains(err.Error(), "account_changed") {
@@ -444,7 +480,7 @@ func TestExecutorsRecheckAccount(t *testing.T) {
 	if err != nil || !strings.Contains(v.Summary, `"t"`) || !strings.Contains(v.Summary, "Platform (team-plat)") {
 		t.Fatalf("render: %+v %v", v, err)
 	}
-	if _, err := RenderShare(nil)([]byte(`{"id":"x","team_id":"t","classification":"org_shared","load_policy":"always","kind":"fact"}`)); err == nil {
+	if _, err := RenderShare(nil)([]byte(`{"id":"x","team_id":"t","classification":"org_shared","load_policy":"always","kind":"explanation"}`)); err == nil {
 		t.Fatal("rendered a payload the executor would refuse")
 	}
 }

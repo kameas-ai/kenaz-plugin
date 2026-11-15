@@ -161,7 +161,15 @@ func (d *desk) approve(t *testing.T) (approvals.Rendered, []byte, error) {
 	if req.Operation != ShareFileOperation {
 		t.Fatalf("operation %q", req.Operation)
 	}
-	view, err := RenderShareFile(func(string) string { return "Platform" })(req.Payload)
+	// Whichever team it is, the page names it Platform.
+	named := func() []fleetapi.TeamRef {
+		var out []fleetapi.TeamRef
+		for _, tm := range d.m.me.Teams {
+			out = append(out, fleetapi.TeamRef{ID: tm.ID, Name: "Platform"})
+		}
+		return out
+	}
+	view, err := RenderShareFile(named)(req.Payload)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

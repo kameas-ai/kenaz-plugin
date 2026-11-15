@@ -1,12 +1,13 @@
 package spool
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"sync"
-
-	"github.com/zalando/go-keyring"
+	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
@@ -28,16 +29,47 @@ type KeyStore interface {
 
 func itemName(env string) string { return env + ":spool_key" }
 
+// KeychainTimeout bounds one call to the OS keychain. The keychain can
+// take a person's time (macOS may ask to unlock it), so it is generous; but
+// it can also never answer (on macOS, `security -i` blocks for good in a
+// home with no usable login keychain; a Secret Service can stop answering),
+// and nothing that waits on it may wait forever. A var for tests.
+var KeychainTimeout = 30 * time.Second
+
+// ErrKeychainTimeout means the OS keychain did not answer within
+// KeychainTimeout, or the caller's context ended first. The key was
+// neither read nor written.
+var ErrKeychainTimeout = errors.New("spool: the OS keychain did not answer")
+
+// errKeychainNotFound is the platform call's "no such item".
+var errKeychainNotFound = errors.New("spool: no such keychain item")
+
 // Keychain stores keys in the OS keychain. This keeps keys out of files
 // an agent could rewrite; it is not a boundary against processes running
-// as the same user (on macOS go-keyring creates items via
+// as the same user (on macOS the items are created via
 // /usr/bin/security, readable by any process of the user without a
 // prompt).
-type Keychain struct{}
+//
+// Every call is bounded by KeychainTimeout and ends when Ctx does (nil:
+// only the timeout). On macOS the helper process a call runs is killed
+// with its children when that happens, so none is left behind.
+type Keychain struct {
+	Ctx context.Context
+}
 
-func (Keychain) Get(env string) ([]byte, error) {
-	v, err := keyring.Get(KeychainService, itemName(env))
-	if errors.Is(err, keyring.ErrNotFound) {
+func (k Keychain) bound() (context.Context, context.CancelFunc) {
+	ctx := k.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(ctx, KeychainTimeout)
+}
+
+func (k Keychain) Get(env string) ([]byte, error) {
+	ctx, cancel := k.bound()
+	defer cancel()
+	v, err := keychainGet(ctx, KeychainService, itemName(env))
+	if errors.Is(err, errKeychainNotFound) {
 		return nil, ErrNoKey
 	}
 	if err != nil {
@@ -46,16 +78,42 @@ func (Keychain) Get(env string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(v)
 }
 
-func (Keychain) Set(env string, key []byte) error {
-	return keyring.Set(KeychainService, itemName(env), base64.StdEncoding.EncodeToString(key))
+func (k Keychain) Set(env string, key []byte) error {
+	ctx, cancel := k.bound()
+	defer cancel()
+	return keychainSet(ctx, KeychainService, itemName(env), base64.StdEncoding.EncodeToString(key))
 }
 
-func (Keychain) Delete(env string) error {
-	err := keyring.Delete(KeychainService, itemName(env))
-	if errors.Is(err, keyring.ErrNotFound) {
+func (k Keychain) Delete(env string) error {
+	ctx, cancel := k.bound()
+	defer cancel()
+	err := keychainDelete(ctx, KeychainService, itemName(env))
+	if errors.Is(err, errKeychainNotFound) {
 		return nil
 	}
 	return err
+}
+
+// within runs call, which cannot be interrupted, and returns its result,
+// or ErrKeychainTimeout once ctx ends. call then finishes on its own in
+// the background; its result is dropped.
+func within[T any](ctx context.Context, call func() (T, error)) (T, error) {
+	type result struct {
+		v   T
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		v, err := call()
+		ch <- result{v, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.v, r.err
+	case <-ctx.Done():
+		var zero T
+		return zero, fmt.Errorf("%w (%v)", ErrKeychainTimeout, ctx.Err())
+	}
 }
 
 // Memory is an in-process KeyStore.

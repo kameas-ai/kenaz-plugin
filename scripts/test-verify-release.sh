@@ -34,7 +34,7 @@ fakego="$tmp/fake go"
 cat > "$fakego" <<SH
 #!/bin/sh
 [ "\$1 \$2" = "version -m" ] || exit 2
-printf '%s: go1.27.3\n' "\$3"
+printf '%s: go1.27.4\n' "\$3"
 cat "$gomods"
 SH
 chmod +x "$fakego"
@@ -51,7 +51,7 @@ path, want, priv, ran, gomods = sys.argv[1:6]
 p = {
     "version": "0.1.0", "flavor": "official", "public_commit": want,
     "public_module_version": "v0.1.0", "private_module_version": "v0.2.0",
-    "private_commit": priv, "build_date": "2026-10-23T00:00:00Z", "go_version": "go1.27.3",
+    "private_commit": priv, "build_date": "2026-10-23T00:00:00Z", "go_version": "go1.27.4",
     "modules": ["github.com/kameas-ai/private-client v0.2.0", "github.com/kameas-ai/kenaz-plugin v0.1.0", "golang.org/x/sys v0.47.0"],
 }
 claimed = None

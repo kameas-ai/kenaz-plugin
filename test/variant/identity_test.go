@@ -1,7 +1,9 @@
 package variant_test
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/setup"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // TestGoldenIdentity pins the identity values packages expose, computed by
@@ -61,6 +64,17 @@ func TestGoldenIdentity(t *testing.T) {
 	}
 	blk, _ := pathenv.Block(pathenv.Zsh, "/d")
 	p("path block", "\n"+blk)
+	// What kenaz init writes for the other shells, and the names of the
+	// files it leaves or uses next to a profile it edits.
+	for _, sh := range []pathenv.Shell{pathenv.Bash, pathenv.Fish} {
+		blk, _ := pathenv.Block(sh, "/d")
+		p("path block "+string(sh), "\n"+blk)
+	}
+	p("path profile files", profileFiles(t))
+	p("path profile tmp suffix", pathenv.TmpSuffix)
+	name, title := mcpImplementation(t)
+	p("mcp implementation name", name)
+	p("mcp implementation title", title)
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -98,5 +112,56 @@ func TestGoldenIdentity(t *testing.T) {
 		}, f)
 		p(fmt.Sprintf("resolve flag=%q %s=%q file=%q", c.flag, c.envVar, c.val, c.file), fmt.Sprintf("%s %s %v", e, src, err))
 	}
+	// Cleanup commands (setup --undo, logout) still resolve the retired stage.
+	e, src, err := config.ResolveEnvForCleanup("stage", func(string) string { return "" }, config.File{})
+	p("resolve for cleanup flag=\"stage\"", fmt.Sprintf("%s %s %v", e, src, err))
 	golden(t, "identity", b.String())
+}
+
+// profileFiles edits an existing shell profile the way kenaz init does and
+// returns the names of the files that leaves in its folder.
+func profileFiles(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "profile")
+	cur := []byte("# mine\n")
+	if err := os.WriteFile(target, cur, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	next, changed, err := pathenv.Edit(cur, pathenv.Bash, "/d")
+	if err != nil || !changed {
+		t.Fatalf("Edit: changed %v, %v", changed, err)
+	}
+	if _, err := pathenv.WriteProfile(target, cur, true, next); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return strings.Join(names, " ")
+}
+
+// mcpImplementation is the name and title the MCP server gives a host
+// when it connects.
+func mcpImplementation(t *testing.T) (name, title string) {
+	t.Helper()
+	ctx := context.Background()
+	ct, st := sdk.NewInMemoryTransports()
+	ss, err := mcp.NewServer("0", mcp.Deps{}).Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ss.Close()
+	cs, err := sdk.NewClient(&sdk.Implementation{Name: "t", Version: "1"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	info := cs.InitializeResult().ServerInfo
+	return info.Name, info.Title
 }

@@ -2,6 +2,7 @@ package project
 
 import (
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"sort"
 
@@ -46,6 +47,11 @@ var ErrIdentity = errors.New("project: identity requires user, org and machine i
 // fleetschema.MaxRecordsPerRequest records each, one resource group per
 // client kind. The returned batches are final: the transport adds
 // nothing.
+//
+// Each returned batch carries its own random kameas.batch.id (see
+// newBatchID), so no two calls, and no two chunks of one call, produce the
+// same bytes. A batch that must be sent again is re-sent from its stored
+// Body, never encoded again, so a retry keeps its id.
 func Encode(recs []Record, id Identity, opt Options) ([]fleetapi.ProjectedBatch, error) {
 	if id.UserID == "" || id.OrgID == "" || id.MachineID == "" {
 		return nil, ErrIdentity
@@ -60,14 +66,14 @@ func Encode(recs []Record, id Identity, opt Options) ([]fleetapi.ProjectedBatch,
 	}
 	var out []fleetapi.ProjectedBatch
 	for _, chunk := range chunks(logs) {
-		b, err := encodeLogs(chunk, id, opt)
+		b, err := encodeLogs(chunk, id, opt, newBatchID())
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, b)
 	}
 	for _, chunk := range chunks(spans) {
-		b, err := encodeSpans(chunk, id, opt)
+		b, err := encodeSpans(chunk, id, opt, newBatchID())
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +108,9 @@ func byClient(rs []Record) ([]canon.ClientKind, map[canon.ClientKind][]Record) {
 	return keys, m
 }
 
-func resource(id Identity, client canon.ClientKind, opt Options) *resourcev1.Resource {
+// resource builds one resource group. batchID is the request's id: every
+// resource group of one request carries the same value.
+func resource(id Identity, client canon.ClientKind, opt Options, batchID string) *resourcev1.Resource {
 	kv := []*commonv1.KeyValue{
 		kvStr("kameas.user.id", id.UserID),
 		kvStr("kameas.org.id", id.OrgID),
@@ -121,10 +129,11 @@ func resource(id Identity, client canon.ClientKind, opt Options) *resourcev1.Res
 			kv = append(kv, kvStr("kameas.client.version", v))
 		}
 	}
+	kv = append(kv, kvStr(fleetschema.BatchIDAttr, batchID))
 	return &resourcev1.Resource{Attributes: kv}
 }
 
-func encodeLogs(rs []Record, id Identity, opt Options) (fleetapi.ProjectedBatch, error) {
+func encodeLogs(rs []Record, id Identity, opt Options, batchID string) (fleetapi.ProjectedBatch, error) {
 	keys, groups := byClient(rs)
 	data := &logsv1.LogsData{}
 	for _, k := range keys {
@@ -139,7 +148,7 @@ func encodeLogs(rs []Record, id Identity, opt Options) (fleetapi.ProjectedBatch,
 			})
 		}
 		data.ResourceLogs = append(data.ResourceLogs, &logsv1.ResourceLogs{
-			Resource:  resource(id, k, opt),
+			Resource:  resource(id, k, opt, batchID),
 			ScopeLogs: []*logsv1.ScopeLogs{{Scope: &commonv1.InstrumentationScope{Name: ScopeName}, LogRecords: lrs}},
 		})
 	}
@@ -150,7 +159,7 @@ func encodeLogs(rs []Record, id Identity, opt Options) (fleetapi.ProjectedBatch,
 	return fleetapi.ProjectedBatch{Signal: fleetapi.SignalLogs, ContentType: fleetapi.ContentTypeProtobuf, Body: body, Records: len(rs)}, nil
 }
 
-func encodeSpans(rs []Record, id Identity, opt Options) (fleetapi.ProjectedBatch, error) {
+func encodeSpans(rs []Record, id Identity, opt Options, batchID string) (fleetapi.ProjectedBatch, error) {
 	keys, groups := byClient(rs)
 	data := &tracev1.TracesData{}
 	for _, k := range keys {
@@ -167,7 +176,7 @@ func encodeSpans(rs []Record, id Identity, opt Options) (fleetapi.ProjectedBatch
 			})
 		}
 		data.ResourceSpans = append(data.ResourceSpans, &tracev1.ResourceSpans{
-			Resource:   resource(id, k, opt),
+			Resource:   resource(id, k, opt, batchID),
 			ScopeSpans: []*tracev1.ScopeSpans{{Scope: &commonv1.InstrumentationScope{Name: ScopeName}, Spans: sps}},
 		})
 	}
@@ -209,9 +218,34 @@ func kvs(fs []Field) []*commonv1.KeyValue {
 	return out
 }
 
+// newBatchID returns the id of one request body: 128 bits from crypto/rand
+// as 32 lowercase hex characters. It identifies the batch and nothing else:
+// it is not derived from the user, device, session, time or content.
+//
+// There is no weaker fallback. Like the span ids, a failing random source
+// panics (randBytes), and so does one that reports success but returns
+// only zeros, so an empty, constant or all-zero id is never emitted.
+func newBatchID() string {
+	b := randBytes(16)
+	zero := true
+	for _, x := range b {
+		if x != 0 {
+			zero = false
+			break
+		}
+	}
+	if zero {
+		panic("project: random source returned an all-zero batch id")
+	}
+	return hex.EncodeToString(b)
+}
+
+// randRead is crypto/rand.Read; tests replace it to exercise failure.
+var randRead = rand.Read
+
 func randBytes(n int) []byte {
 	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := randRead(b); err != nil {
 		panic(err) // crypto/rand never fails on supported platforms
 	}
 	return b

@@ -73,20 +73,39 @@ type initDeps struct {
 	summary func(args []string)
 }
 
-func runInit(env Env, args []string) int {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	fs.SetOutput(env.Stderr)
-	fs.Usage = func() { fmt.Fprint(env.Stderr, initUsage) }
-	var o initOptions
+// initFlags is `kenaz init`'s flag set, writing its errors and usage to w.
+func initFlags(w io.Writer) (fs *flag.FlagSet, o *initOptions, bundleDir *string, noBundle *bool) {
+	fs = flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(w)
+	fs.Usage = func() { fmt.Fprint(w, initUsage) }
+	o = &initOptions{}
 	fs.BoolVar(&o.yes, "yes", false, "accept every change without asking")
 	fs.BoolVar(&o.noPath, "no-path", false, "do not change PATH; print what to add instead")
 	fs.BoolVar(&o.noBrowser, "no-browser", false, "sign in by printing the link instead of opening a browser")
-	fs.StringVar(&o.env, "env", "", "Kameas Fleet environment (prod, stage, dev)")
-	bundleDir := fs.String("bundle", "", "register this release bundle's plugin, replacing the GitHub marketplace")
-	noBundle := fs.Bool("no-bundle", false, "use kenaz from PATH instead of this download's plugin")
+	fs.StringVar(&o.env, "env", "", "Kameas Fleet environment (prod, dev)")
+	bundleDir = fs.String("bundle", "", "register this release bundle's plugin, replacing the GitHub marketplace")
+	noBundle = fs.Bool("no-bundle", false, "use kenaz from PATH instead of this download's plugin")
+	return fs, o, bundleDir, noBundle
+}
+
+// initEnvFlag is the --env value `kenaz init` reads from args, parsed with
+// init's own flags (so a flag's value is never taken for a flag). ok is
+// false when init would reject the arguments, which it does before any
+// step.
+func initEnvFlag(args []string) (env string, ok bool) {
+	fs, o, _, _ := initFlags(io.Discard)
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+		return "", false
+	}
+	return o.env, true
+}
+
+func runInit(env Env, args []string) int {
+	fs, op, bundleDir, noBundle := initFlags(env.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
+	o := *op
 	if fs.NArg() > 0 {
 		fs.Usage()
 		return ExitUsage
@@ -372,7 +391,7 @@ func (d initDeps) windowsPath(w io.Writer, o initOptions, dir string) error {
 	if err != nil {
 		return err
 	}
-	next, changed := pathenv.WindowsEdit(cur, dir, d.getenv)
+	next, changed := pathenv.WindowsEdit(cur, dir, expand, d.getenv)
 	if !changed {
 		fmt.Fprintf(w, "Your user Path already has %s; open a new terminal to use kenaz there.\n", dir)
 		d.added(dir)
@@ -383,7 +402,12 @@ func (d initDeps) windowsPath(w io.Writer, o initOptions, dir string) error {
 		fmt.Fprintf(w, "PATH not changed. To add it yourself, add this folder to your user Path:\n  %s\n", dir)
 		return nil
 	}
-	if err := ue.SetPath(next, expand); err != nil {
+	// The Path is read again before it is written: a change made while
+	// the question was open is kept, and nothing is written.
+	if err := pathenv.WriteWindowsPath(ue, cur, expand, next); errors.Is(err, pathenv.ErrChanged) {
+		fmt.Fprintf(w, "Your user Path changed after %[1]s init read it, so nothing was written. Run %[1]s init again to retry, or add this folder to your user Path yourself:\n  %[2]s\n", variant.Current.Binary, dir)
+		return nil
+	} else if err != nil {
 		return err
 	}
 	ue.Broadcast()

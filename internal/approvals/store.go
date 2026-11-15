@@ -44,6 +44,9 @@ type record struct {
 	// idempotent replies after completion.
 	Result   []byte `json:"result,omitempty"`
 	Attempts int    `json:"attempts,omitempty"`
+	// ApprovedBy is ApprovedByGrant when a standing grant ran this, "" when the
+	// person approved it.
+	ApprovedBy string `json:"approved_by,omitempty"`
 }
 
 func (r *record) purgeContent() {

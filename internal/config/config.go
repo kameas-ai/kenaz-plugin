@@ -244,6 +244,48 @@ func (e envNotAllowed) Error() string {
 
 func (e envNotAllowed) Unwrap() error { return ErrEnvNotAllowed }
 
+// ErrEnvRetired is wrapped by the error ResolveEnv returns for a Fleet
+// environment that no longer exists (variant.RetiredEnvs).
+var ErrEnvRetired = errors.New("Fleet environment retired")
+
+type envRetired struct {
+	env fleetapi.Env
+	src Source
+}
+
+func (e envRetired) Error() string {
+	msg := variant.Current.RetiredMessage(string(e.env))
+	if e.src != SourceFlag {
+		msg += fmt.Sprintf(" (%s was selected by %s)", e.env, e.src)
+	}
+	return msg
+}
+
+func (e envRetired) Unwrap() error { return ErrEnvRetired }
+
+// RetiredEnv returns the retired environment that err, an error from
+// ResolveEnv, refused, and what selected it (the flag, an env variable or
+// config.toml).
+func RetiredEnv(err error) (fleetapi.Env, Source, bool) {
+	var r envRetired
+	if errors.As(err, &r) {
+		return r.env, r.src, true
+	}
+	return "", "", false
+}
+
+// SelectingEnvVar is the env variable ResolveEnv takes the environment
+// from: the first of EnvVars that is set to a value (not empty, not a
+// placeholder a harness left unexpanded), or "".
+func SelectingEnvVar(getenv func(string) string) string {
+	for _, name := range EnvVars {
+		if v := strings.TrimSpace(getenv(name)); v != "" && !placeholder(v) {
+			return name
+		}
+	}
+	return ""
+}
+
 // placeholder reports values a harness left unexpanded, e.g. Codex passes
 // "${user_config.env}" through literally from a Claude-format .mcp.json.
 func placeholder(v string) bool { return strings.HasPrefix(strings.TrimSpace(v), "${") }
@@ -252,8 +294,21 @@ func placeholder(v string) bool { return strings.HasPrefix(strings.TrimSpace(v),
 // the build's default (prod). Empty and unexpanded placeholder values are
 // skipped at every level. An explicit but unknown value, or one the build
 // does not connect to (ErrEnvNotAllowed), is an error at every level,
-// never a silent fallback.
+// never a silent fallback. So is a retired one (ErrEnvRetired), in every
+// build.
 func ResolveEnv(flag string, getenv func(string) string, file File) (fleetapi.Env, Source, error) {
+	return resolveEnv(flag, getenv, file, false)
+}
+
+// ResolveEnvForCleanup is ResolveEnv for a command that only removes what
+// an earlier setup or sign-in left on this device (setup --undo, logout):
+// it also resolves a retired environment, so a person can still remove an
+// old registration for one. Nothing connects to Fleet for it.
+func ResolveEnvForCleanup(flag string, getenv func(string) string, file File) (fleetapi.Env, Source, error) {
+	return resolveEnv(flag, getenv, file, true)
+}
+
+func resolveEnv(flag string, getenv func(string) string, file File, cleanup bool) (fleetapi.Env, Source, error) {
 	try := func(v string, src Source) (fleetapi.Env, Source, bool, error) {
 		v = strings.TrimSpace(v)
 		if v == "" || placeholder(v) {
@@ -262,6 +317,12 @@ func ResolveEnv(flag string, getenv func(string) string, file File) (fleetapi.En
 		e := fleetapi.Env(strings.ToLower(v))
 		if !e.Valid() {
 			return "", "", true, fmt.Errorf("unknown Fleet env %q from %s (want %s)", v, src, variant.Current.EnvChoices("|"))
+		}
+		if variant.Retired(string(e)) {
+			if cleanup {
+				return e, src, true, nil
+			}
+			return "", "", true, envRetired{e, src}
 		}
 		if !variant.Current.Allowed(string(e)) {
 			return "", "", true, envNotAllowed{e, src}

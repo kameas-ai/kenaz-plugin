@@ -11,7 +11,12 @@
 // executing, by compare-and-swap, once, within its expiry and for the same account, and
 // the registered Executor run with the stored payload and idempotency key.
 //
-// No MCP tool or control endpoint approves a request. The page's approve route needs what
+// One exception: an operation may have an AutoApprover, which the relay asks about a new
+// request before Prepare answers. On a yes the relay runs the request through that same
+// approval, for a standing grant the person gave earlier at a terminal. Only context.share_file has one (the context share
+// grant), and the record says the grant ran it.
+//
+// No MCP tool or control endpoint approves a request, or gives a grant. The page's approve route needs what
 // a browser's same-origin fetch sends and a token only the page hands out, which stops a
 // tool, a cross-site page and a plain HTTP call. It can't stop a program running as this
 // user that loads the page and sends the same things: that is the limit of an approval

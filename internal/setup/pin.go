@@ -1,7 +1,9 @@
 package setup
 
 import (
+	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -25,7 +27,10 @@ import (
 //     whoever controls the repository can serve other content under that
 //     name. Setup therefore reads the HEAD of Codex's marketplace clone and,
 //     when a verified bundle is at hand, compares the clone's plugin tree
-//     with the bundle's.
+//     with the bundle's. Codex does not run the plugin from that clone but
+//     from a copy it made at install time ($CODEX_HOME/plugins/cache), which
+//     outlives a marketplace re-added with --ref, so that copy must equal
+//     the clone's plugin tree too (codexCacheStale).
 
 // Release identifies the signed release a kenaz was built from.
 type Release struct {
@@ -168,11 +173,105 @@ func (o Options) releasePin(h harness, mk marketplace, b *Bundle) (bool, string)
 		if err != nil {
 			return false, fmt.Sprintf("is pinned, but its plugin files cannot be verified: %v", err)
 		}
-		if bundle.TreeDigest(files) != b.PluginDigest() {
+		// git on Windows checks text files out with CRLF line endings by
+		// default (core.autocrlf), so a checkout that differs from the
+		// verified copy only in that is the same release.
+		if want := b.PluginDigest(); bundle.TreeDigest(files) != want && bundle.TreeDigest(lfEndings(files)) != want {
 			return false, "is pinned, but its plugin files differ from this release's verified copy"
 		}
 	}
 	return true, ""
+}
+
+// lfEndings returns files with every CRLF line ending turned into LF.
+func lfEndings(files map[string][]byte) map[string][]byte {
+	out := make(map[string][]byte, len(files))
+	for n, b := range files {
+		out[n] = bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n"))
+	}
+	return out
+}
+
+// codexCacheDir is where Codex keeps the copies of kenaz@kenaz it runs:
+// one directory per installed version, each a copy of the marketplace's
+// plugin directory made by `codex plugin add`
+// ($CODEX_HOME/plugins/cache/<marketplace>/<plugin>/<version>).
+func (o Options) codexCacheDir() string {
+	return filepath.Join(o.CodexDir, "plugins", "cache", bundleMarketplace, variant.Current.Plugin)
+}
+
+// codexGenerated is what Codex itself adds to its cached copy of a plugin
+// (skills it derives from the plugin's commands). It is not part of the
+// plugin tree and is ignored when comparing.
+const codexGenerated = ".codex-plugin/migrated-command-skills/"
+
+// codexCacheStale reports why the copy of the plugin that Codex runs is
+// not the plugin tree of its marketplace clone, or "" when every cached
+// version is that tree, or nothing is cached. Codex copies the plugin at
+// install time and keeps the copy when the marketplace is removed and
+// added again, so a marketplace pinned with --ref can sit beside a copy
+// installed from a moving branch.
+func (o Options) codexCacheStale() string {
+	base := o.codexCacheDir()
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		return fmt.Sprintf("cannot be verified: %v", err)
+	}
+	var want map[string][]byte
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue // Codex's own install records
+		}
+		dir := filepath.Join(base, e.Name())
+		if want == nil {
+			files, err := bundle.PluginFiles(o.codexCloneDir())
+			if err != nil {
+				return fmt.Sprintf("cannot be compared with the pinned marketplace: %v", err)
+			}
+			want = map[string][]byte{}
+			for n, b := range files {
+				if rel, ok := strings.CutPrefix(n, "plugin/"); ok {
+					want[rel] = b
+				}
+			}
+		}
+		seen := 0
+		err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, _ := filepath.Rel(dir, p)
+			rel = filepath.ToSlash(rel)
+			if d.IsDir() {
+				if rel+"/" == codexGenerated {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !d.Type().IsRegular() {
+				return fmt.Errorf("%s is not a regular file", rel)
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			if w, ok := want[rel]; !ok || !bytes.Equal(w, b) {
+				return fmt.Errorf("%s differs", rel)
+			}
+			seen++
+			return nil
+		})
+		if err == nil && seen != len(want) {
+			err = fmt.Errorf("it has %d of the %d plugin files", seen, len(want))
+		}
+		if err != nil {
+			return fmt.Sprintf("is not the pinned marketplace's plugin (%s: %v)", dir, err)
+		}
+	}
+	return ""
 }
 
 // noBundleHint says how to pin a GitHub marketplace when setup has no

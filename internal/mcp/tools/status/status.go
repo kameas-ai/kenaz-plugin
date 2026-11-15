@@ -5,9 +5,11 @@ package status
 
 import (
 	"context"
+	"errors"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/consent"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
@@ -42,12 +44,19 @@ func register(s *sdk.Server, d mcp.Deps) {
 // Get returns the daemon's status, or a local fallback when the daemon is
 // unreachable, so the tool always answers with schema-valid output.
 func Get(ctx context.Context, d mcp.Deps) daemon.Status {
+	note := "The Kenaz relay is not running; it starts automatically with your next session."
 	if d.Status != nil {
-		if st, err := d.Status.Status(ctx); err == nil {
+		st, err := d.Status.Status(ctx)
+		if err == nil {
 			return st
 		}
+		if errors.Is(err, config.ErrEnvRetired) {
+			// No relay runs for a retired environment: the error says what
+			// the app is still set up for and how to fix it.
+			note = err.Error()
+		}
 	}
-	st := daemon.LocalStatus(ctx, d.Provider, d.Env, "The Kenaz relay is not running; it starts automatically with your next session.")
+	st := daemon.LocalStatus(ctx, d.Provider, d.Env, note)
 	st.DashboardURL = consent.DashboardBase(d.Env)
 	if d.StateDir != "" {
 		for _, h := range setup.HostStates(d.StateDir) {

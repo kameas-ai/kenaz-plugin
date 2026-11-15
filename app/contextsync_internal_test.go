@@ -248,6 +248,24 @@ func TestContextSyncBothWays(t *testing.T) {
 	}
 }
 
+// A teammate's file comes down whatever kind Kameas Fleet has it under: an
+// old name, or one this build doesn't know.
+func TestContextSyncKeepsEveryKind(t *testing.T) {
+	f := newSyncFleet()
+	for i, kind := range []string{"fact", "glossary_term", "decision", "explanation", ""} {
+		id, name := fmt.Sprintf("n-%d", i), fmt.Sprintf("file-%d.md", i)
+		f.put(id, "team-1", name, "text "+kind+"\n", "bob", 1)
+		f.nodes[id].Node.Kind = kind
+	}
+	d := newSyncDesk(t, f)
+	d.ok("")
+	for i, kind := range []string{"fact", "glossary_term", "decision", "explanation", ""} {
+		if got := d.read(fmt.Sprintf("file-%d.md", i)); got != "text "+kind+"\n" {
+			t.Errorf("kind %q: file read %q", kind, got)
+		}
+	}
+}
+
 // Both changed: Fleet's text at the name, yours beside it, and yours goes up next time if you say so.
 func TestContextSyncConflict(t *testing.T) {
 	f := newSyncFleet()

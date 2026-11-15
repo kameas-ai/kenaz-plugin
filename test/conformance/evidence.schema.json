@@ -2,7 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "evidence.schema.json",
   "title": "Baseline conformance evidence and release verdict",
-  "description": "Evidence: one record per matrix cell, written by `conformance run`. Verdict: written by `conformance verdict` and checked by `conformance check-verdict` before publication. The Go types in conformance.go are authoritative; Evidence.Validate and CheckVerdict enforce the rules this schema cannot express (a pass needs a locked host and candidate, a clean revision and no blocking reason; release needs every cell to pass on a locked lock).",
+  "$comment": "A release verdict is live by construction and declares no tier, so its bytes are what every released check-verdict reads. check-verdict names the tier it found: live for a verdict, installed for an installed-tier summary (refused), unknown otherwise (refused).",
+  "description": "Evidence: one record per matrix cell, written by `conformance run`. Verdict: written by `conformance verdict` and checked by `conformance check-verdict` before publication. The Go types in conformance.go are authoritative; Evidence.Validate and CheckVerdict enforce the rules this schema cannot express (a pass needs a locked host and candidate, a clean revision and no blocking reason; release needs every cell to pass on a locked lock). Two tiers are recorded separately. Live evidence (tier absent or \"live\") is the only kind a release verdict is built from. Installed-tier evidence (tier \"installed\", written by `conformance run -tier installed`) carries the credential-free journey's result in `installed`; it needs no lock and can never count toward a verdict. `conformance verdict -tier installed` writes an installed-tier summary, which is not a verdict: its tier is \"installed\", its release_allowed is always false, and check-verdict refuses it by tier.",
   "$defs": {
     "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "sha256OrUnverified": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"const": "UNVERIFIED"}]},
@@ -10,7 +11,53 @@
       "type": "object",
       "required": ["gate", "reason"],
       "additionalProperties": false,
-      "properties": {"gate": {"enum": ["E01", "E06", "component"]}, "reason": {"type": "string", "minLength": 1}}
+      "properties": {"gate": {"enum": ["E01", "E06", "component", "installed"]}, "reason": {"type": "string", "minLength": 1}}
+    },
+    "installedResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["build", "host_cli", "steps", "unproven"],
+      "description": "What an installed-tier journey observed. No tokens, no file or tool content, no user paths.",
+      "properties": {
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["flavor", "version", "tags", "official_differences"],
+          "properties": {
+            "flavor": {"const": "unofficial"},
+            "version": {"type": "string"},
+            "tags": {"type": "string", "description": "Build tags kenaz was built with; empty for the default build."},
+            "official_differences": {"type": "array", "items": {"type": "string"}, "description": "Checks that would differ for an official build."}
+          }
+        },
+        "host_cli": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["present", "visibility"],
+          "properties": {
+            "present": {"type": "boolean"},
+            "version": {"type": "string"},
+            "visibility": {"enum": ["verified", "not_run", "needs_sign_in"], "description": "verified: the real host CLI listed the plugin with no sign-in and no model call. not_run: the host CLI is absent or has no such listing command. needs_sign_in: host listing needs sign-in."},
+            "note": {"type": "string"}
+          }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "status"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "status": {"enum": ["pass", "fail", "not_run"]},
+              "command": {"type": "string"},
+              "detail": {"type": "string"}
+            }
+          }
+        },
+        "unproven": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "What the installed tier leaves unproven for this cell."}
+      }
     },
     "evidence": {
       "type": "object",
@@ -46,7 +93,11 @@
         "verdict": {"enum": ["pass", "fail", "blocked"]},
         "reasons": {"type": "array", "items": {"$ref": "#/$defs/reason"}},
         "started_at": {"type": "string", "format": "date-time"},
-        "finished_at": {"type": "string", "format": "date-time"}
+        "finished_at": {"type": "string", "format": "date-time"},
+        "tier": {"enum": ["live", "installed"], "description": "Absent means live. An installed-tier record never counts toward a release verdict."},
+        "installed": {"$ref": "#/$defs/installedResult"},
+        "os_match": {"enum": ["exact", "family", "unknown"], "description": "Installed tier only: how the runner (os_observed) compares with the cell's OS target. exact: the target release. family: the same OS family and architecture, another release or edition (os_note names it). unknown: the release could not be observed. Anything but exact makes an installed-tier pass a reduced one."},
+        "os_note": {"type": "string", "description": "Installed tier only: the mismatch, in words. Required when os_match is family or unknown."}
       }
     },
     "verdict": {
@@ -61,8 +112,8 @@
         "candidate": {"type": "object"},
         "cells": {
           "type": "array",
-          "minItems": 36,
-          "maxItems": 36,
+          "minItems": 24,
+          "maxItems": 24,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -78,7 +129,47 @@
         "release_allowed": {"type": "boolean"},
         "verdict_sha256": {"$ref": "#/$defs/sha256", "description": "SHA-256 of the compact JSON encoding of this object with verdict_sha256 set to the empty string."}
       }
+    },
+    "installedSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "kind", "tier", "revision", "release_allowed", "note", "cells", "summary"],
+      "description": "The installed tier's own summary. Not a release verdict.",
+      "properties": {
+        "schema_version": {"const": 1},
+        "kind": {"const": "installed-tier-summary"},
+        "tier": {"const": "installed"},
+        "revision": {"type": "string"},
+        "release_allowed": {"const": false},
+        "note": {"type": "string"},
+        "cells": {
+          "type": "array",
+          "minItems": 24,
+          "maxItems": 24,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cell", "result", "steps_passed", "steps_failed", "steps_not_run"],
+            "properties": {
+              "cell": {"type": "string"},
+              "result": {"enum": ["pass", "fail", "blocked", "not_run"]},
+              "host_visibility": {"enum": ["verified", "not_run", "needs_sign_in"]},
+              "steps_passed": {"type": "integer", "minimum": 0},
+              "steps_failed": {"type": "integer", "minimum": 0},
+              "steps_not_run": {"type": "integer", "minimum": 0},
+              "tags": {"type": "string"},
+              "evidence_sha256": {"type": "string"},
+              "reduced": {"type": "boolean", "description": "A pass that is not a full installed-tier pass: steps were not run (not_run_steps) or the runner was not the target OS (os_note)."},
+              "not_run_steps": {"type": "array", "items": {"type": "string"}, "description": "Ids of the journey steps recorded as not run."},
+              "os_observed": {"type": "string"},
+              "os_match": {"enum": ["exact", "family", "unknown"]},
+              "os_note": {"type": "string"}
+            }
+          }
+        },
+        "summary": {"type": "object"}
+      }
     }
   },
-  "oneOf": [{"$ref": "#/$defs/evidence"}, {"$ref": "#/$defs/verdict"}]
+  "oneOf": [{"$ref": "#/$defs/evidence"}, {"$ref": "#/$defs/verdict"}, {"$ref": "#/$defs/installedSummary"}]
 }

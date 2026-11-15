@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,13 @@ func underClaudeCode(get func(string) string) func(string) string {
 
 func withCapture(t *testing.T) {
 	t.Helper()
+	// Capture is deliberately unavailable on Windows (captureAvailable in
+	// memorycapture.go: off there until its tests have run on Windows for a
+	// release), whatever this flag says. A test that turns it on would
+	// only observe the refusal.
+	if runtime.GOOS == "windows" {
+		t.Skip("automatic memory capture is unavailable on Windows by design (captureAvailable); this test needs it on")
+	}
 	old := features.MemoryCapture
 	features.MemoryCapture = true
 	t.Cleanup(func() { features.MemoryCapture = old })

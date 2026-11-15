@@ -699,3 +699,60 @@ func TestNoBundleWarningIsActionable(t *testing.T) {
 		}
 	}
 }
+
+// An install at project or local scope runs in that one repository only,
+// so it is not "installed": setup installs the plugin at user scope (and
+// --undo removes that), instead of warning that it is turned off.
+func TestAdoptProjectScopeInstallIsNotInstalled(t *testing.T) {
+	skipWithoutPublicMarketplace(t)
+	const pinned = `{"extraKnownMarketplaces": {"kenaz": {"source": {"source": "settings", "name": "kenaz", "plugins": [{"name": "kenaz", "source": {"source": "git-subdir", "url": "kameas-ai/kenaz-plugin", "path": "plugin", "ref": "v0.6.1", "sha": "`
+	for _, scope := range []string{"project", "local"} {
+		t.Run(scope, func(t *testing.T) {
+			e, f, _ := bundleEnv(t, false)
+			os.MkdirAll(filepath.Join(e.opts.ClaudeDir, "plugins"), 0o700)
+			os.WriteFile(e.opts.path(harnessClaude), []byte(pinned+testRelease.Commit+`"}}]}}}}`), 0o600)
+			os.WriteFile(filepath.Join(e.opts.ClaudeDir, "plugins", "installed_plugins.json"), []byte(`{"version": 2, "plugins": {"kenaz@kenaz": [{"scope": "`+scope+`", "projectPath": "/work/repo", "version": "0.4.1"}]}}`), 0o600)
+			if err := Apply(e.opts, harnessClaude); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(f.calls, "|") != "claude plugin install kenaz@kenaz" {
+				t.Fatalf("calls %v", f.calls)
+			}
+			if strings.Contains(e.err.String(), "turned off") {
+				t.Fatalf("warned that it is turned off: %q", e.err)
+			}
+			st, _ := loadState(e.opts.StateDir)
+			if fs := st.get(harnessClaude); fs.Adopted == nil || !fs.Adopted.InstalledPlugin {
+				t.Fatalf("state %+v", fs)
+			}
+			f.calls = nil
+			if err := Undo(e.opts, harnessClaude); err != nil || strings.Join(f.calls, "|") != "claude plugin uninstall kenaz@kenaz" {
+				t.Fatalf("undo: %v %v", err, f.calls)
+			}
+		})
+	}
+}
+
+func TestClaudeInstalledScopes(t *testing.T) {
+	for _, tc := range []struct {
+		entry string
+		want  bool
+	}{
+		{`[{"scope": "user"}]`, true},
+		{`[{"scope": "managed"}]`, true},
+		{`[{"version": "0.4.1"}]`, true}, // no scope
+		{`{"version": "0.4.1"}`, true},   // the older format: one object
+		{`[{"scope": "project"}, {"scope": "user"}]`, true},
+		{`[{"scope": "project"}]`, false},
+		{`[{"scope": "local"}, {"scope": "project"}]`, false},
+		{`[]`, false},
+		{`null`, false},
+	} {
+		o := Options{ClaudeDir: t.TempDir()}
+		os.MkdirAll(filepath.Join(o.ClaudeDir, "plugins"), 0o700)
+		os.WriteFile(filepath.Join(o.ClaudeDir, "plugins", "installed_plugins.json"), []byte(`{"version": 2, "plugins": {"`+bundlePluginID+`": `+tc.entry+`}}`), 0o600)
+		if got := o.claudeInstalled(); got != tc.want {
+			t.Errorf("%s: installed %v, want %v", tc.entry, got, tc.want)
+		}
+	}
+}

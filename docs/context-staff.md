@@ -1,6 +1,6 @@
 # Context files: staff use and go-live
 
-Local context files, `context_write`, the team share and pull tools and the session index are behind the build tag `kenaz_context_library`, and no release sets it. This is how staff run them without a customer release, and what has to happen before customers get them.
+Local context files, `context_write`, the team share and pull tools and the session index are behind the build tag `kenaz_context_library`. The official build has compiled it since 0.8.x, together with `kenaz_memory_capture` and `kenaz_memory_project_scope`; the public build in this repository doesn't. This page is how staff build and run them from source, with the parts only the staff bundle carries, and what has to hold before the tag is removed.
 
 ## Turning it on
 
@@ -16,7 +16,7 @@ Ask your AI tool, in your own words. These are the steps it takes:
 
 1. **Write.** `context_write` saves `personal/release-process.md` under `~/.kenaz/contexts/`. Or edit that folder by hand. Repository files in `.kenaz/context/` are edited as normal files and can be shared too.
 2. **Draft from memory, if you want to.** `/kenaz:draft-context what the file should cover` runs only when you ask, and shows you the exact text before saving it. Only the staff bundle carries it.
-3. **Share.** `context_share_file` returns a link and a command. Open the link and press Approve, or run `kenaz approve`, after checking the exact text, the team and the short name. Nothing leaves your device before that. Fleet scans the text again and can still refuse it. The page warns about private notes only when your AI tool marked the text as drawn from memory. No warning doesn't mean the text has none, so read it either way.
+3. **Share.** `context_share_file` returns a link and a command. Open the link and press Approve, or run `kenaz approve`, after checking the exact text, the team and the short name. Nothing leaves your device before that. If you have turned on the context share grant (`kenaz context grant on`, off by default), the file is shared at once instead, with no link and no approval; see "Sharing context files without an approval for each" in the README. Fleet scans the text again and can still refuse it. The page warns about private notes only when your AI tool marked the text as drawn from memory. No warning doesn't mean the text has none, so read it either way.
 4. **Find.** Your colleague uses `context_search` to get the file's id.
 5. **Pull.** `context_pull_files` with that id saves a working copy under `~/.kenaz/team-contexts/<team>/`. Copies are labelled untrusted, because a teammate can write anything, and they are listed at session start but never loaded whole.
 6. **Update.** The author edits their file and shares it again: same id, next version. Your colleague pulls again. A copy with its own changes is left alone unless they set `overwrite`, and the replaced text goes to the folder's `.trash` for 30 days.

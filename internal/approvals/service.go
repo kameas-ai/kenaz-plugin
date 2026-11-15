@@ -246,6 +246,7 @@ type Manager struct {
 	renderers map[string]Renderer
 	csrf      map[string]time.Time // issued page tokens
 	running   map[string]bool      // request ids whose executor is running
+	autos     map[string]AutoApprover
 	backoff   map[string]*reconcileWait
 }
 
@@ -494,10 +495,12 @@ func hasOpen(s *state) bool {
 }
 
 // Prepare stores r as a pending write and returns its opaque id. It never
-// writes to the destination. A retry with the same operation, identity,
+// writes to the destination itself; an operation with an AutoApprover may be run
+// at once under a standing grant, and the status returned then says so. A retry with the same operation, identity,
 // idempotency key and payload returns the existing request; the same key
 // with a different payload is refused.
 func (m *Manager) Prepare(ctx context.Context, r Request) (string, Status, error) {
+	started := time.Now()
 	if err := validate(r); err != nil {
 		return "", "", err
 	}
@@ -560,6 +563,10 @@ func (m *Manager) Prepare(ctx context.Context, r Request) (string, Status, error
 		return "", "", err
 	}
 	m.log.Info("approval prepared", "op", r.Operation, "request", outID, "state", string(outSt))
+	if outID == id {
+		// New, so a standing grant may run it. A repeat of an earlier request never is.
+		outSt = m.autoApprove(ctx, cur, id, r, started)
+	}
 	return outID, outSt, nil
 }
 
@@ -574,7 +581,7 @@ func (m *Manager) Status(ctx context.Context, requestID string) (Status, []byte,
 	found := false
 	m.st.view(func(s *state) {
 		if r, ok := s.Records[requestID]; ok {
-			found, st, res = true, r.Status, append([]byte(nil), r.Result...)
+			found, st, res = true, r.Status, stampApprovedBy(append([]byte(nil), r.Result...), r.ApprovedBy)
 		}
 	})
 	if !found {
@@ -602,6 +609,8 @@ type Info struct {
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// ApprovedBy is ApprovedByGrant for a request a standing grant ran.
+	ApprovedBy string `json:"approved_by,omitempty"`
 }
 
 // List returns every retained request, newest first.
@@ -611,7 +620,7 @@ func (m *Manager) List(ctx context.Context) []Info {
 	var out []Info
 	m.st.view(func(s *state) {
 		for _, r := range s.Records {
-			out = append(out, Info{RequestID: r.ID, Operation: r.Operation, Status: r.Status, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, UpdatedAt: r.UpdatedAt})
+			out = append(out, Info{RequestID: r.ID, Operation: r.Operation, Status: r.Status, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, UpdatedAt: r.UpdatedAt, ApprovedBy: r.ApprovedBy})
 		}
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })

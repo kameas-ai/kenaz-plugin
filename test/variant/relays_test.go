@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
@@ -133,7 +132,7 @@ func (m *machine) stopRelays() {
 	}
 	if left := waitGone(mine, 3*time.Second); len(left) > 0 {
 		for _, p := range left {
-			syscall.Kill(p.pid, syscall.SIGKILL)
+			kill(p.pid)
 		}
 		if left := waitGone(mine, 3*time.Second); len(left) > 0 {
 			m.t.Errorf("relays still running after SIGKILL: %v", left)
@@ -180,7 +179,7 @@ func leftRoots() []string {
 func sweepRelays(roots []string) []string {
 	var left []string
 	for _, p := range relaysUnder(roots) {
-		syscall.Kill(p.pid, syscall.SIGKILL)
+		kill(p.pid)
 		left = append(left, p.args)
 	}
 	return left

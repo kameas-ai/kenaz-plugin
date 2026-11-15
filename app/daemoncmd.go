@@ -1,11 +1,13 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -27,6 +29,36 @@ var sessionCheckEvery time.Duration
 
 // daemonHooks is extended by app wiring.
 var daemonHooks []DaemonHook
+
+// spoolKey is spool.GetOrCreateKey that returns when ctx ends or the key
+// store has not answered within spool.KeychainTimeout, whatever the store:
+// the OS keychain bounds its own calls and kills its helper
+// (spool.Keychain), and this holds for any other store too. It returns
+// spool.ErrKeychainTimeout then; no key is used, and the relay does not
+// start without one.
+func spoolKey(ctx context.Context, ks spool.KeyStore, env string) ([]byte, error) {
+	type result struct {
+		key []byte
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		k, err := spool.GetOrCreateKey(ks, env)
+		ch <- result{k, err}
+	}()
+	// A little longer than the store's own bound, so its error is the one
+	// reported when it has one.
+	t := time.NewTimer(spool.KeychainTimeout + time.Second)
+	defer t.Stop()
+	select {
+	case r := <-ch:
+		return r.key, r.err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w (%v)", spool.ErrKeychainTimeout, ctx.Err())
+	case <-t.C:
+		return nil, spool.ErrKeychainTimeout
+	}
+}
 
 // runDaemon runs the relay daemon in the foreground of this process. The
 // MCP process and the harness hooks start it detached on demand,
@@ -52,9 +84,30 @@ func runDaemon(env Env, args []string) int {
 	}
 	log := slog.New(logx.NewHandler(out, slog.LevelInfo))
 
+	// The single-instance lock comes first, before anything that can block.
+	// The keychain can (on macOS, `security -i` never returns in a home
+	// with no usable login keychain), and a relay stuck there before its
+	// lock was one that every later start joined: each setup step that
+	// waits for a healthy relay started another. Holding the lock, a
+	// second relay for the environment leaves at once.
+	if err := os.MkdirAll(r.StateDir, 0o700); err != nil {
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
+		return ExitError
+	}
+	release, err := daemon.TryLock(filepath.Join(r.StateDir, daemon.LockFile))
+	if errors.Is(err, daemon.ErrAlreadyRunning) {
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": relay already running")
+		return ExitOK
+	}
+	if err != nil {
+		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
+		return ExitError
+	}
+	defer release()
+
 	opt := daemon.Options{
 		Provider: env.Provider, Env: r.Env, StateDir: r.StateDir, Version: Version,
-		Logger: log, SessionCheckPeriod: sessionCheckEvery,
+		Logger: log, SessionCheckPeriod: sessionCheckEvery, HeldLock: true,
 	}
 	// Spool key from the OS keychain or, on a device without one, from an
 	// owner-only file (see withCredentialStore). If neither works the
@@ -64,8 +117,14 @@ func runDaemon(env Env, args []string) int {
 		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error()+"; the relay cannot start")
 		return ExitError
 	}
-	key, err := spool.GetOrCreateKey(env.keyStore(), string(r.Env))
+	key, err := spoolKey(env.ctx(), env.keyStore(), string(r.Env))
 	if err != nil {
+		if env.ctx().Err() != nil {
+			// Told to stop (a signal) while the key store had not answered:
+			// the same quiet exit as a relay stopped while running.
+			log.Info("stopped before the spool key was available")
+			return ExitOK
+		}
 		if env.cred.files() {
 			log.Error("spool key file unusable; refusing to start", "err", err.Error())
 			fmt.Fprintln(env.Stderr, variant.Current.Binary+": the spool key file cannot be used; the relay cannot start: "+err.Error())

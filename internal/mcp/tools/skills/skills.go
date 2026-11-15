@@ -25,6 +25,7 @@ import (
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/approvals"
+	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 	sk "github.com/kameas-ai/kenaz-plugin/internal/skills"
 	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
@@ -594,12 +595,22 @@ func installFailure(detail string) string {
 	}
 }
 
+// CodeEnvRetired is the error code for a server started for a retired Fleet
+// environment (the context tools' contexttools.CodeEnvRetired).
+const CodeEnvRetired = "env_retired"
+
 func friendly(err error) error {
 	switch {
 	case errors.Is(err, fleetapi.ErrNotSignedIn):
 		return errors.New("you are not signed in to Kameas Fleet. " + mcp.SignInRemedy())
 	case errors.Is(err, fleetapi.ErrUnofficialBuild):
 		return fleetapi.ErrUnofficialBuild
+	case errors.Is(err, config.ErrEnvRetired):
+		// The app that started this server is still set up for a retired
+		// environment. These tools return plain errors, so the code the
+		// context and team tools give in a field leads the text here, as
+		// "code: message".
+		return fmt.Errorf("%s: %w", CodeEnvRetired, err)
 	}
 	if cat, ok := fleetapi.OrgPaused(err); ok {
 		return fmt.Errorf("your organization's Kameas Fleet access is paused (%s); try again later", cat)

@@ -9,6 +9,16 @@
 // journeys replayed against in-process fake Fleet providers are recorded
 // as supporting evidence; a failing one fails the cell, a passing one
 // does not pass it.
+//
+// There are two evidence tiers, recorded separately (see README.md):
+//
+//   - live: the pass described above. Only live evidence feeds the release
+//     verdict and the publication gate.
+//   - installed: the credential-free tier. It builds this checkout's
+//     unofficial kenaz, sets it up in throwaway directories and exercises
+//     what works with no model credentials and no Fleet sign-in. An
+//     installed-tier pass is never a live pass: BuildVerdict rejects it and
+//     CheckVerdict refuses an installed-tier summary by name.
 package conformance
 
 import (
@@ -38,6 +48,31 @@ const (
 	GateIdentity    = "E01"       // dev identity, entitled test users, credentials
 	GateConformance = "E06"       // installed hosts, lock, candidate digests, runners
 	GateComponent   = "component" // this checkout's own component behavior
+	GateInstalled   = "installed" // the credential-free installed-tier journey
+)
+
+// Evidence tiers. An evidence record with no tier is live (records written
+// before the installed tier existed).
+const (
+	TierLive      = "live"
+	TierInstalled = "installed"
+)
+
+// Step results of an installed-tier journey. NotRun is a step the journey
+// could not honestly perform on this machine (for example the host CLI is
+// absent); it is recorded, never counted as a pass.
+const (
+	StepPass   = "pass"
+	StepFail   = "fail"
+	StepNotRun = "not_run"
+)
+
+// Host visibility: whether the real host CLI was asked, without a model
+// call or a sign-in, and listed the plugin.
+const (
+	VisibilityVerified    = "verified"
+	VisibilityNotRun      = "not_run"       // host CLI absent, or its listing command is unavailable
+	VisibilityNeedsSignIn = "needs_sign_in" // host listing needs sign-in
 )
 
 // Required baseline dimensions. The matrix must be exactly their product.
@@ -280,15 +315,36 @@ type Cell struct {
 	// InstalledJourney is the recorded installed-host journey script,
 	// relative to the matrix directory. It may not exist yet.
 	InstalledJourney string `json:"installed_journey"`
+	// InstalledTierJourney is the credential-free installed-tier journey
+	// script, relative to the matrix directory. It is a different script
+	// from InstalledJourney on purpose: writing it must never unblock the
+	// live tier.
+	InstalledTierJourney string `json:"installed_tier_journey,omitempty"`
 	// ComponentJourney replays recorded fixtures against fake Fleet
 	// providers (supporting evidence only). Nil when none exists.
 	ComponentJourney *ComponentJourney `json:"component_journey"`
 }
 
-// ComponentJourney is a `go test` selection.
+// ComponentJourney is a `go test` selection, plus further selections in
+// other packages when the feature's tests span more than one.
 type ComponentJourney struct {
+	Package string          `json:"package"`
+	Run     string          `json:"run"`
+	Also    []TestSelection `json:"also,omitempty"`
+}
+
+// TestSelection is one `go test -run RUN PACKAGE`.
+type TestSelection struct {
 	Package string `json:"package"`
 	Run     string `json:"run"`
+}
+
+// Selections returns every `go test` selection of the journey, in order.
+func (j *ComponentJourney) Selections() []TestSelection {
+	if j == nil {
+		return nil
+	}
+	return append([]TestSelection{{j.Package, j.Run}}, j.Also...)
 }
 
 // LoadMatrix reads and decodes matrix.json strictly.
@@ -344,8 +400,13 @@ func (m Matrix) Validate() error {
 		if c.InstalledJourney == "" || strings.Contains(c.InstalledJourney, "..") {
 			bad("cell %q: installed_journey must be a path inside the harness", c.ID)
 		}
-		if j := c.ComponentJourney; j != nil && (!strings.HasPrefix(j.Package, "./") || j.Run == "") {
-			bad("cell %q: component_journey needs a ./package and a -run pattern", c.ID)
+		for _, sel := range c.ComponentJourney.Selections() {
+			if !strings.HasPrefix(sel.Package, "./") || sel.Run == "" {
+				bad("cell %q: component_journey needs a ./package and a -run pattern", c.ID)
+			}
+		}
+		if j := c.InstalledTierJourney; j != "" && (strings.Contains(j, "..") || j == c.InstalledJourney || strings.HasPrefix(j, "journeys/")) {
+			bad("cell %q: installed_tier_journey must be a path inside the harness, outside journeys/ and different from installed_journey", c.ID)
 		}
 	}
 	return errors.Join(errs...)
@@ -398,6 +459,175 @@ type Evidence struct {
 	Reasons             []Reason          `json:"reasons,omitempty"`
 	StartedAt           string            `json:"started_at"`
 	FinishedAt          string            `json:"finished_at"`
+	// Tier is "live" or "installed"; empty means live. Installed holds the
+	// installed-tier journey's result and is set exactly when Tier is
+	// "installed" and the journey ran.
+	Tier      string           `json:"tier,omitempty"`
+	Installed *InstalledResult `json:"installed,omitempty"`
+	// OSMatch says how the runner compares with the cell's OS target, for an
+	// installed-tier cell that ran: exact (the runner is the target OS
+	// release), family (the same OS family and architecture, another
+	// release or edition; OSNote names it) or unknown (the release could
+	// not be observed). OSObserved holds what the runner is. The live gate
+	// does not read these.
+	OSMatch string `json:"os_match,omitempty"`
+	OSNote  string `json:"os_note,omitempty"`
+}
+
+// How a runner compares with a cell's OS target (Evidence.OSMatch).
+const (
+	OSMatchExact   = "exact"
+	OSMatchFamily  = "family"
+	OSMatchUnknown = "unknown"
+)
+
+// Reduction says why an installed-tier pass is a reduced one: steps the
+// journey recorded as not run, and a runner that is not the cell's target
+// OS. A pass with neither is a full installed-tier pass.
+type Reduction struct {
+	NotRunSteps []string // step ids, in journey order
+	OSNote      string   // "" when the runner is the target OS
+}
+
+// Reduced reports whether there is anything to say.
+func (r Reduction) Reduced() bool { return len(r.NotRunSteps) > 0 || r.OSNote != "" }
+
+// String is the one-line form used in reports.
+func (r Reduction) String() string {
+	var parts []string
+	if n := len(r.NotRunSteps); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d step(s) not run: %s", n, strings.Join(r.NotRunSteps, ", ")))
+	}
+	if r.OSNote != "" {
+		parts = append(parts, r.OSNote)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// Reduction returns what an installed-tier record leaves out of a full
+// pass. It is derived from the record, so evidence written before the OS
+// fields existed still reports its steps not run.
+func (e Evidence) Reduction() Reduction {
+	var r Reduction
+	if e.Tier != TierInstalled || e.Installed == nil {
+		return r
+	}
+	for _, s := range e.Installed.Steps {
+		if s.Status == StepNotRun {
+			r.NotRunSteps = append(r.NotRunSteps, s.ID)
+		}
+	}
+	switch e.OSMatch {
+	case "", OSMatchExact:
+	default:
+		r.OSNote = e.OSNote
+		if r.OSNote == "" {
+			r.OSNote = "the runner (" + e.OSObserved + ") is not known to be the target " + e.OS
+		}
+	}
+	return r
+}
+
+// EvidenceTier is the record's tier: "installed", or "live" for anything
+// else a valid record can hold.
+func (e Evidence) EvidenceTier() string {
+	if e.Tier == TierInstalled {
+		return TierInstalled
+	}
+	return TierLive
+}
+
+// InstalledResult is what an installed-tier journey observed. It holds no
+// tokens, no file or tool content and no user paths: details are short,
+// fixed sentences and counts.
+type InstalledResult struct {
+	Build   InstalledBuild  `json:"build"`
+	HostCLI InstalledHost   `json:"host_cli"`
+	Steps   []InstalledStep `json:"steps"`
+	// Unproven lists what this tier leaves unproven for the cell.
+	Unproven []string `json:"unproven"`
+}
+
+// InstalledBuild is the kenaz the journey built and ran.
+type InstalledBuild struct {
+	Flavor  string `json:"flavor"` // always "unofficial": the journey refuses anything else
+	Version string `json:"version"`
+	Tags    string `json:"tags"` // build tags, "" for the default build
+	// OfficialDifferences names the checks that would differ for an
+	// official build.
+	OfficialDifferences []string `json:"official_differences"`
+}
+
+// InstalledHost is the real host CLI on the runner, if any.
+type InstalledHost struct {
+	Present bool   `json:"present"`
+	Version string `json:"version,omitempty"`
+	// Visibility is verified, not_run or needs_sign_in (see the constants).
+	Visibility string `json:"visibility"`
+	Note       string `json:"note,omitempty"`
+}
+
+// InstalledStep is one step of an installed-tier journey.
+type InstalledStep struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"` // pass | fail | not_run
+	Command string `json:"command,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// Validate checks a journey result's shape.
+func (r InstalledResult) Validate() error {
+	var errs []error
+	if r.Build.Flavor != "unofficial" {
+		errs = append(errs, fmt.Errorf("installed tier ran a %q build; it runs the unofficial build only", r.Build.Flavor))
+	}
+	switch r.HostCLI.Visibility {
+	case VisibilityVerified:
+		if !r.HostCLI.Present {
+			errs = append(errs, errors.New("host visibility verified without a host CLI"))
+		}
+	case VisibilityNotRun, VisibilityNeedsSignIn:
+	default:
+		errs = append(errs, fmt.Errorf("host visibility %q", r.HostCLI.Visibility))
+	}
+	if len(r.Steps) == 0 {
+		errs = append(errs, errors.New("no steps"))
+	}
+	seen := map[string]bool{}
+	for _, s := range r.Steps {
+		if s.ID == "" || seen[s.ID] {
+			errs = append(errs, fmt.Errorf("step id %q empty or repeated", s.ID))
+		}
+		seen[s.ID] = true
+		switch s.Status {
+		case StepPass:
+		case StepFail, StepNotRun:
+			if s.Detail == "" {
+				errs = append(errs, fmt.Errorf("step %s: %s without a detail", s.ID, s.Status))
+			}
+		default:
+			errs = append(errs, fmt.Errorf("step %s: status %q", s.ID, s.Status))
+		}
+	}
+	if len(r.Unproven) == 0 {
+		errs = append(errs, errors.New("an installed-tier result must say what it leaves unproven"))
+	}
+	return errors.Join(errs...)
+}
+
+// Count returns the number of steps with each status.
+func (r InstalledResult) Count() (pass, fail, notRun int) {
+	for _, s := range r.Steps {
+		switch s.Status {
+		case StepPass:
+			pass++
+		case StepFail:
+			fail++
+		default:
+			notRun++
+		}
+	}
+	return
 }
 
 // Validate checks an evidence record. A pass must be backed by a locked
@@ -419,8 +649,49 @@ func (e Evidence) Validate(m Matrix) error {
 	if e.Revision == "" || e.LockSHA256 == "" || e.Command == "" || e.Expected == "" || e.Actual == "" {
 		bad("revision, lock_sha256, command, expected and actual are required")
 	}
-	switch e.Verdict {
-	case Pass:
+	switch e.OSMatch {
+	case "", OSMatchExact:
+	case OSMatchFamily, OSMatchUnknown:
+		if e.OSNote == "" {
+			bad("os_match %s without an os_note", e.OSMatch)
+		}
+	default:
+		bad("os_match %q, want exact|family|unknown", e.OSMatch)
+	}
+	switch e.Tier {
+	case "", TierLive:
+		if e.Installed != nil {
+			bad("live evidence with an installed-tier result")
+		}
+		if e.OSMatch != "" {
+			bad("live evidence with an installed-tier os_match")
+		}
+	case TierInstalled:
+		if e.Component != nil {
+			bad("installed-tier evidence with a component journey")
+		}
+		if e.Installed != nil {
+			if err := e.Installed.Validate(); err != nil {
+				bad("%v", err)
+			}
+		}
+	default:
+		bad("tier %q, want live|installed", e.Tier)
+	}
+	switch {
+	case e.Verdict == Pass && e.Tier == TierInstalled:
+		// An installed-tier pass: every step the journey ran passed. It
+		// needs no lock and no candidate digest, which is exactly why it
+		// can never stand in for a live pass.
+		if len(e.Reasons) > 0 {
+			bad("pass with blocking reasons")
+		}
+		if e.Installed == nil {
+			bad("installed-tier pass without a journey result")
+		} else if p, f, _ := e.Installed.Count(); f > 0 || p == 0 {
+			bad("installed-tier pass with %d failed and %d passed step(s)", f, p)
+		}
+	case e.Verdict == Pass:
 		if len(e.Reasons) > 0 {
 			bad("pass with blocking reasons")
 		}
@@ -435,7 +706,7 @@ func (e Evidence) Validate(m Matrix) error {
 		if e.Component != nil && e.Component.Result == Fail {
 			bad("pass with a failing component journey")
 		}
-	case Fail, Blocked:
+	case e.Verdict == Fail, e.Verdict == Blocked:
 		if len(e.Reasons) == 0 {
 			bad("%s without a reason", e.Verdict)
 		}
@@ -478,7 +749,9 @@ type Summary struct {
 
 // BuildVerdict combines the lock and the evidence for every matrix cell.
 // evidence maps cell id to the raw evidence file bytes. A missing or
-// invalid record counts as missing; any non-pass blocks release.
+// invalid record counts as missing; any non-pass blocks release. Only
+// live-tier evidence counts: an installed-tier record is an error and its
+// cell is missing, whatever its verdict.
 func BuildVerdict(m Matrix, l Lock, lockBytes []byte, evidence map[string][]byte) (Verdict, error) {
 	v := Verdict{SchemaVersion: 1, LockSHA256: Digest(lockBytes), LockStatus: l.Status, Candidate: l.PluginCandidate}
 	var errs []error
@@ -492,6 +765,8 @@ func BuildVerdict(m Matrix, l Lock, lockBytes []byte, evidence map[string][]byte
 				errs = append(errs, fmt.Errorf("%s: %w", c.ID, err))
 			} else if err := e.Validate(m); err != nil {
 				errs = append(errs, err)
+			} else if e.EvidenceTier() != TierLive {
+				errs = append(errs, fmt.Errorf("%s: %s-tier evidence cannot count toward a release verdict; a release needs a live pass", c.ID, e.EvidenceTier()))
 			} else if e.LockSHA256 != v.LockSHA256 {
 				errs = append(errs, fmt.Errorf("%s: evidence was recorded against another lock", c.ID))
 			} else {
@@ -536,10 +811,18 @@ func (v Verdict) digest() string {
 // CheckVerdict is the publication gate: the verdict is intact, allows
 // release, covers every matrix cell with a pass, and binds exactly the
 // candidate artifacts being published (os → SHA-256 of the final bytes).
+//
+// It checks the tier first and names the one it found: only a live verdict
+// can pass. An installed-tier summary (or anything else that says it is not
+// live) is refused before anything else is read from it.
 func CheckVerdict(raw []byte, m Matrix, artifacts map[string]string) error {
+	tier := VerdictTier(raw)
+	if tier != TierLive {
+		return fmt.Errorf("found tier %q, not a live release verdict: the publication gate needs a live pass of every cell (an installed-tier pass proves setup and local behavior of an unofficial build only; a release verdict is written by `conformance verdict` and declares no tier)", tier)
+	}
 	var v Verdict
 	if err := decodeStrict(raw, &v); err != nil {
-		return fmt.Errorf("verdict: %w", err)
+		return fmt.Errorf("verdict (tier live): %w", err)
 	}
 	var errs []error
 	if v.VerdictSHA256 != v.digest() {
@@ -571,6 +854,207 @@ func CheckVerdict(raw []byte, m Matrix, artifacts map[string]string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// VerdictTier reads the tier of a verdict-like document without trusting
+// anything else in it. A release verdict is live by construction (it is
+// built from live evidence only) and carries no tier field, so that its
+// bytes and digest are what every released check-verdict already reads; a
+// document is taken for one when it declares no tier and has the digest
+// field only a verdict has. Anything that declares a tier is that tier as
+// written ("installed" for the installed-tier summary). Everything else is
+// "unknown".
+func VerdictTier(raw []byte) string {
+	var t map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &t); err != nil {
+		return "unknown"
+	}
+	if declared, ok := t["tier"]; ok {
+		var tier string
+		if json.Unmarshal(declared, &tier) != nil || tier == "" || tier == TierLive {
+			// A release verdict never declares a tier, so one that says
+			// "live" (or nothing readable) is not what BuildVerdict wrote.
+			return "unknown"
+		}
+		return tier
+	}
+	if _, ok := t["verdict_sha256"]; ok {
+		return TierLive
+	}
+	return "unknown"
+}
+
+// InstalledSummary is the installed tier's own summary. It is not a release
+// verdict: it has no release_allowed that can be true, no candidate and no
+// lock, and CheckVerdict refuses it by its tier.
+type InstalledSummary struct {
+	SchemaVersion int    `json:"schema_version"`
+	Kind          string `json:"kind"` // "installed-tier-summary"
+	Tier          string `json:"tier"` // "installed"
+	Revision      string `json:"revision"`
+	// ReleaseAllowed is always false. The field exists so that a reader
+	// looking for it finds the answer.
+	ReleaseAllowed bool            `json:"release_allowed"`
+	Note           string          `json:"note"`
+	Cells          []InstalledCell `json:"cells"`
+	Summary        InstalledCounts `json:"summary"`
+}
+
+// InstalledCell is one cell's installed-tier outcome.
+type InstalledCell struct {
+	Cell           string `json:"cell"`
+	Result         string `json:"result"` // pass | fail | blocked | not_run
+	HostVisibility string `json:"host_visibility,omitempty"`
+	StepsPassed    int    `json:"steps_passed"`
+	StepsFailed    int    `json:"steps_failed"`
+	StepsNotRun    int    `json:"steps_not_run"`
+	Tags           string `json:"tags,omitempty"`
+	EvidenceSHA256 string `json:"evidence_sha256,omitempty"`
+	// Reduced marks a pass that is not a full one: the journey recorded
+	// steps as not run (NotRunSteps), or the runner was not the cell's
+	// target OS (OSNote). A reduced pass is still result "pass"; a reader
+	// must not take it for a full installed-tier pass.
+	Reduced     bool     `json:"reduced,omitempty"`
+	NotRunSteps []string `json:"not_run_steps,omitempty"`
+	OSObserved  string   `json:"os_observed,omitempty"`
+	OSMatch     string   `json:"os_match,omitempty"`
+	OSNote      string   `json:"os_note,omitempty"`
+}
+
+// InstalledCounts counts installed-tier outcomes. Pass counts every pass;
+// PassReduced is how many of them are reduced (InstalledCell.Reduced), so
+// the full passes are Pass - PassReduced.
+type InstalledCounts struct {
+	Pass        int `json:"pass"`
+	PassReduced int `json:"pass_reduced"`
+	Fail        int `json:"fail"`
+	Blocked     int `json:"blocked"`
+	NotRun      int `json:"not_run"`
+}
+
+// InstalledSummaryNote is the fixed sentence every installed-tier summary
+// carries.
+const InstalledSummaryNote = "Installed tier only: an unofficial build, no model credentials, no Fleet sign-in. This is not a release verdict and cannot satisfy the publication gate, which needs a live pass of every cell."
+
+// BuildInstalledSummary combines installed-tier evidence for every matrix
+// cell. A cell with no record, or with a record that is invalid or not
+// installed-tier, is not_run.
+func BuildInstalledSummary(m Matrix, evidence map[string][]byte) (InstalledSummary, error) {
+	s := InstalledSummary{SchemaVersion: 1, Kind: "installed-tier-summary", Tier: TierInstalled, Note: InstalledSummaryNote}
+	var errs []error
+	revs := map[string]bool{}
+	for _, c := range m.Cells {
+		ic := InstalledCell{Cell: c.ID, Result: "not_run"}
+		if raw, ok := evidence[c.ID]; ok {
+			var e Evidence
+			switch err := decodeStrict(raw, &e); {
+			case err != nil:
+				errs = append(errs, fmt.Errorf("%s: %w", c.ID, err))
+			case e.Validate(m) != nil:
+				errs = append(errs, e.Validate(m))
+			case e.Tier != TierInstalled:
+				errs = append(errs, fmt.Errorf("%s: not installed-tier evidence", c.ID))
+			default:
+				ic.Result, ic.EvidenceSHA256 = e.Verdict, Digest(raw)
+				if r := e.Installed; r != nil {
+					ic.HostVisibility, ic.Tags = r.HostCLI.Visibility, r.Build.Tags
+					ic.StepsPassed, ic.StepsFailed, ic.StepsNotRun = r.Count()
+					ic.OSObserved, ic.OSMatch = e.OSObserved, e.OSMatch
+					red := e.Reduction()
+					ic.NotRunSteps, ic.OSNote = red.NotRunSteps, red.OSNote
+					ic.Reduced = e.Verdict == Pass && red.Reduced()
+				}
+				revs[e.Revision] = true
+			}
+		}
+		switch ic.Result {
+		case Pass:
+			s.Summary.Pass++
+			if ic.Reduced {
+				s.Summary.PassReduced++
+			}
+		case Fail:
+			s.Summary.Fail++
+		case Blocked:
+			s.Summary.Blocked++
+		default:
+			s.Summary.NotRun++
+		}
+		s.Cells = append(s.Cells, ic)
+	}
+	switch len(revs) {
+	case 0:
+		s.Revision = Unverified
+	case 1:
+		for r := range revs {
+			s.Revision = r
+		}
+	default:
+		s.Revision = "mixed"
+	}
+	return s, errors.Join(errs...)
+}
+
+// CellStates. A cell is reported in exactly one of them per tier pair.
+const (
+	StateLivePass      = "live pass"
+	StateInstalledPass = "installed-tier pass"
+	// StateInstalledReduced is an installed-tier pass that is not a full
+	// one: steps were not run, or the runner was not the target OS.
+	StateInstalledReduced = "installed-tier pass (reduced)"
+	StateNotRun           = "not run"
+)
+
+// CellReport is one cell's standing across both tiers.
+type CellReport struct {
+	Cell           string `json:"cell"`
+	State          string `json:"state"`     // live pass | installed-tier pass | installed-tier pass (reduced) | not run
+	Live           string `json:"live"`      // pass | fail | blocked | not_run
+	Installed      string `json:"installed"` // pass | fail | blocked | not_run
+	HostVisibility string `json:"host_visibility,omitempty"`
+	// What an installed-tier pass leaves out (StateInstalledReduced).
+	NotRunSteps []string `json:"not_run_steps,omitempty"`
+	OSObserved  string   `json:"os_observed,omitempty"`
+	OSNote      string   `json:"os_note,omitempty"`
+}
+
+// Reduction is the report row's reduction, for printing.
+func (r CellReport) Reduction() Reduction { return Reduction{r.NotRunSteps, r.OSNote} }
+
+// Report states, for every matrix cell, which tier (if any) it has passed:
+// a live pass, else an installed-tier pass (a full one, or a reduced one
+// when the journey left steps not run or the runner was not the target
+// OS), else not run. A failed or blocked record in either tier is shown in
+// that tier's column and never raises the state.
+func Report(m Matrix, live, installed map[string][]byte) []CellReport {
+	read := func(raw []byte, tier string) (e Evidence, verdict string) {
+		if raw == nil || decodeStrict(raw, &e) != nil || e.Validate(m) != nil || e.EvidenceTier() != tier {
+			return Evidence{}, "not_run"
+		}
+		return e, e.Verdict
+	}
+	var out []CellReport
+	for _, c := range m.Cells {
+		r := CellReport{Cell: c.ID, State: StateNotRun}
+		_, r.Live = read(live[c.ID], TierLive)
+		var e Evidence
+		e, r.Installed = read(installed[c.ID], TierInstalled)
+		if e.Installed != nil {
+			r.HostVisibility = e.Installed.HostCLI.Visibility
+		}
+		switch {
+		case r.Live == Pass:
+			r.State = StateLivePass
+		case r.Installed == Pass:
+			r.State = StateInstalledPass
+			if red := e.Reduction(); red.Reduced() {
+				r.State = StateInstalledReduced
+				r.NotRunSteps, r.OSNote, r.OSObserved = red.NotRunSteps, red.OSNote, e.OSObserved
+			}
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // Digest is the lowercase hex SHA-256 of b.

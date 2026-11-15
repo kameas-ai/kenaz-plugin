@@ -11,6 +11,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/device"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
+	"github.com/kameas-ai/kenaz-plugin/internal/features"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
@@ -47,6 +48,12 @@ func runStatus(env Env, args []string) int {
 		if id, err := enroll.LoadOrCreateNodeID(r.StateDir, env.now()); err == nil {
 			s, _ := device.Load(r.StateDir)
 			st.DeviceName = device.Resolve(s, enroll.LocalHost().GOOS, id, nil)
+		}
+	}
+	if st.ContextShareGrant == nil && features.ContextLibrary {
+		// No relay to say: read it here, for the signed-in account.
+		if g, acct := env.accountShareGrant(env.ctx(), r, false); acct != nil {
+			st.ContextShareGrant = contextShareGrantStatus(env.ctx(), g, env.Provider, *acct)
 		}
 	}
 	// Consent / org state is part of the same report.
@@ -108,6 +115,9 @@ func runStatus(env Env, args []string) int {
 	}
 	for _, n := range st.Notes {
 		fmt.Fprintf(w, "  note:         %s\n", n)
+	}
+	if l := contextShareGrantLine(st.ContextShareGrant); l != "" {
+		fmt.Fprintf(w, "  %s\n", l)
 	}
 	if mp, err := env.memoryPaths(); err == nil {
 		fmt.Fprintf(w, "  %s\n", mp.statusLine(env.Ctx))

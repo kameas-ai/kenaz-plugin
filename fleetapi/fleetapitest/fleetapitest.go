@@ -38,6 +38,26 @@ func SampleEnrollBody() fleetapi.EnrollBody {
 	}
 }
 
+// SampleTeams is the canonical public fixture for MeInfo.Teams with Fleet's
+// stored team tree: the default (all-members) team at the root, a team
+// directly under it, and that team's sub-team. The default team is first, as
+// Fleet lists it, and is never a parent or in a path. Slug and Membership are
+// left empty, as Fleet does not send them yet. The unofficial stub refuses
+// Me.Get, so it has no teams to fill; fakes and the official adapter's tests use
+// this.
+func SampleTeams() []fleetapi.TeamRef {
+	const (
+		everyone = "0b8f6f0e-0000-4000-8000-000000000001"
+		platform = "0b8f6f0e-0000-4000-8000-000000000002"
+		payments = "0b8f6f0e-0000-4000-8000-000000000003"
+	)
+	return []fleetapi.TeamRef{
+		{ID: everyone, Name: "Everyone", IsDefault: true, Role: fleetapi.TeamRoleMember, Depth: 0, Path: []string{}},
+		{ID: platform, Name: "Platform", Role: fleetapi.TeamRoleLead, Depth: 1, Path: []string{}},
+		{ID: payments, Name: "Payments", Role: fleetapi.TeamRoleMember, ParentTeamID: platform, Depth: 2, Path: []string{platform}},
+	}
+}
+
 // Run executes the suite against p.
 func Run(t *testing.T, p fleetapi.Provider, opts Options) {
 	t.Helper()
@@ -67,6 +87,41 @@ func Run(t *testing.T, p fleetapi.Provider, opts Options) {
 		for k := range m {
 			if !slices.Contains(allowed, k) {
 				t.Errorf("enroll key %q not in allowlist", k)
+			}
+		}
+	})
+
+	t.Run("sample teams form a tree under the default team", func(t *testing.T) {
+		teams := SampleTeams()
+		root, ok := fleetapi.DefaultTeam(teams)
+		if !ok || !fleetapi.TreeKnown(teams) || teams[0].ID != root.ID {
+			t.Fatalf("no default team first: %+v", teams)
+		}
+		byID := map[string]fleetapi.TeamRef{}
+		for _, tm := range teams {
+			byID[tm.ID] = tm
+		}
+		for _, tm := range teams {
+			if tm.Role != fleetapi.TeamRoleMember && tm.Role != fleetapi.TeamRoleLead {
+				t.Errorf("%s: role %q", tm.Name, tm.Role)
+			}
+			if tm.ParentTeamID == root.ID || slices.Contains(tm.Path, root.ID) {
+				t.Errorf("%s: the default team is never a parent or in a path", tm.Name)
+			}
+			switch {
+			case tm.IsDefault:
+				if tm.Depth != 0 || tm.ParentTeamID != "" || len(tm.Path) != 0 {
+					t.Errorf("default team: %+v", tm)
+				}
+			case tm.ParentTeamID == "":
+				if tm.Depth != 1 || len(tm.Path) != 0 {
+					t.Errorf("top-level team: %+v", tm)
+				}
+			default:
+				parent, ok := byID[tm.ParentTeamID]
+				if !ok || tm.Depth != parent.Depth+1 || len(tm.Path) != tm.Depth-1 || tm.Path[len(tm.Path)-1] != parent.ID {
+					t.Errorf("sub-team: %+v", tm)
+				}
 			}
 		}
 	})

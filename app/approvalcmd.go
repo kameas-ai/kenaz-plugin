@@ -62,7 +62,7 @@ func registerContextFileExecutors(m *approvals.Manager, p fleetapi.Provider, sta
 	led := contextlib.NewLedger(contextLedgerIn(filepath.Dir(stateDir)))
 	m.Register(contexttools.ShareFileOperation, contexttools.ExecuteShareFile(p, st, led))
 	m.RegisterReconciler(contexttools.ShareFileOperation, contexttools.ReconcileShareFile(p, led))
-	m.RegisterRenderer(contexttools.ShareFileOperation, contexttools.RenderShareFile(teamNames(p)))
+	m.RegisterRenderer(contexttools.ShareFileOperation, contexttools.RenderShareFile(memberTeams(p)))
 }
 
 // teamNames resolves a team id to its display name for the approval page
@@ -81,6 +81,22 @@ func teamNames(p fleetapi.Provider) func(string) string {
 			}
 		}
 		return ""
+	}
+}
+
+// memberTeams asks Kameas Fleet, once, for the member's teams: what the
+// approval page names a team by and how it tells the organization's
+// all-members team (contexttools.RenderShareFile). nil when Fleet is out
+// of reach.
+func memberTeams(p fleetapi.Provider) func() []fleetapi.TeamRef {
+	return func() []fleetapi.TeamRef {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		me, err := p.Me().Get(ctx)
+		if err != nil {
+			return nil
+		}
+		return me.Teams
 	}
 }
 
@@ -137,11 +153,12 @@ func (s daemonStatus) Status(ctx context.Context) (daemon.Status, error) { retur
 // node removal) cancels every open request.
 func approvalsDaemonHook(env Env) DaemonHook {
 	return func(opt *daemon.Options) (func(*daemon.Daemon), error) {
-		return installApprovals(opt, approvalsStoreKey(env, opt.Env, true))
+		key := approvalsStoreKey(env, opt.Env, true)
+		return installApprovals(opt, key, env.shareGrant(opt.StateDir, opt.Env, true))
 	}
 }
 
-func installApprovals(opt *daemon.Options, key []byte) (func(*daemon.Daemon), error) {
+func installApprovals(opt *daemon.Options, key []byte, grant contextlib.ShareGrant) (func(*daemon.Daemon), error) {
 	var d *daemon.Daemon
 	m, err := approvals.New(approvals.Options{
 		StoreKey: key,
@@ -154,29 +171,45 @@ func installApprovals(opt *daemon.Options, key []byte) (func(*daemon.Daemon), er
 	if err != nil {
 		return nil, err
 	}
-	opt.Lanes = append(opt.Lanes, approvalsLane{m})
+	lane := approvalsLane{m: m}
+	registerGrant := func() {}
+	if features.ContextLibrary {
+		registerGrant, lane.purge = installContextShareGrant(opt, m, grant)
+	}
+	opt.Lanes = append(opt.Lanes, lane)
 	p, stateDir := opt.Provider, opt.StateDir
 	return func(dd *daemon.Daemon) {
 		d = dd
 		for _, r := range approvalRegistrars {
 			r(m, p, stateDir, daemonStatus{dd})
 		}
+		registerGrant()
 		m.Mount(dd.Handle, dd.HandleControl)
 	}, nil
 }
 
 // approvalsLane hooks the approval service into the daemon lifecycle.
-type approvalsLane struct{ m *approvals.Manager }
+type approvalsLane struct {
+	m *approvals.Manager
+	// purge ends the context share grant with the session, in builds that have it.
+	purge func()
+}
 
 func (approvalsLane) Name() string { return "approvals" }
 func (l approvalsLane) Start(ctx context.Context) error {
 	go l.m.Run(ctx)
 	return nil
 }
-func (approvalsLane) Stop() error    { return nil }
-func (approvalsLane) Hold(string)    {}
-func (approvalsLane) Resume()        {}
-func (l approvalsLane) Purge() error { l.m.SignOut(); return nil }
+func (approvalsLane) Stop() error { return nil }
+func (approvalsLane) Hold(string) {}
+func (approvalsLane) Resume()     {}
+func (l approvalsLane) Purge() error {
+	l.m.SignOut()
+	if l.purge != nil {
+		l.purge()
+	}
+	return nil
+}
 func (l approvalsLane) Status() daemon.LaneStatus {
 	n := 0
 	for _, r := range l.m.List(context.Background()) {
@@ -273,7 +306,11 @@ func runApprovals(env Env, args []string) int {
 				if q.Status == approvals.StatusPending {
 					exp = q.ExpiresAt.Local().Format("15:04:05")
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", q.RequestID, q.Operation, q.Status, q.CreatedAt.Local().Format("2006-01-02 15:04"), exp)
+				status := string(q.Status)
+				if q.ApprovedBy == approvals.ApprovedByGrant {
+					status += " (context share grant, no approval)"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", q.RequestID, q.Operation, status, q.CreatedAt.Local().Format("2006-01-02 15:04"), exp)
 			}
 			tw.Flush()
 		}

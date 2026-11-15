@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -41,6 +42,17 @@ func (e Env) paths() (config.Paths, error) {
 	}
 	e.layout.once.Do(func() { e.layout.paths, e.layout.err = e.resolvePaths(e.layout.cmd) })
 	return e.layout.paths, e.layout.err
+}
+
+// pathsInPlace is the layout as it is on disk now: paths without the move
+// `init` and `migrate` make. The env gate reads through it, since it runs
+// before the command may change anything.
+func (e Env) pathsInPlace() (config.Paths, error) {
+	p, err := config.Layout(e.getenv)
+	if err != nil {
+		return p, err
+	}
+	return p.Current(), nil
 }
 
 func (e Env) resolvePaths(cmd string) (config.Paths, error) {
@@ -119,48 +131,91 @@ func runMigrate(env Env, args []string) int {
 // unusedAdvice says what to do with u, an earlier release's file or folder
 // Kenaz no longer uses (config.Paths.Unused, MigrateResult.Unused).
 // initing is true while `kenaz init` reports it, before it registers the
-// apps again.
+// apps again: whether that works is not known yet, so the advice then is
+// to keep the folder and ask `kenaz doctor` afterwards.
 func unusedAdvice(u string, cur config.Paths, initing bool) string {
 	bin := variant.Current.Binary
 	if fi, err := os.Stat(u); err != nil || !fi.IsDir() || strings.Contains(filepath.Base(u), ".unused-") {
 		return u + " is no longer used; delete it when you no longer need it"
 	}
-	still, reRegistered := registrationsOf(u, cur)
+	fix, reRegistered := registrationsOf(u, cur)
 	switch {
 	case initing:
-		return fmt.Sprintf("%s is from an earlier release and holds its memories and sign-in data; once this init has registered the apps again, delete it if you no longer need them", u)
-	case still:
-		return fmt.Sprintf("%s is from an earlier release and an app still loads the plugin from it, so do not delete it: run `%s init` first. It also holds that release's memories and sign-in data", u, bin)
+		return fmt.Sprintf("%s is from an earlier release and holds its memories and sign-in data; keep it for now. After this init, `%s doctor` says whether an app still loads the plugin from it", u, bin)
+	case len(fix) > 0:
+		return fmt.Sprintf("%s is from an earlier release and an app still loads the plugin from it, so do not delete it: run `%s` first. It also holds that release's memories and sign-in data", u, strings.Join(fix, "` and `"))
 	case reRegistered:
 		return fmt.Sprintf("%s is from an earlier release and no longer used; it holds that release's memories and sign-in data, so delete it only if you no longer need them", u)
 	}
 	return fmt.Sprintf("%s is from an earlier release and holds its memories and sign-in data; run `%s init` first, then delete it if you no longer need them", u, bin)
 }
 
-// registrationsOf reports whether a recorded Claude Code or Codex
-// registration still loads the plugin from inside old, an earlier release's
-// state root (still), and whether the apps were registered from outside it
-// since (reRegistered: `kenaz init` from the new root). A record in old's
-// own setup state counts only while the root's record for the same
-// environment and app does not register it from elsewhere: init rewrites
-// the root's record, never old's.
-func registrationsOf(old string, cur config.Paths) (still, reRegistered bool) {
-	for _, e := range []fleetapi.Env{fleetapi.EnvProd, fleetapi.EnvStage, fleetapi.EnvDev} {
-		now := setup.Registrations(cur.State(e))
-		for _, r := range now {
+// registrationsOf reports whether a recorded app registration still loads
+// the plugin from inside old, an earlier release's state root, as the
+// commands that register those apps from the root instead (fix; empty when
+// none does), and whether the apps were registered from outside it since
+// (reRegistered: `kenaz init` from the new root). A record in old's own
+// setup state counts only while no record in the root for the same app,
+// made by the same build, registers it from elsewhere, whichever
+// environment that record is for: init rewrites the root's record, never
+// old's, an app has one registration for every environment, and one
+// build's init never changes what another build registered (kenaz and
+// kenaz-dev share the root, but each has its own plugin in the apps).
+func registrationsOf(old string, cur config.Paths) (fix []string, reRegistered bool) {
+	still := func(build, host string, e fleetapi.Env) {
+		v, ok := variant.Named(build)
+		if !ok {
+			v = variant.Identity{Binary: build}
+		}
+		sub := "init"
+		if host == "opencode" { // init does not set up OpenCode
+			sub = "setup opencode"
+		}
+		// Without --env the command acts on the build's default
+		// environment, not the one this record belongs to.
+		cmd := v.Command(sub, string(e))
+		// Nothing registers for a retired environment again: what frees
+		// the folder is removing the old registration.
+		if variant.Retired(string(e)) {
+			cmd = v.Binary + " setup --undo " + host + " --env " + string(e)
+		}
+		if !slices.Contains(fix, cmd) {
+			fix = append(fix, cmd)
+		}
+	}
+	envs := []fleetapi.Env{fleetapi.EnvProd, fleetapi.EnvStage, fleetapi.EnvDev}
+	// An app has one plugin registration, whichever environment it was set
+	// up for. So a build's setup of an app from the root, for any
+	// environment, replaced what that build registered for the app from
+	// old, for every environment: a stage record in old no longer says the
+	// app loads the plugin from old once the app was set up for prod.
+	fromRoot := map[string]bool{} // build + "\x00" + host
+	for _, e := range envs {
+		build, now := setup.RecordedRegistrations(cur.State(e))
+		for host, r := range now {
+			if !setup.Within(old, r) {
+				fromRoot[build+"\x00"+host] = true
+			}
+		}
+	}
+	for _, e := range envs {
+		nowBuild, now := setup.RecordedRegistrations(cur.State(e))
+		for host, r := range now {
 			if setup.Within(old, r) {
-				still = true
+				still(nowBuild, host, e)
 			} else {
 				reRegistered = true
 			}
 		}
-		for host, r := range setup.Registrations(filepath.Join(old, string(e))) {
-			if n, ok := now[host]; setup.Within(old, r) && (!ok || setup.Within(old, n)) {
-				still = true
+		oldBuild, was := setup.RecordedRegistrations(filepath.Join(old, string(e)))
+		for host, r := range was {
+			if setup.Within(old, r) && !fromRoot[oldBuild+"\x00"+host] {
+				still(oldBuild, host, e)
 			}
 		}
 	}
-	return still, reRegistered
+	slices.Sort(fix)
+	return fix, reRegistered
 }
 
 // registeredThrough is MigrateOptions.Registered: whether a registration

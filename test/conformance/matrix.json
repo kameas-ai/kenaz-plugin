@@ -56,6 +56,7 @@
       "os": "macos-14-arm64",
       "required": true,
       "installed_journey": "journeys/otel-export.claude-code-cli.sh",
+      "installed_tier_journey": "installed/otel-export.claude-code-cli.sh",
       "component_journey": {
         "package": "./app",
         "run": "^TestConformanceOTelJourney$/^claude-code$"
@@ -68,6 +69,7 @@
       "os": "ubuntu-24.04-amd64",
       "required": true,
       "installed_journey": "journeys/otel-export.claude-code-cli.sh",
+      "installed_tier_journey": "installed/otel-export.claude-code-cli.sh",
       "component_journey": {
         "package": "./app",
         "run": "^TestConformanceOTelJourney$/^claude-code$"
@@ -80,6 +82,7 @@
       "os": "windows-11-amd64",
       "required": true,
       "installed_journey": "journeys/otel-export.claude-code-cli.sh",
+      "installed_tier_journey": "installed/otel-export.claude-code-cli.sh",
       "component_journey": {
         "package": "./app",
         "run": "^TestConformanceOTelJourney$/^claude-code$"
@@ -92,6 +95,7 @@
       "os": "macos-14-arm64",
       "required": true,
       "installed_journey": "journeys/otel-export.codex-cli.sh",
+      "installed_tier_journey": "installed/otel-export.codex-cli.sh",
       "component_journey": {
         "package": "./app",
         "run": "^TestConformanceOTelJourney$/^codex$"
@@ -104,6 +108,7 @@
       "os": "ubuntu-24.04-amd64",
       "required": true,
       "installed_journey": "journeys/otel-export.codex-cli.sh",
+      "installed_tier_journey": "installed/otel-export.codex-cli.sh",
       "component_journey": {
         "package": "./app",
         "run": "^TestConformanceOTelJourney$/^codex$"
@@ -116,6 +121,7 @@
       "os": "windows-11-amd64",
       "required": true,
       "installed_journey": "journeys/otel-export.codex-cli.sh",
+      "installed_tier_journey": "installed/otel-export.codex-cli.sh",
       "component_journey": {
         "package": "./app",
         "run": "^TestConformanceOTelJourney$/^codex$"
@@ -128,9 +134,20 @@
       "os": "macos-14-arm64",
       "required": true,
       "installed_journey": "journeys/context.claude-code-cli.sh",
+      "installed_tier_journey": "installed/context.claude-code-cli.sh",
       "component_journey": {
         "package": "./internal/mcp/tools/context",
-        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly|TestTeamMembers|TestShareFile.*|TestPullAll.*|TestTwoMembersShareAndPull|TestFileToolsNeedContextFiles|TestShareGrant.*|TestOrgAllowsShareGrantToday)$",
+        "also": [
+          {
+            "package": "./internal/mcp/tools/localcontext",
+            "run": "^(TestListEmptyIsNotNil|TestRead.*|TestWrite.*|TestMarkFollowsLaterSaves)$"
+          },
+          {
+            "package": "./app",
+            "run": "^(TestContextSync.*|TestContextGrant.*|TestStatusShowsContextGrant|TestRelayContextGrantWiring|TestRelayPurgeEndsContextGrant|TestNoToolOrControlRouteGivesTheGrant|TestContextSignedOutEndToEnd|TestContextToolsBesideFleetTools|TestTeamContextNeedsContextFiles|TestContextFileCanaryNeverReachesFleet)$"
+          }
+        ]
       }
     },
     {
@@ -140,9 +157,20 @@
       "os": "ubuntu-24.04-amd64",
       "required": true,
       "installed_journey": "journeys/context.claude-code-cli.sh",
+      "installed_tier_journey": "installed/context.claude-code-cli.sh",
       "component_journey": {
         "package": "./internal/mcp/tools/context",
-        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly|TestTeamMembers|TestShareFile.*|TestPullAll.*|TestTwoMembersShareAndPull|TestFileToolsNeedContextFiles|TestShareGrant.*|TestOrgAllowsShareGrantToday)$",
+        "also": [
+          {
+            "package": "./internal/mcp/tools/localcontext",
+            "run": "^(TestListEmptyIsNotNil|TestRead.*|TestWrite.*|TestMarkFollowsLaterSaves)$"
+          },
+          {
+            "package": "./app",
+            "run": "^(TestContextSync.*|TestContextGrant.*|TestStatusShowsContextGrant|TestRelayContextGrantWiring|TestRelayPurgeEndsContextGrant|TestNoToolOrControlRouteGivesTheGrant|TestContextSignedOutEndToEnd|TestContextToolsBesideFleetTools|TestTeamContextNeedsContextFiles|TestContextFileCanaryNeverReachesFleet)$"
+          }
+        ]
       }
     },
     {
@@ -152,9 +180,20 @@
       "os": "windows-11-amd64",
       "required": true,
       "installed_journey": "journeys/context.claude-code-cli.sh",
+      "installed_tier_journey": "installed/context.claude-code-cli.sh",
       "component_journey": {
         "package": "./internal/mcp/tools/context",
-        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly|TestTeamMembers|TestShareFile.*|TestPullAll.*|TestTwoMembersShareAndPull|TestFileToolsNeedContextFiles|TestShareGrant.*|TestOrgAllowsShareGrantToday)$",
+        "also": [
+          {
+            "package": "./internal/mcp/tools/localcontext",
+            "run": "^(TestListEmptyIsNotNil|TestRead.*|TestWrite.*|TestMarkFollowsLaterSaves)$"
+          },
+          {
+            "package": "./app",
+            "run": "^(TestContextSync.*|TestContextGrant.*|TestStatusShowsContextGrant|TestRelayContextGrantWiring|TestRelayPurgeEndsContextGrant|TestNoToolOrControlRouteGivesTheGrant|TestContextSignedOutEndToEnd|TestContextToolsBesideFleetTools|TestTeamContextNeedsContextFiles|TestContextFileCanaryNeverReachesFleet)$"
+          }
+        ]
       }
     },
     {
@@ -164,9 +203,20 @@
       "os": "macos-14-arm64",
       "required": true,
       "installed_journey": "journeys/context.codex-cli.sh",
+      "installed_tier_journey": "installed/context.codex-cli.sh",
       "component_journey": {
         "package": "./internal/mcp/tools/context",
-        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly|TestTeamMembers|TestShareFile.*|TestPullAll.*|TestTwoMembersShareAndPull|TestFileToolsNeedContextFiles|TestShareGrant.*|TestOrgAllowsShareGrantToday)$",
+        "also": [
+          {
+            "package": "./internal/mcp/tools/localcontext",
+            "run": "^(TestListEmptyIsNotNil|TestRead.*|TestWrite.*|TestMarkFollowsLaterSaves)$"
+          },
+          {
+            "package": "./app",
+            "run": "^(TestContextSync.*|TestContextGrant.*|TestStatusShowsContextGrant|TestRelayContextGrantWiring|TestRelayPurgeEndsContextGrant|TestNoToolOrControlRouteGivesTheGrant|TestContextSignedOutEndToEnd|TestContextToolsBesideFleetTools|TestTeamContextNeedsContextFiles|TestContextFileCanaryNeverReachesFleet)$"
+          }
+        ]
       }
     },
     {
@@ -176,9 +226,20 @@
       "os": "ubuntu-24.04-amd64",
       "required": true,
       "installed_journey": "journeys/context.codex-cli.sh",
+      "installed_tier_journey": "installed/context.codex-cli.sh",
       "component_journey": {
         "package": "./internal/mcp/tools/context",
-        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly|TestTeamMembers|TestShareFile.*|TestPullAll.*|TestTwoMembersShareAndPull|TestFileToolsNeedContextFiles|TestShareGrant.*|TestOrgAllowsShareGrantToday)$",
+        "also": [
+          {
+            "package": "./internal/mcp/tools/localcontext",
+            "run": "^(TestListEmptyIsNotNil|TestRead.*|TestWrite.*|TestMarkFollowsLaterSaves)$"
+          },
+          {
+            "package": "./app",
+            "run": "^(TestContextSync.*|TestContextGrant.*|TestStatusShowsContextGrant|TestRelayContextGrantWiring|TestRelayPurgeEndsContextGrant|TestNoToolOrControlRouteGivesTheGrant|TestContextSignedOutEndToEnd|TestContextToolsBesideFleetTools|TestTeamContextNeedsContextFiles|TestContextFileCanaryNeverReachesFleet)$"
+          }
+        ]
       }
     },
     {
@@ -188,9 +249,20 @@
       "os": "windows-11-amd64",
       "required": true,
       "installed_journey": "journeys/context.codex-cli.sh",
+      "installed_tier_journey": "installed/context.codex-cli.sh",
       "component_journey": {
         "package": "./internal/mcp/tools/context",
-        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly)$"
+        "run": "^(TestSearch|TestPull|TestShare|TestPromote|TestTierRoleMatrix|TestHeldStatesBlockWritesOnly|TestTeamMembers|TestShareFile.*|TestPullAll.*|TestTwoMembersShareAndPull|TestFileToolsNeedContextFiles|TestShareGrant.*|TestOrgAllowsShareGrantToday)$",
+        "also": [
+          {
+            "package": "./internal/mcp/tools/localcontext",
+            "run": "^(TestListEmptyIsNotNil|TestRead.*|TestWrite.*|TestMarkFollowsLaterSaves)$"
+          },
+          {
+            "package": "./app",
+            "run": "^(TestContextSync.*|TestContextGrant.*|TestStatusShowsContextGrant|TestRelayContextGrantWiring|TestRelayPurgeEndsContextGrant|TestNoToolOrControlRouteGivesTheGrant|TestContextSignedOutEndToEnd|TestContextToolsBesideFleetTools|TestTeamContextNeedsContextFiles|TestContextFileCanaryNeverReachesFleet)$"
+          }
+        ]
       }
     },
     {
@@ -200,6 +272,7 @@
       "os": "macos-14-arm64",
       "required": true,
       "installed_journey": "journeys/private-memory.claude-code-cli.sh",
+      "installed_tier_journey": "installed/private-memory.claude-code-cli.sh",
       "component_journey": {
         "package": "./internal/memory",
         "run": "^TestSaveSearchGetForget$"
@@ -212,6 +285,7 @@
       "os": "ubuntu-24.04-amd64",
       "required": true,
       "installed_journey": "journeys/private-memory.claude-code-cli.sh",
+      "installed_tier_journey": "installed/private-memory.claude-code-cli.sh",
       "component_journey": {
         "package": "./internal/memory",
         "run": "^TestSaveSearchGetForget$"
@@ -224,6 +298,7 @@
       "os": "windows-11-amd64",
       "required": true,
       "installed_journey": "journeys/private-memory.claude-code-cli.sh",
+      "installed_tier_journey": "installed/private-memory.claude-code-cli.sh",
       "component_journey": {
         "package": "./internal/memory",
         "run": "^TestSaveSearchGetForget$"
@@ -236,6 +311,7 @@
       "os": "macos-14-arm64",
       "required": true,
       "installed_journey": "journeys/private-memory.codex-cli.sh",
+      "installed_tier_journey": "installed/private-memory.codex-cli.sh",
       "component_journey": {
         "package": "./internal/memory",
         "run": "^TestSaveSearchGetForget$"
@@ -248,6 +324,7 @@
       "os": "ubuntu-24.04-amd64",
       "required": true,
       "installed_journey": "journeys/private-memory.codex-cli.sh",
+      "installed_tier_journey": "installed/private-memory.codex-cli.sh",
       "component_journey": {
         "package": "./internal/memory",
         "run": "^TestSaveSearchGetForget$"
@@ -260,6 +337,7 @@
       "os": "windows-11-amd64",
       "required": true,
       "installed_journey": "journeys/private-memory.codex-cli.sh",
+      "installed_tier_journey": "installed/private-memory.codex-cli.sh",
       "component_journey": {
         "package": "./internal/memory",
         "run": "^TestSaveSearchGetForget$"
@@ -272,6 +350,7 @@
       "os": "macos-14-arm64",
       "required": true,
       "installed_journey": "journeys/skills.claude-code-cli.sh",
+      "installed_tier_journey": "installed/skills.claude-code-cli.sh",
       "component_journey": {
         "package": "./internal/skills",
         "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
@@ -284,6 +363,7 @@
       "os": "ubuntu-24.04-amd64",
       "required": true,
       "installed_journey": "journeys/skills.claude-code-cli.sh",
+      "installed_tier_journey": "installed/skills.claude-code-cli.sh",
       "component_journey": {
         "package": "./internal/skills",
         "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
@@ -296,6 +376,7 @@
       "os": "windows-11-amd64",
       "required": true,
       "installed_journey": "journeys/skills.claude-code-cli.sh",
+      "installed_tier_journey": "installed/skills.claude-code-cli.sh",
       "component_journey": {
         "package": "./internal/skills",
         "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
@@ -308,6 +389,7 @@
       "os": "macos-14-arm64",
       "required": true,
       "installed_journey": "journeys/skills.codex-cli.sh",
+      "installed_tier_journey": "installed/skills.codex-cli.sh",
       "component_journey": {
         "package": "./internal/skills",
         "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
@@ -320,6 +402,7 @@
       "os": "ubuntu-24.04-amd64",
       "required": true,
       "installed_journey": "journeys/skills.codex-cli.sh",
+      "installed_tier_journey": "installed/skills.codex-cli.sh",
       "component_journey": {
         "package": "./internal/skills",
         "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"
@@ -332,6 +415,7 @@
       "os": "windows-11-amd64",
       "required": true,
       "installed_journey": "journeys/skills.codex-cli.sh",
+      "installed_tier_journey": "installed/skills.codex-cli.sh",
       "component_journey": {
         "package": "./internal/skills",
         "run": "^(TestMandatedMaterialize|TestRevocationSweep|TestAccountSwitchDropsPreviousSkills)$"

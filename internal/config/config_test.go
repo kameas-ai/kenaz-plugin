@@ -16,14 +16,16 @@ func envMap(m map[string]string) func(string) string { return func(k string) str
 
 func TestResolveEnvPrecedence(t *testing.T) {
 	id := variant.Current
-	// other is an allowed env that is not the default; file a third value
-	// (stage) where the build allows it.
+	// other is an allowed env that is not the default, where the build has
+	// one (the staff dev build connects only to dev); the file names it.
 	def := fleetapi.Env(id.DefaultEnv)
-	other := fleetapi.EnvDev
-	if def == fleetapi.EnvDev {
-		other = fleetapi.EnvStage
+	other := def
+	for _, e := range id.AllowedEnvs {
+		if e != id.DefaultEnv {
+			other = fleetapi.Env(e)
+		}
 	}
-	file := File{Values: map[string]string{"env": "stage"}}
+	file := File{Values: map[string]string{"env": string(other)}}
 	ev := variant.Shared.EnvVar
 	cases := []struct {
 		name    string
@@ -35,10 +37,10 @@ func TestResolveEnvPrecedence(t *testing.T) {
 		wantErr bool
 	}{
 		{"default", "", nil, File{}, def, SourceDefault, false},
-		{"file", "", nil, file, fleetapi.EnvStage, SourceFile, false},
-		{"var beats file", "", map[string]string{ev: "dev"}, file, fleetapi.EnvDev, SourceEnvVar, false},
+		{"file", "", nil, file, other, SourceFile, false},
+		{"var beats file", "", map[string]string{ev: string(def)}, file, def, SourceEnvVar, false},
 		{"flag beats all", string(def), map[string]string{ev: string(other)}, file, def, SourceFlag, false},
-		{"codex placeholder skipped", "", map[string]string{ev: "${user_config.env}"}, file, fleetapi.EnvStage, SourceFile, false},
+		{"codex placeholder skipped", "", map[string]string{ev: "${user_config.env}"}, file, other, SourceFile, false},
 		{"placeholder everywhere", "${x}", map[string]string{ev: "${y}"}, File{Values: map[string]string{"env": "${z}"}}, def, SourceDefault, false},
 		{"case-insensitive", "DEV", nil, File{}, fleetapi.EnvDev, SourceFlag, false},
 		{"unknown is error", "", map[string]string{ev: "qa"}, file, "", "", true},
@@ -68,11 +70,24 @@ func TestResolveEnvPrecedence(t *testing.T) {
 }
 
 // An env the build does not connect to is refused at every level, never
-// replaced by the default; the public build allows every env.
+// replaced by the default; the public build allows every env that still
+// exists. A retired env (stage) is refused at every level in every build,
+// by name, except for a cleanup command.
 func TestResolveEnvRefusesDisallowed(t *testing.T) {
 	id := variant.Current
+	retiredMsg := map[string]string{
+		"kenaz":     "The stage environment has been retired. Use dev or prod.",
+		"kenaz-dev": "The stage environment has been retired. Use dev.",
+	}[id.Name]
+	if retiredMsg == "" {
+		t.Fatalf("no expectations for build %s", id.Name)
+	}
 	for _, e := range []fleetapi.Env{fleetapi.EnvProd, fleetapi.EnvStage, fleetapi.EnvDev} {
 		allowed := id.Allowed(string(e))
+		retired := e == fleetapi.EnvStage
+		if allowed && retired {
+			t.Fatalf("%s still connects to %s", id.Name, e)
+		}
 		for _, c := range []struct {
 			src  Source
 			flag string
@@ -85,6 +100,24 @@ func TestResolveEnvRefusesDisallowed(t *testing.T) {
 			{SourceFile, "", nil, File{Values: map[string]string{"env": string(e)}}},
 		} {
 			got, src, err := ResolveEnv(c.flag, envMap(c.vars), c.file)
+			if retired {
+				want := retiredMsg
+				if c.src != SourceFlag {
+					want += " (stage was selected by " + string(c.src) + ")"
+				}
+				if !errors.Is(err, ErrEnvRetired) || errors.Is(err, ErrEnvNotAllowed) || err.Error() != want || got != "" {
+					t.Errorf("%s from %s: got %q %v, want %q", e, c.src, got, err, want)
+				}
+				// Removing what was set up for it still resolves it.
+				if got, src, err := ResolveEnvForCleanup(c.flag, envMap(c.vars), c.file); err != nil || got != e || src != c.src {
+					t.Errorf("cleanup, %s from %s: %q %q %v", e, c.src, got, src, err)
+				}
+				continue
+			}
+			// Cleanup changes nothing for an env that still exists.
+			if cg, cs, cerr := ResolveEnvForCleanup(c.flag, envMap(c.vars), c.file); cg != got || cs != src || (cerr == nil) != (err == nil) {
+				t.Errorf("cleanup, %s from %s: %q %q %v, want %q %q %v", e, c.src, cg, cs, cerr, got, src, err)
+			}
 			switch {
 			case allowed && (err != nil || got != e || src != c.src):
 				t.Errorf("%s from %s: %q %q %v", e, c.src, got, src, err)
@@ -237,10 +270,10 @@ func TestResolveEnvPluginOption(t *testing.T) {
 		vars map[string]string
 		want fleetapi.Env
 	}{
-		{"hook: only the exported option", map[string]string{"CLAUDE_PLUGIN_OPTION_FLEET_ENV": "stage"}, fleetapi.EnvStage},
-		{"env var wins", map[string]string{ev: "dev", "CLAUDE_PLUGIN_OPTION_FLEET_ENV": "stage"}, fleetapi.EnvDev},
+		{"hook: only the exported option", map[string]string{"CLAUDE_PLUGIN_OPTION_FLEET_ENV": "dev"}, fleetapi.EnvDev},
+		{"env var wins", map[string]string{ev: "dev", "CLAUDE_PLUGIN_OPTION_FLEET_ENV": "prod"}, fleetapi.EnvDev},
 		{"placeholder env var skipped", map[string]string{ev: "${user_config.fleet_env}", "CLAUDE_PLUGIN_OPTION_FLEET_ENV": "dev"}, fleetapi.EnvDev},
-		{"option wins over legacy", map[string]string{"FLEET_PLUGIN_ENV": "stage", "CLAUDE_PLUGIN_OPTION_FLEET_ENV": "dev"}, fleetapi.EnvDev},
+		{"option wins over legacy", map[string]string{"FLEET_PLUGIN_ENV": "prod", "CLAUDE_PLUGIN_OPTION_FLEET_ENV": "dev"}, fleetapi.EnvDev},
 	} {
 		got, src, err := ResolveEnv("", envMap(c.vars), File{Values: map[string]string{"env": variant.Current.DefaultEnv}})
 		if err != nil || got != c.want || src != SourceEnvVar {

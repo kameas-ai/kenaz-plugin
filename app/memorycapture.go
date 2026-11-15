@@ -230,6 +230,22 @@ func captureWorker(env Env, mp memoryPaths) *capture.Worker {
 	}
 }
 
+// captureLeftByRetired reports whether what capture recorded on this device
+// belongs to an account of the retired environment env: the profile Fleet's
+// offer was for or, where none is recorded, the one the queue or the opt-in
+// was under. A profile's key starts with its environment
+// (memory.Profile.Key). Only then does a worker started for env have
+// anything of its own to clear (capture.DropLeftBehind).
+func captureLeftByRetired(mp memoryPaths, env fleetapi.Env) bool {
+	st := capture.LoadState(mp.captureRoot())
+	for _, key := range []string{st.OfferedFor, st.ProfileKey, st.EnabledFor} {
+		if key != "" {
+			return strings.HasPrefix(key, string(env)+"-")
+		}
+	}
+	return false
+}
+
 // runMemoryCapture is `kenaz memory capture ...`.
 func runMemoryCapture(ctx context.Context, env Env, mp memoryPaths, args []string) int {
 	if !captureAvailable() {
@@ -253,6 +269,21 @@ func runMemoryCapture(ctx context.Context, env Env, mp memoryPaths, args []strin
 		return captureCompare(ctx, env, mp, args[1:])
 	case "worker":
 		// Started by the hooks. Failures end up in `capture status`.
+		if env.retired != nil {
+			// The app that started this worker is still set up for a retired
+			// environment, and the queue is the device's, not that app's: it
+			// may hold a live account's events. Leave them, the offer and the
+			// state exactly as they are for a worker another app starts.
+			// Only what an account of the retired environment left is
+			// cleared, unprocessed. Either way no model runs and Fleet is
+			// asked nothing.
+			if captureLeftByRetired(mp, env.retired.env) {
+				if _, err := capture.DropLeftBehind(mp.captureRoot()); err != nil {
+					return ExitError
+				}
+			}
+			return ExitOK
+		}
 		if err := captureWorker(env, mp).Run(ctx); err != nil {
 			return ExitError
 		}

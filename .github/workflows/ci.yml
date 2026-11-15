@@ -74,8 +74,10 @@ jobs:
       # The release-mode check, offline, against the vendored docs list.
       - run: TAGS=kenaz_claude_desktop_chat scripts/check-supported-tools.sh internal/supported/testdata/supported-tools.json
 
-  # The local context file library's tag: it is off in shipped builds, so nothing
-  # else compiles it.
+  # The local context file library's tag (kenaz_context_library). The public
+  # build in this repository leaves it off; the official build has compiled
+  # it since 0.8.x. This job tests it alone; check-official-tags tests it
+  # together with the other official tags.
   check-context-library:
     runs-on: ubuntu-latest
     steps:
@@ -89,7 +91,8 @@ jobs:
       - run: go test -race -tags kenaz_context_library ./app/ ./internal/contextlib/ ./internal/hook/ ./internal/mcp/...
 
   # The project-scope release (build tag kenaz_memory_project_scope): memory-sync/v4
-  # and what forget-all erases. Off until Kameas Fleet syncs project notes.
+  # and what forget-all erases. The official release compiles it; a plain build
+  # leaves it off.
   check-memory-project-scope:
     runs-on: ubuntu-latest
     steps:
@@ -102,7 +105,10 @@ jobs:
       - run: go vet -tags kenaz_memory_project_scope ./...
       - run: go test -race -tags kenaz_memory_project_scope ./app/ ./internal/memory/... ./internal/mcp/... ./notices/
 
-  # Automatic memory capture (build tag kenaz_memory_capture): off in releases.
+  # Automatic memory capture (build tag kenaz_memory_capture): the official
+  # release compiles it; a plain build leaves it out. This job tests it
+  # alone; check-official-tags tests it together with the other official
+  # tags.
   check-memory-capture:
     runs-on: ubuntu-latest
     steps:
@@ -115,12 +121,122 @@ jobs:
       - run: go vet -tags kenaz_memory_capture ./...
       - run: go test -race -tags kenaz_memory_capture ./app/ ./internal/hook/ ./internal/memory/... ./internal/mcp/...
 
+  # The official build's tag set, all at once, minus `fleet` (the proprietary
+  # Fleet client, which this repository cannot compile): the single-tag jobs
+  # above never compile the combination that ships. Vet and the whole suite,
+  # and the release-mode Supported Tools check with the whole set. The
+  # installed-tier journeys built with the same tags run in
+  # conformance-installed-linux.
+  check-official-tags:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      # One definition of the tag set: the Makefile's OFFICIAL_PUBLIC_TAGS.
+      - name: Read the official tag set from the Makefile
+        run: |
+          tags="$(make -s --no-print-directory print-official-public-tags)"
+          case "$tags" in *kenaz_context_library*) ;; *) echo "::error::unexpected OFFICIAL_PUBLIC_TAGS: $tags"; exit 1 ;; esac
+          echo "OFFICIAL_PUBLIC_TAGS=$tags" >> "$GITHUB_ENV"
+      - run: make test-official-tags
+      # The release-mode Supported Tools check with the whole official tag
+      # set, offline, against the vendored docs list.
+      - run: TAGS="$OFFICIAL_PUBLIC_TAGS" scripts/check-supported-tools.sh internal/supported/testdata/supported-tools.json
+
+  # The credential-free installed tier for the Linux cells
+  # (test/conformance/README.md): the unofficial build, set up in throwaway
+  # directories. No sign-in, no model call, no Kameas Fleet. Never a live
+  # pass, never a release verdict.
+  #
+  # The matrix's Linux target is Ubuntu 24.04, and a cell runs only on its
+  # own target, so this job is pinned to ubuntu-24.04 instead of riding on
+  # the jobs above: on ubuntu-latest (a newer release) every cell is blocked.
+  # It runs the journeys twice, cheaply: the default build, then the official
+  # tag set without fleet, which adds the local context file tools.
+  conformance-installed-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Installed-tier conformance journeys (Ubuntu 24.04, default build)
+        run: make conformance-installed
+      - name: Installed-tier summary (default build)
+        if: always()
+        run: scripts/conformance-summary.sh | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Installed-tier conformance journeys (Ubuntu 24.04, official tags without fleet)
+        run: |
+          tags="$(make -s --no-print-directory print-official-public-tags)"
+          out=test/conformance/evidence/installed-official-tags
+          KENAZ_CONFORMANCE_TAGS="$tags" scripts/conformance.sh run -tier installed -min-pass 8 -out "$out"
+          scripts/conformance.sh verdict -tier installed -evidence "$out"
+      - name: Installed-tier summary (official tags without fleet)
+        if: always()
+        run: scripts/conformance-summary.sh test/conformance/evidence/installed-official-tags | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # OpenCode support (build tag kenaz_opencode): in no released build, so no
+  # other job compiles it. Vet everything, test the Go packages the tag
+  # changes, and run the adapter's own Node tests. The Supported Tools tests
+  # model OpenCode as a host no release ships: the list must never name it.
+  check-opencode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: make test-opencode-tag
+      # The runner image's Node (18 or later); the adapter tests need no network.
+      - run: make test-opencode
+
+  # macOS: setup's path handling and host probing, PATH editing, the
+  # keychain-backed credential store and spool key, the relay lock and the
+  # approvals store have OS-specific code that no other job runs. Then the
+  # installed-tier journeys for the macOS cells.
+  #
+  # Pinned to macos-26, the arm64 image macos-latest resolved to when this
+  # was written (actions/runner-images: "macOS 26 Arm64: macos-latest,
+  # macos-26"), the way the Linux journeys are pinned to ubuntu-24.04: the
+  # evidence names the runner's OS, and a moving label would change what a
+  # run means without a change here. The matrix's macOS target is macOS 14,
+  # so these cells are recorded as reduced passes (os_match family), not as
+  # passes on the target.
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./internal/setup/... ./internal/pathenv/... ./internal/credstore/... ./internal/spool/... ./internal/daemon/... ./internal/approvals/... ./internal/apps/... ./internal/bundle/... ./internal/config/... ./test/conformance/...
+      - name: Installed-tier conformance journeys (macOS, default build)
+        run: make conformance-installed
+      - name: Installed-tier summary
+        if: always()
+        run: scripts/conformance-summary.sh | tee -a "$GITHUB_STEP_SUMMARY"
+
   # Windows: the migration's renames, junctions and open-file refusals,
   # setup's path handling, the relay lock and the credential store behave
   # differently there. Both build variants.
   windows:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -137,15 +253,42 @@ jobs:
         env:
           CGO_ENABLED: "1"
           TAGS: ${{ matrix.tags }}
-        # setup's goldens and most app tests were written for POSIX paths
-        # and timings and have never run on Windows; until they are ported,
-        # only the tests of the state layout, migration, env ownership and
-        # build conflict run from those two packages.
+        # setup's goldens were written for POSIX paths and have never run on
+        # Windows; until they are ported, only the tests of the state layout,
+        # migration, env ownership and build conflict run from that package.
+        # The app package runs whole in the next step; the named subset here
+        # keeps the race detector on those tests.
         run: |
-          go test -race -tags "$TAGS" ./internal/config/... ./internal/daemon/... ./internal/skills/... ./internal/credstore/... ./internal/consent/...
+          go test -race -tags "$TAGS" ./internal/config/... ./internal/daemon/... ./internal/skills/... ./internal/credstore/... ./internal/consent/... ./internal/spool/...
           go test -race -tags "$TAGS" ./internal/memory/... ./internal/safetext/... ./internal/mcp/tools/memory/
           go test -race -tags "$TAGS" ./internal/setup/ -run 'TestSetupStateOfOtherBuild|TestBrokenRegistrationsAfterMove|TestWithin|TestMovedStateLinkKeepsRegisteredCopy'
           go test -race -tags "$TAGS" ./app/ -run 'TestUpgradeKeepsFilesUntilMigrate|TestOldStateNotDeletableWhileRegistered|TestOtherBuildRelayInEnv|TestSessionOutsideAllowedEnvsIsSignedOut|TestConflictProviderAnswersEveryCall|TestSkillsWiringIsPerEnv|TestRunEnvGuardsSessionEnv|TestCredentialStore|TestDaemonStartsAndLogoutPurgesWithoutKeychain'
+      # The whole app package, telemetry lane included. Until this ran on
+      # Windows nothing noticed that a signed-in member was never admitted
+      # there: the spool's purge fsynced its directory, which Windows refuses
+      # (CI run 43561361213), and no Windows job ran the spool or the lane.
+      # Tests that cannot run on Windows skip themselves and say why. Without
+      # -race: the whole package under the race detector does not fit this
+      # job.
+      - name: app package (whole)
+        shell: bash
+        env:
+          TAGS: ${{ matrix.tags }}
+        run: go test -count=1 -tags "$TAGS" ./app/
+      # The installed tier for the Windows cells. The journeys build the
+      # public kenaz variant, so they run on that leg of the matrix only.
+      - name: Installed-tier conformance journeys (Windows, default build)
+        if: matrix.tags == ''
+        shell: bash
+        run: |
+          go test ./test/conformance/...
+          scripts/conformance.sh run -tier installed -min-pass 8
+          scripts/conformance.sh verdict -tier installed
+          scripts/conformance.sh report
+      - name: Installed-tier summary
+        if: always() && matrix.tags == ''
+        shell: bash
+        run: scripts/conformance-summary.sh | tee -a "$GITHUB_STEP_SUMMARY"
 
 
   # Vulnerability gate. Blocks when a vulnerable function is reachable from

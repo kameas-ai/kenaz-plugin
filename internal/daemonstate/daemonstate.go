@@ -36,7 +36,9 @@ const FileName = "daemon.json"
 // NonceHeader authenticates control requests to the daemon.
 const NonceHeader = "X-Kameas-Nonce"
 
-// Environments the relay can target.
+// Environments are the names a state directory can carry. The relay
+// targets the ones the build allows; stage is retired (variant.RetiredEnvs)
+// and stays here so its state is still recognized and can be removed.
 var Environments = []string{"prod", "stage", "dev"}
 
 // ErrNoDaemon means daemon.json does not exist: the relay has never run in
@@ -89,8 +91,9 @@ func System() (Resolver, error) {
 // (variant.Shared.EnvVars) that is set, or the build's default. Codex
 // passes the plugin's ${user_config...} placeholders through unexpanded, so
 // a value that still starts with "${" is skipped. Like config.ResolveEnv,
-// an unknown environment, or one this build does not connect to (the
-// staff dev build refuses prod), is an error, never a silent fallback.
+// an unknown environment, a retired one, or one this build does not
+// connect to (the staff dev build refuses prod), is an error, never a
+// silent fallback.
 func (r Resolver) Env() (string, error) {
 	for _, name := range variant.Shared.EnvVars {
 		v := strings.ToLower(strings.TrimSpace(r.Getenv(name)))
@@ -99,6 +102,9 @@ func (r Resolver) Env() (string, error) {
 		}
 		if !slices.Contains(Environments, v) {
 			return "", fmt.Errorf("unknown Fleet env %q from %s (want %s)", v, name, variant.Current.EnvChoices("|"))
+		}
+		if variant.Retired(v) {
+			return "", fmt.Errorf("%s (%s=%s)", variant.Current.RetiredMessage(v), name, v)
 		}
 		if !variant.Current.Allowed(v) {
 			return "", fmt.Errorf("%s connects only to %s Fleet (%s=%s)", variant.Current.Binary, variant.Current.EnvChoices(" or "), name, v)

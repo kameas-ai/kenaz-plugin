@@ -33,7 +33,9 @@ func TestSignInRemedy(t *testing.T) {
 		{"desktop unknown env ignored", "darwin", "/opt/k's/kenaz", "/Users/u", desktop("${user_config.fleet_env}"),
 			"Open a terminal and run `'/opt/k'\\''s/kenaz' login`, then try again."},
 		{"desktop Windows", "windows", `C:\Users\U\AppData\Roaming\Claude\Claude Extensions\x\server\kenaz.exe`, `C:\Users\u`,
-			desktop("stage"), "Open PowerShell and run `& \"$env:USERPROFILE\\AppData\\Roaming\\Claude\\Claude Extensions\\x\\server\\kenaz.exe\" login --env stage`, then try again."},
+			desktop("dev"), "Open PowerShell and run `& \"$env:USERPROFILE\\AppData\\Roaming\\Claude\\Claude Extensions\\x\\server\\kenaz.exe\" login" + devFlag + "`, then try again."},
+		{"desktop retired env ignored", "darwin", "/opt/kenaz/kenaz", "/Users/u", desktop("stage"),
+			"Open a terminal and run `/opt/kenaz/kenaz login`, then try again."},
 		{"desktop no executable", "linux", "", "/home/u", desktop(""), "Open a terminal and run `" + variant.Current.Binary + " login`, then try again."},
 	}
 	for _, c := range cases {

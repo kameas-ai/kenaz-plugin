@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync/atomic"
 	"testing"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // TestMain isolates every app test from the developer's real home
@@ -26,6 +28,19 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("HOME", home)
 	os.Setenv("USERPROFILE", home)
+	// Everything else that says where files are, or which Fleet environment
+	// to use, comes from the test and never from the shell that ran it: a
+	// test that builds an Env without Getenv reads the process environment,
+	// and with KENAZ_HOME exported it would write there (on a developer's
+	// machine, possibly the real ~/.kenaz).
+	for _, name := range append([]string{variant.Shared.HomeVar, variant.Shared.MCPHostVar, variant.Shared.MemoryRecallVar,
+		"CLAUDE_CONFIG_DIR", "CODEX_HOME", "CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"}, variant.Shared.EnvVars...) {
+		os.Unsetenv(name)
+	}
+	os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	os.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	os.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	os.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	skillsHome = func() (string, error) { return home, nil }
 	// A notice names the installed tools' versions; a test must not run a real one.
 	harnessVersion = func(string) string { return "" }

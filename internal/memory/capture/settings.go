@@ -4,9 +4,9 @@
 // session and queue what happened, and a worker summarises the queue into typed
 // notes in the local memory store.
 //
-// It is off for everyone by default, in two ways: release builds do not
-// include it (features.MemoryCapture), and a build that does still needs the
-// user to turn it on. It keeps three promises:
+// It is off for everyone by default: a build has it only with the
+// kenaz_memory_capture tag (features.MemoryCapture; the official release sets
+// it), and a build that has it still needs the user to turn it on. It keeps three promises:
 //
 //   - It never affects the host session. Hooks write nothing to stdout,
 //     always exit 0 and only queue. The worker is a separate process.

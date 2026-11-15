@@ -60,6 +60,13 @@ type Options struct {
 	IdleTimeout time.Duration
 	Ports       []int
 
+	// HeldLock says the caller already holds this state directory's
+	// single-instance lock (TryLock on LockFile) and keeps it until Run
+	// returns: Run then takes no lock of its own. The relay command takes
+	// the lock before anything that can block (the keychain), so that a
+	// second relay for the environment leaves at once.
+	HeldLock bool
+
 	// Host is the enroll host description; zero means enroll.LocalHost().
 	Host enroll.Host
 	// HeartbeatInterval overrides 6 h (tests).
@@ -216,11 +223,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := os.MkdirAll(d.opt.StateDir, 0o700); err != nil {
 		return err
 	}
-	release, err := TryLock(filepath.Join(d.opt.StateDir, LockFile))
-	if err != nil {
-		return err
+	if !d.opt.HeldLock {
+		release, err := TryLock(filepath.Join(d.opt.StateDir, LockFile))
+		if err != nil {
+			return err
+		}
+		defer release()
 	}
-	defer release()
 
 	ln, err := listen(d.opt.Ports)
 	if err != nil {

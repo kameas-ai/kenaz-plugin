@@ -398,6 +398,9 @@ func TestCaptureHookOffSetsNothingUp(t *testing.T) {
 
 // Bringing notes over counts as capture, so an organization's switch stops it too.
 func TestImportRefusedWithCaptureOffForTheOrg(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("automatic memory capture is unavailable on Windows by design (captureAvailable); the import refuses before it asks about the org")
+	}
 	old := features.MemoryCapture
 	features.MemoryCapture = true
 	defer func() { features.MemoryCapture = old }()
@@ -463,6 +466,9 @@ func TestTerminalCheckRefusesOtherDevices(t *testing.T) {
 
 // A project's root has its links resolved, so a linked home is compared both ways.
 func TestHomeFormsResolveALink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("not portable: the test moves the home directory with $HOME, which Windows does not read (it uses USERPROFILE)")
+	}
 	dir, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

@@ -38,13 +38,20 @@ type RunOptions struct {
 	OutDir     string
 	Revision   string
 	Dirty      bool
+	// Tier selects what Run executes: "" or "live" for the live tier,
+	// "installed" for the credential-free installed tier. The two write
+	// different evidence and never share an output directory by default.
+	Tier string
 
 	GOOS, GOARCH string
 	OSRelease    string // /etc/os-release content on Linux
-	LookPath     func(string) (string, error)
-	Exec         func(ctx context.Context, dir string, env []string, name string, args ...string) ([]byte, int, error)
-	Getenv       func(string) string
-	Now          func() time.Time
+	// OS is the operating system the runner actually is. Nil: observed
+	// from the system (sw_vers, the registry, OSRelease).
+	OS       *OSInfo
+	LookPath func(string) (string, error)
+	Exec     func(ctx context.Context, dir string, env []string, name string, args ...string) ([]byte, int, error)
+	Getenv   func(string) string
+	Now      func() time.Time
 }
 
 func (o *RunOptions) defaults() {
@@ -61,6 +68,13 @@ func (o *RunOptions) defaults() {
 
 // CurrentOS maps the running platform to a matrix OS id, or "" when this
 // machine is not a baseline target. Linux must be Ubuntu 24.04.
+//
+// It maps by platform only: any macOS on arm64 is "macos-14-arm64" and any
+// Windows on amd64 is "windows-11-amd64", whatever the release. That is
+// what decides which cells a runner may run, in both tiers, and what the
+// live gate accepts; it is deliberately left as it is here. What the runner
+// actually is goes into the evidence (OSInfo, os_observed), and the
+// installed tier states a mismatch with the target (OSTargetMatch).
 func CurrentOS(goos, goarch, osRelease string) string {
 	switch {
 	case goos == "darwin" && goarch == "arm64":
@@ -95,11 +109,15 @@ func Run(ctx context.Context, o RunOptions) ([]Evidence, error) {
 	if err := os.MkdirAll(o.OutDir, 0o755); err != nil {
 		return nil, err
 	}
-	here := CurrentOS(o.GOOS, o.GOARCH, o.OSRelease)
-	osObserved := o.GOOS + "/" + o.GOARCH
-	if p := parseOSRelease(o.OSRelease)["PRETTY_NAME"]; p != "" {
-		osObserved = p + " " + osObserved
+	switch o.Tier {
+	case "", TierLive:
+	case TierInstalled:
+		return o.runInstalledTier(ctx)
+	default:
+		return nil, fmt.Errorf("tier %q, want live|installed", o.Tier)
 	}
+	here := CurrentOS(o.GOOS, o.GOARCH, o.OSRelease)
+	osObserved := o.osInfo(ctx).describe(o.GOOS, o.GOARCH)
 	lockSum := Digest(o.LockBytes)
 	_, lockErr := o.Lock.Validate()
 	component := map[string]*ComponentResult{}
@@ -123,7 +141,10 @@ func Run(ctx context.Context, o RunOptions) ([]Evidence, error) {
 		} else {
 			// Supporting component journey (recorded fixtures, fake Fleet).
 			if j := c.ComponentJourney; j != nil {
-				key := j.Package + " " + j.Run
+				// Every selection is part of the key: two journeys with the
+				// same first selection and different `also` lists are
+				// different runs.
+				key := componentKey(j)
 				if component[key] == nil {
 					component[key] = o.runComponent(ctx, j)
 				}
@@ -194,6 +215,25 @@ func Run(ctx context.Context, o RunOptions) ([]Evidence, error) {
 	return out, nil
 }
 
+// componentKey identifies a component journey's whole run: every `go test`
+// selection it makes, in order.
+func componentKey(j *ComponentJourney) string {
+	var parts []string
+	for _, sel := range j.Selections() {
+		parts = append(parts, sel.Package+" "+sel.Run)
+	}
+	return strings.Join(parts, "\x00")
+}
+
+// osInfo is the runner's OS: the caller's, or observed once.
+func (o *RunOptions) osInfo(ctx context.Context) OSInfo {
+	if o.OS == nil {
+		info := o.observeOS(ctx)
+		o.OS = &info
+	}
+	return *o.OS
+}
+
 // EvidenceFile is the evidence file name for a cell id.
 func EvidenceFile(cell string) string { return strings.ReplaceAll(cell, "/", "__") + ".json" }
 
@@ -254,7 +294,7 @@ func (o *RunOptions) envRecord() map[string]string {
 		"fleet":     "none (component journeys use in-process fake Fleet providers)",
 		DevReadyEnv: set(DevReadyEnv),
 	}
-	if v := o.Getenv("KENAZ_ENV"); v == "prod" || v == "stage" || v == "dev" {
+	if v := o.Getenv("KENAZ_ENV"); v == "prod" || v == "dev" {
 		env["KENAZ_ENV"] = v
 	}
 	if o.Getenv(DevReadyEnv) != "" {
@@ -290,29 +330,43 @@ func (o *RunOptions) observeHost(ctx context.Context, bin string) string {
 var testLineRe = regexp.MustCompile(`(?m)^\s*--- (PASS|FAIL): `)
 
 func (o *RunOptions) runComponent(ctx context.Context, j *ComponentJourney) *ComponentResult {
-	args := []string{"test", "-count=1", "-v", "-run", j.Run, j.Package}
-	r := &ComponentResult{Command: "go " + strings.Join(quoteArgs(args), " ")}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
-	out, code, err := o.exec(ctx, o.Root, nil, "go", args...)
-	r.OutputSHA256 = Digest(out)
-	for _, m := range testLineRe.FindAllSubmatch(out, -1) {
-		if string(m[1]) == "PASS" {
-			r.Passed++
-		} else {
-			r.Failed++
+	r := &ComponentResult{Result: Pass}
+	var cmds []string
+	var all []byte
+	// The worst selection decides: a failure beats a selection that could
+	// not run or matched nothing, which beats a pass.
+	rank := map[string]int{Pass: 0, "missing": 1, "not_run": 2, Fail: 3}
+	for _, sel := range j.Selections() {
+		args := []string{"test", "-count=1", "-v", "-run", sel.Run, sel.Package}
+		cmds = append(cmds, "go "+strings.Join(quoteArgs(args), " "))
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		out, code, err := o.exec(cctx, o.Root, nil, "go", args...)
+		cancel()
+		all = append(all, out...)
+		passed, failed := 0, 0
+		for _, m := range testLineRe.FindAllSubmatch(out, -1) {
+			if string(m[1]) == "PASS" {
+				passed++
+			} else {
+				failed++
+			}
+		}
+		r.Passed, r.Failed = r.Passed+passed, r.Failed+failed
+		res := Pass
+		switch {
+		case err != nil:
+			res = "not_run"
+		case code != 0 || failed > 0:
+			res = Fail
+		case passed == 0 || bytes.Contains(out, []byte("no tests to run")):
+			res = "missing"
+		}
+		if rank[res] > rank[r.Result] {
+			r.Result = res
 		}
 	}
-	switch {
-	case err != nil:
-		r.Result = "not_run"
-	case code != 0 || r.Failed > 0:
-		r.Result = Fail
-	case r.Passed == 0 || bytes.Contains(out, []byte("no tests to run")):
-		r.Result = "missing"
-	default:
-		r.Result = Pass
-	}
+	r.Command = strings.Join(cmds, " && ")
+	r.OutputSHA256 = Digest(all)
 	return r
 }
 
@@ -332,4 +386,136 @@ func (o *RunOptions) exec(ctx context.Context, dir string, env []string, name st
 		return o.Exec(ctx, dir, env, name, args...)
 	}
 	return execCommand(ctx, dir, env, name, args...)
+}
+
+// TagsEnv names the build tags an installed-tier journey builds kenaz with
+// ("" or unset: the default build). The journey records them.
+const TagsEnv = "KENAZ_CONFORMANCE_TAGS"
+
+// StepsEnv is the file an installed-tier journey writes its InstalledResult
+// to; CellEnv is the cell it runs for.
+const (
+	StepsEnv = "KENAZ_CONFORMANCE_STEPS"
+	CellEnv  = "KENAZ_CONFORMANCE_CELL"
+)
+
+// runInstalledTier runs the credential-free installed-tier journey of every
+// selected cell for this machine's OS and writes one installed-tier
+// evidence record per cell. It never consults the dev identity and never
+// runs a live journey; nothing it writes can pass a live cell.
+func (o *RunOptions) runInstalledTier(ctx context.Context) ([]Evidence, error) {
+	here := CurrentOS(o.GOOS, o.GOARCH, o.OSRelease)
+	info := o.osInfo(ctx)
+	osObserved := info.describe(o.GOOS, o.GOARCH)
+	lockSum := Digest(o.LockBytes)
+	var out []Evidence
+	for _, c := range o.Matrix.Cells {
+		if !selected(c.ID, o.Cells) {
+			continue
+		}
+		start := o.Now().UTC()
+		env := o.envRecord()
+		delete(env, DevReadyEnv)
+		env["fleet"] = "none (unofficial build: it cannot connect to Kameas Fleet)"
+		env["model_credentials"] = "none (the journey strips them and makes no model call)"
+		env[TagsEnv] = o.Getenv(TagsEnv)
+		e := Evidence{
+			SchemaVersion: 1, Tier: TierInstalled, Cell: c.ID, Revision: o.Revision, RevisionDirty: o.Dirty,
+			LockSHA256: lockSum, CandidateSHA256: Unverified, HostVersion: Unverified,
+			OS: c.OS, OSObserved: osObserved, Env: env,
+			Expected: "installed tier (credential-free): this checkout's unofficial kenaz, set up for " + c.Host + " in throwaway directories on " + c.OS + ", registers as `kenaz setup doctor` expects, serves the feature's MCP tools and behaves as documented with no sign-in. Not a live pass.",
+		}
+		block := func(f string, a ...any) {
+			e.Reasons = append(e.Reasons, Reason{GateInstalled, fmt.Sprintf(f, a...)})
+		}
+		switch {
+		case c.OS != here:
+			block("runs only on a %s runner; this machine is %s", c.OS, osObserved)
+			e.Verdict, e.Command = Blocked, "none (not run)"
+		case c.InstalledTierJourney == "":
+			block("the matrix names no installed-tier journey for this cell")
+			e.Verdict, e.Command = Blocked, "none (not run)"
+		default:
+			// The cell runs here because the platform is the target's
+			// (CurrentOS). Whether the runner is the target release is
+			// recorded, and makes a pass a reduced one when it is not.
+			e.OSMatch, e.OSNote = OSTargetMatch(c.OS, info)
+			e.Command = "sh " + c.InstalledTierJourney
+			steps, err := os.CreateTemp("", "kenaz-conformance-steps-*.json")
+			if err != nil {
+				return out, err
+			}
+			steps.Close()
+			jctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+			_, code, runErr := o.exec(jctx, o.HarnessDir, []string{CellEnv + "=" + c.ID, StepsEnv + "=" + steps.Name()}, "sh", c.InstalledTierJourney)
+			cancel()
+			raw, readErr := os.ReadFile(steps.Name())
+			_ = os.Remove(steps.Name())
+			var res InstalledResult
+			switch {
+			case runErr != nil:
+				block("the journey could not start: %v", runErr)
+			case readErr != nil || len(raw) == 0:
+				block("the journey exited %d and wrote no result", code)
+			case decodeStrict(raw, &res) != nil:
+				block("the journey's result is not a valid installed-tier result")
+			default:
+				e.Installed = &res
+				e.HostVersionObserved = res.HostCLI.Version
+				if err := res.Validate(); err != nil {
+					block("invalid journey result: %v", err)
+				}
+				for _, s := range res.Steps {
+					if s.Status == StepFail {
+						block("step %s failed: %s", s.ID, s.Detail)
+					}
+				}
+				if p, _, _ := res.Count(); p == 0 {
+					block("no step passed")
+				}
+				if code != 0 && len(e.Reasons) == 0 {
+					block("the journey exited %d", code)
+				}
+			}
+			e.Verdict = Pass
+			if len(e.Reasons) > 0 {
+				e.Verdict = Fail
+			}
+		}
+		e.Actual = installedActual(e)
+		e.StartedAt, e.FinishedAt = start.Format(time.RFC3339), o.Now().UTC().Format(time.RFC3339)
+		b, err := json.MarshalIndent(e, "", "  ")
+		if err != nil {
+			return out, err
+		}
+		if err := os.WriteFile(filepath.Join(o.OutDir, EvidenceFile(c.ID)), append(b, '\n'), 0o644); err != nil {
+			return out, err
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+func installedActual(e Evidence) string {
+	r := e.Installed
+	if r == nil {
+		return fmt.Sprintf("installed tier not run: %d reason(s)", len(e.Reasons))
+	}
+	p, f, n := r.Count()
+	verdict := e.Verdict
+	red := e.Reduction()
+	if verdict == Pass && red.Reduced() {
+		verdict = "pass (reduced)"
+	}
+	s := fmt.Sprintf("installed tier %s: %d step(s) passed, %d failed, %d not run; unofficial build (tags %q); host CLI ", verdict, p, f, n, r.Build.Tags)
+	if r.HostCLI.Present {
+		s += "present, visibility " + r.HostCLI.Visibility
+	} else {
+		s += "absent, host visibility not run"
+	}
+	s += "; ran on " + e.OSObserved
+	if red.Reduced() {
+		s += ". Reduced: " + red.String()
+	}
+	return s + ". Not a live pass."
 }

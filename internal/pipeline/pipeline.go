@@ -155,10 +155,20 @@ func (p *Pipeline) process(outs []session.Out) {
 
 // Regate runs records through the gates and emits what may be sent. The
 // daemon calls it again for spooled records once a hold clears.
-func (p *Pipeline) Regate(recs []project.Record) {
+func (p *Pipeline) Regate(recs []project.Record) { p.RegateTo(recs, p.cfg.Emit, p.cfg.Hold) }
+
+// RegateTo is Regate with the outcome handed to emit and hold instead of
+// Config.Emit and Config.Hold. A re-gate calls at most one of them, once:
+// records are either all held or encoded into one set of batches. The
+// daemon uses it for spooled held records, to persist the batches (encoded
+// once) before it marks the held record as done, and to leave a record
+// that is held again where it is.
+func (p *Pipeline) RegateTo(recs []project.Record,
+	emit func(batches []fleetapi.ProjectedBatch, earliest time.Time, id project.Identity),
+	hold func(recs []project.Record, reason string)) {
 	o := gate.Apply(p.cfg.Decider, recs, &p.gates)
-	if len(o.Hold) > 0 && p.cfg.Hold != nil {
-		p.cfg.Hold(o.Hold, o.HoldReason)
+	if len(o.Hold) > 0 && hold != nil {
+		hold(o.Hold, o.HoldReason)
 	}
 	if len(o.Send) == 0 {
 		return
@@ -182,8 +192,8 @@ func (p *Pipeline) Regate(recs []project.Record) {
 		p.add("dropped_encode_error", len(o.Send))
 		return
 	}
-	if p.cfg.Emit != nil {
-		p.cfg.Emit(batches, gate.Earliest(o.Send), id)
+	if emit != nil {
+		emit(batches, gate.Earliest(o.Send), id)
 	}
 }
 

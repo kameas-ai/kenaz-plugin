@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -110,17 +112,39 @@ func reloadSessionOnToolCall(p fleetapi.Provider) sdk.Middleware {
 	}
 }
 
+// mcpFlags is `kenaz mcp`'s flag set, writing its errors to w.
+func mcpFlags(w io.Writer) (*flag.FlagSet, *string) {
+	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	fs.SetOutput(w)
+	return fs, fs.String("env", "", "Fleet environment")
+}
+
+// mcpEnvFlag is the --env value `kenaz mcp` reads from args, parsed with
+// its own flags. ok is false when mcp would reject them.
+func mcpEnvFlag(args []string) (env string, ok bool) {
+	fs, envName := mcpFlags(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		return "", false
+	}
+	return *envName, true
+}
+
 // runMCP serves MCP on stdio. It must never write anything but protocol
 // to stdout; diagnostics go to relay.log. The daemon is lazily spawned and
 // a failure to reach it never fails the MCP handshake.
 func runMCP(env Env, args []string) int {
-	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
-	fs.SetOutput(env.Stderr)
-	envName := fs.String("env", "", "Fleet environment")
+	fs, envName := mcpFlags(env.Stderr)
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
 	}
 	r, err := env.resolveState(*envName)
+	if err != nil && env.retired != nil && errors.Is(err, env.retired) {
+		// The app is still set up for a retired environment. Serve what
+		// works signed out, with no state directory, log or relay for it:
+		// RunEnv made the provider answer every Fleet call with the notice,
+		// which fleet_status shows too.
+		r, err = resolved{Env: env.retired.env, Conflict: env.retired}, nil
+	}
 	if err != nil {
 		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+err.Error())
 		return ExitUsage
@@ -133,9 +157,13 @@ func runMCP(env Env, args []string) int {
 		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+r.Conflict.Error())
 		provider = conflictProvider(provider, r.Conflict)
 	}
-	rot := &logx.Rotator{Path: filepath.Join(r.StateDir, "logs", "mcp.log")}
-	defer rot.Close()
-	log := slog.New(logx.NewHandler(rot, slog.LevelInfo))
+	log := logx.Discard()
+	if r.StateDir != "" {
+		env.warnStalePluginFiles(r.StateDir)
+		rot := &logx.Rotator{Path: filepath.Join(r.StateDir, "logs", "mcp.log")}
+		defer rot.Close()
+		log = slog.New(logx.NewHandler(rot, slog.LevelInfo))
+	}
 
 	idb := make([]byte, 8)
 	rand.Read(idb)
@@ -161,6 +189,9 @@ func runMCP(env Env, args []string) int {
 		}
 	}()
 	defer func() {
+		if r.StateDir == "" {
+			return
+		}
 		bctx, bcancel := context.WithTimeout(context.Background(), time.Second)
 		defer bcancel()
 		if c := connectDaemon(bctx, r.StateDir); c != nil {

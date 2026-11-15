@@ -22,6 +22,9 @@ func newSpool(t *testing.T, opt Options) (*Spool, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// As the daemon's exit does: Windows cannot remove the test's temporary
+	// directory while a segment in it is open.
+	t.Cleanup(func() { s.Close() })
 	return s, key
 }
 
@@ -139,7 +142,12 @@ func TestPurge(t *testing.T) {
 	if !s.Empty() {
 		t.Fatal("segments remain")
 	}
+	// PurgeDir is for a process that does not hold the spool open (logout
+	// runs it after the relay has purged and closed its spool).
 	s.Append("l", []byte("z"))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := PurgeDir(s.Dir()); err != nil || !s.Empty() {
 		t.Fatalf("PurgeDir: %v", err)
 	}

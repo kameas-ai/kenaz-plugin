@@ -138,7 +138,7 @@ type PullOutput struct {
 type ShareArgs struct {
 	Title string `json:"title" jsonschema:"short title, up to 200 characters"`
 	Body  string `json:"body" jsonschema:"the note text the user wrote or approved, up to 16 KiB"`
-	Kind  string `json:"kind" jsonschema:"one of guidance, procedure, fact, glossary_term, doc"`
+	Kind  string `json:"kind" jsonschema:"one of glossary, explanation, guidance, procedure, doc; the old names fact and glossary_term are still taken and sent as explanation and glossary"`
 	Team  string `json:"team,omitempty" jsonschema:"team name or id; defaults to your configured or only team"`
 	// UserConfirmed is accepted for compatibility and ignored: a model
 	// flag is not proof of human confirmation.
@@ -182,9 +182,37 @@ type TeamMembersInput struct {
 	Team string `json:"team,omitempty" jsonschema:"team name or id; defaults to your configured or only team"`
 }
 
+// TeamOut is one of the member's teams. The id is the team: pass it as team to
+// pick a share target. The name is a label. The fields after Name are there only
+// when Fleet sent the team tree.
 type TeamOut struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// IsDefault is true for the organization's all-members team, the root of the
+	// tree: a share with it is readable by the whole organization.
+	IsDefault *bool `json:"is_default,omitempty"`
+	// Role is the member's role on the team: member or lead.
+	Role string `json:"role,omitempty"`
+	// ParentTeamID is the team this one is under; absent for the all-members team
+	// and for a team directly under it.
+	ParentTeamID string `json:"parent_team_id,omitempty"`
+	// Depth is 0 for the all-members team and 1 for a team directly under it.
+	Depth *int `json:"depth,omitempty"`
+}
+
+// teamsOut is the member's teams for a tool's structured output.
+func teamsOut(teams []fleetapi.TeamRef) []TeamOut {
+	out := make([]TeamOut, 0, len(teams))
+	known := fleetapi.TreeKnown(teams)
+	for _, t := range teams {
+		o := TeamOut{ID: t.ID, Name: t.Name}
+		if known {
+			isDefault, depth := t.IsDefault, t.Depth
+			o.IsDefault, o.Depth, o.Role, o.ParentTeamID = &isDefault, &depth, t.Role, t.ParentTeamID
+		}
+		out = append(out, o)
+	}
+	return out
 }
 
 type MemberOut struct {
@@ -217,7 +245,7 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        ToolSearch,
 		Title:       "Search team context",
-		Description: "Search the notes your team has shared in Kameas Fleet (guidance, procedures, facts, glossary terms). Read-only: sends only your query to Kameas Fleet. Use scope=org to search organization-wide notes (Enterprise plan). " + contextlib.TeamNotice,
+		Description: "Search the notes your team has shared in Kameas Fleet (glossary, explanations, guidance, procedures, docs). Read-only: sends only your query to Kameas Fleet. Use scope=org to search organization-wide notes (Enterprise plan). " + contextlib.TeamNotice,
 		Annotations: withTitle(readOnly, "Search team context"),
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in SearchInput) (*sdk.CallToolResult, SearchOutput, error) {
 		touch()
@@ -264,9 +292,10 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 	})
 
 	sdk.AddTool(s, &sdk.Tool{
-		Name:        ToolTeamMembers,
-		Title:       "List your teams and members",
-		Description: "List the Kameas Fleet teams you belong to and the display names and roles of a team's members. Read-only.",
+		Name:  ToolTeamMembers,
+		Title: "List your teams and members",
+		Description: "List the Kameas Fleet teams you belong to and the display names and roles of a team's members. Read-only. " +
+			"Each team has an id, which is what to pass as team elsewhere; names are labels. Where Kameas Fleet reports the team tree, each team also has your role on it, its depth, the id of the team it is under, and is_default, true for the organization's all-members team.",
 		Annotations: withTitle(readOnly, "List your teams and members"),
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in TeamMembersInput) (*sdk.CallToolResult, TeamMembersOutput, error) {
 		touch()
@@ -319,7 +348,7 @@ func runSearch(ctx context.Context, p fleetapi.Provider, st StatusSource, o Opti
 	size := 0
 	for _, r := range res {
 		snippet, _ := clip(r.Snippet, MaxSnippetLen)
-		h := SearchHit{ID: r.Node.ID, Title: r.Node.Title, Kind: r.Node.Kind, Classification: string(r.Node.Classification), Snippet: snippet, Rank: r.Rank}
+		h := SearchHit{ID: r.Node.ID, Title: r.Node.Title, Kind: ReadKind(r.Node.Kind), Classification: string(r.Node.Classification), Snippet: snippet, Rank: r.Rank}
 		n := len(h.ID) + len(h.Title) + len(h.Kind) + len(h.Classification) + len(h.Snippet) + 64
 		if size+n > MaxSearchResult {
 			out.Truncated = true
@@ -372,7 +401,7 @@ func runPull(ctx context.Context, p fleetapi.Provider, st StatusSource, o Option
 			continue
 		}
 		body, cut := clip(n.Body, MaxPullBodyLen)
-		pn := PulledNode{ID: n.Node.ID, Title: n.Node.Title, Kind: n.Node.Kind, Classification: string(n.Node.Classification), Body: body, Truncated: cut}
+		pn := PulledNode{ID: n.Node.ID, Title: n.Node.Title, Kind: ReadKind(n.Node.Kind), Classification: string(n.Node.Classification), Body: body, Truncated: cut}
 		if !n.Node.UpdatedAt.IsZero() {
 			pn.UpdatedAt = n.Node.UpdatedAt.UTC().Format(time.RFC3339)
 		}
@@ -423,7 +452,7 @@ func runShare(ctx context.Context, p fleetapi.Provider, ap approvals.Preparer, s
 	pend, terr := submit(ctx, p, ap, approvals.Request{
 		Operation: ShareOperation, TargetIDs: []string{"team:" + t.Name},
 		Payload: payload, IdempotencyKey: ShareOperation + ":" + node.ID,
-		Summary: fmt.Sprintf("Share a %s note titled %q with the team %q in Kameas Fleet.", node.Kind, node.Title, t.Name),
+		Summary: fmt.Sprintf("Share %s note titled %q with the team %q in Kameas Fleet.", kindPhrase(node.Kind), node.Title, t.Name),
 		Impact:  "Every member of " + t.Name + " will be able to read this note.",
 	})
 	if terr != nil {
@@ -654,6 +683,15 @@ func recheckSession(ctx context.Context, p fleetapi.Provider) error {
 	return approvals.CheckSession(ctx, string(sess.Env), sess.OrgID, sess.UserID)
 }
 
+// kindPhrase is a note's kind with its article, for the approval summary
+// ("a guidance", "an explanation"). An old name reads as its new one.
+func kindPhrase(kind string) string {
+	if kind = ReadKind(kind); kind == "explanation" {
+		return "an " + kind
+	}
+	return "a " + kind
+}
+
 // RenderShare describes a share payload for the approval page from the
 // payload alone. teamName optionally resolves a team id to its display
 // name (the id is shown when it cannot).
@@ -673,7 +711,7 @@ func RenderShare(teamName func(id string) string) approvals.Renderer {
 			}
 		}
 		return approvals.Rendered{
-			Summary: fmt.Sprintf("Share a %s note titled %q with the team %s in Kameas Fleet.", n.Kind, n.Title, team),
+			Summary: fmt.Sprintf("Share %s note titled %q with the team %s in Kameas Fleet.", kindPhrase(n.Kind), n.Title, team),
 			Impact:  "Every member of " + team + " will be able to read this note.",
 			Targets: []string{"team:" + n.TeamID, "node:" + n.ID},
 		}, nil
@@ -750,9 +788,7 @@ func runTeamMembers(ctx context.Context, p fleetapi.Provider, st StatusSource, o
 		out.Error = terr
 		return out
 	}
-	for _, t := range sess.Me.Teams {
-		out.Teams = append(out.Teams, TeamOut{ID: t.ID, Name: t.Name})
-	}
+	out.Teams = teamsOut(sess.Me.Teams)
 	t, terr := ResolveTeam(in.Team, o.DefaultTeam(), sess.Me.Teams)
 	if terr != nil {
 		out.Error = terr

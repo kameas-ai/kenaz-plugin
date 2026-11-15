@@ -253,8 +253,10 @@ func TestOldStateNotDeletableWhileRegistered(t *testing.T) {
 		}
 		return ""
 	}
+	// The record is dev's: the command names it unless dev is the default.
+	initCmd := "`" + variant.Current.Command("init", "dev") + "` first"
 	_, out, _ := h.run(t, "doctor")
-	if l := line(out); !strings.Contains(l, "do not delete it") || !strings.Contains(l, "init` first") || !strings.Contains(l, "memories and sign-in data") {
+	if l := line(out); !strings.Contains(l, "do not delete it") || !strings.Contains(l, initCmd) || !strings.Contains(l, "memories and sign-in data") {
 		t.Fatalf("doctor, registered:\n%s", out)
 	}
 	_, out, _ = h.run(t, "migrate")
@@ -269,10 +271,32 @@ func TestOldStateNotDeletableWhileRegistered(t *testing.T) {
 		"bundle": map[string]any{"root": h.home, "version": "2", "rendered": newRendered, "digest": "d"}}})
 	write("plugin/dev/setup-state.json", string(st2))
 	_, out, _ = h.run(t, "doctor")
-	if l := line(out); strings.Contains(l, "do not delete it") || strings.Contains(l, "init` first") || !strings.Contains(l, "no longer used") || !strings.Contains(l, "memories and sign-in data") {
+	if l := line(out); strings.Contains(l, "do not delete it") || strings.Contains(l, initCmd) || !strings.Contains(l, "no longer used") || !strings.Contains(l, "memories and sign-in data") {
 		t.Fatalf("doctor, after init:\n%s", out)
 	}
+
+	// The other build registered its own plugin from the root for the same
+	// environment and app: that replaces nothing of this build's, whose
+	// plugin still loads through the old folder (issue #38).
+	other := variant.Kenaz
+	if variant.Current.Name == other.Name {
+		other = variant.KenazDev
+	}
+	st3, _ := json.Marshal(map[string]any{"version": 1, "variant": other.Name, "claude": map[string]any{"path": "x", "keys": map[string]any{},
+		"bundle": map[string]any{"root": h.home, "version": "2", "rendered": newRendered, "digest": "d"}}})
+	write("plugin/dev/setup-state.json", string(st3))
+	_, out, _ = h.run(t, "doctor")
+	if l := line(out); !strings.Contains(l, "do not delete it") || !strings.Contains(l, initCmd) || strings.Contains(l, "no longer used") {
+		t.Fatalf("doctor, root registered by %s:\n%s", other.Name, out)
+	}
 	os.Remove(filepath.Join(h.home, "plugin", "dev", "setup-state.json"))
+
+	// The old record is the other build's: its init is the one to run.
+	write("state/dev/setup-state.json", strings.Replace(string(st), `"variant":"`+variant.Current.Name+`"`, `"variant":"`+other.Name+`"`, 1))
+	_, out, _ = h.run(t, "doctor")
+	if l := line(out); !strings.Contains(l, "do not delete it") || !strings.Contains(l, "`"+other.Command("init", "dev")+"` first") {
+		t.Fatalf("doctor, old record by %s:\n%s", other.Name, out)
+	}
 
 	os.Remove(filepath.Join(oldState, "dev", "setup-state.json"))
 	_, out, _ = h.run(t, "doctor")

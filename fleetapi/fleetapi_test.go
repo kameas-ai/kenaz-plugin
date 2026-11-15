@@ -157,3 +157,32 @@ func TestDeprecatedAliases(t *testing.T) {
 		t.Fatal("EarlyAccessRequired alias")
 	}
 }
+
+// The default team is the one Fleet flags, wherever it is listed; with no flag
+// there is none, and nothing is guessed from position or name.
+func TestDefaultTeamAndTreeKnown(t *testing.T) {
+	tree := fleetapitest.SampleTeams()
+	if got, ok := fleetapi.DefaultTeam(tree); !ok || got.ID != tree[0].ID || !fleetapi.TreeKnown(tree) {
+		t.Fatalf("tree: %+v %v", got, ok)
+	}
+	last := []fleetapi.TeamRef{tree[2], tree[1], tree[0]}
+	if got, ok := fleetapi.DefaultTeam(last); !ok || got.ID != tree[0].ID {
+		t.Fatalf("default team listed last: %+v %v", got, ok)
+	}
+	old := []fleetapi.TeamRef{{ID: "t1", Name: "Everyone"}, {ID: "t2", Name: "Platform"}}
+	if got, ok := fleetapi.DefaultTeam(old); ok || got.ID != "" || fleetapi.TreeKnown(old) {
+		t.Fatalf("older Fleet: %+v %v", got, ok)
+	}
+	if _, ok := fleetapi.DefaultTeam(nil); ok || fleetapi.TreeKnown(nil) {
+		t.Fatal("no teams")
+	}
+	// Roles without the default team listed: the tree is known, the default team isn't.
+	if _, ok := fleetapi.DefaultTeam(tree[1:]); ok || !fleetapi.TreeKnown(tree[1:]) {
+		t.Fatal("tree without its root")
+	}
+	// The zero value of the added fields is "Fleet did not say".
+	var z fleetapi.TeamRef
+	if z.IsDefault || z.Role != "" || z.ParentTeamID != "" || z.Depth != 0 || z.Path != nil || z.Slug != "" || z.Membership != "" {
+		t.Fatalf("zero value: %+v", z)
+	}
+}

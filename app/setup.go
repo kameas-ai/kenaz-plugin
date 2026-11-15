@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
@@ -25,15 +26,24 @@ func runSetup(env Env, args []string) int {
 // reader). Setup starts the relay itself when it is not running,
 // the same way login does.
 func runSetupWith(env Env, args []string, hk setup.Hooks) int {
-	daemonDir := ""
+	daemonDir, oldRecord := "", false
 	var res resolved
 	hk.Resolve = func(e string) (string, error) {
 		r, err := env.resolve(e)
 		if err != nil {
 			return "", err
 		}
+		if dir := env.retiredUndoState(r, args); dir != r.StateDir {
+			r.StateDir, oldRecord = dir, true
+		}
 		daemonDir, res = r.StateDir, r
 		return r.StateDir, nil
+	}
+	hk.OldRecordRoot = func() string {
+		if !oldRecord {
+			return ""
+		}
+		return res.Paths.StateRoot
 	}
 	hk.StartRelay = func(string) error {
 		if err := env.cred.usable(); err != nil {
@@ -68,6 +78,33 @@ func runSetupWith(env Env, args []string, hk setup.Hooks) int {
 		}
 	}
 	return code
+}
+
+// retiredUndoState is the state directory `setup --undo <host>` reads for
+// a retired environment: r's, unless the host's setup is recorded only in
+// the same environment's folder of an earlier release's state root that
+// Kenaz no longer uses (config.Paths.Unused). Nothing sets an app up for a
+// retired environment again, so such a record is never replaced by one in
+// the root; `kenaz migrate` names this undo as what frees that folder
+// (registrationsOf), and here it finds the record it is about. The undo
+// then leaves alone whatever may be the current setup's
+// (setup.Options.OldRecord). Every other setup command, and every
+// environment that still exists, keeps to r's.
+func (e Env) retiredUndoState(r resolved, args []string) string {
+	host, undo := setup.UndoTarget(args)
+	if !undo || !variant.Retired(string(r.Env)) || setup.Recorded(r.StateDir, host) {
+		return r.StateDir
+	}
+	layout, err := config.Layout(e.getenv)
+	if err != nil {
+		return r.StateDir
+	}
+	for _, old := range layout.Unused() {
+		if dir := filepath.Join(old, string(r.Env)); setup.Recorded(dir, host) {
+			return dir
+		}
+	}
+	return r.StateDir
 }
 
 // setupAction classifies a successful `kenaz setup` invocation: "apply"
@@ -111,9 +148,11 @@ var registrationCheckCommands = map[string]bool{
 // warnBrokenRegistrations is the startup self-check: when a Claude Code or
 // Codex plugin registration launches a kenaz that no longer exists (a
 // version `brew upgrade` removed, registered before 0.6.0), it says so on
-// stderr and names the fix, `kenaz init`. It reads the default
-// environment's setup state only and never writes.
-func (e Env) warnBrokenRegistrations() {
+// stderr and names the fix, `kenaz init`. It reads the setup state of the
+// Fleet environment the command runs in (its --env flag in args, else the
+// default) and never writes: these commands use the files where they are
+// (Env.paths moves them only for init and migrate).
+func (e Env) warnBrokenRegistrations(args []string) {
 	paths, err := e.paths()
 	if err != nil {
 		return
@@ -122,11 +161,30 @@ func (e Env) warnBrokenRegistrations() {
 	if err != nil {
 		return
 	}
-	env, _, err := config.ResolveEnv("", e.getenv, file)
+	env, _, err := config.ResolveEnv(envFlag(args), e.getenv, file)
 	if err != nil {
 		return
 	}
 	for _, line := range setup.BrokenRegistrations(paths.State(env)) {
+		fmt.Fprintln(e.Stderr, variant.Current.Binary+": "+line)
+	}
+}
+
+// devVersion is Version in a build made without a release version (`go
+// build`, `make build`).
+const devVersion = "0.0.0-dev"
+
+// warnStalePluginFiles is `kenaz mcp` saying, once and on stderr only (stdout
+// is the MCP protocol), that the plugin files the apps were registered with
+// are from another version than this kenaz: after an upgrade the apps run
+// the new kenaz with the files copied at the last `kenaz init`. It reads the
+// setup state in stateDir and never writes. A build without a release
+// version has no plugin files of its own to refresh to and says nothing.
+func (e Env) warnStalePluginFiles(stateDir string) {
+	if Version == devVersion || e.Stderr == nil {
+		return
+	}
+	if line := setup.StalePluginFiles(stateDir, Version); line != "" {
 		fmt.Fprintln(e.Stderr, variant.Current.Binary+": "+line)
 	}
 }

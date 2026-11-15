@@ -32,6 +32,12 @@ func TestTelemetryClosedSet(t *testing.T) {
 	if strings.Join(al.LogAttributes, ",") != "kameas.event.kind" {
 		t.Fatalf("log attrs = %v", al.LogAttributes)
 	}
+	// Changing this list changes what is sent: it needs review and an
+	// update to the published telemetry disclosure.
+	const resource = "kameas.batch.id,kameas.client.kind,kameas.client.version,kameas.machine.id,kameas.org.id,kameas.tier,kameas.user.id,kameas.vm.id,service.name,service.version"
+	if got := strings.Join(al.ResourceAttributes, ","); got != resource {
+		t.Fatalf("resource attrs = %s, want %s", got, resource)
+	}
 }
 
 // TestMemoryClosedSet pins every key the memory lane can send. Changing

@@ -7,11 +7,13 @@
 package pathenv
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
@@ -182,13 +184,19 @@ func clean(p string, fold bool) string {
 var (
 	ErrNotWritable  = errors.New("the file is not writable")
 	ErrDanglingLink = errors.New("the file is a symbolic link to a file that does not exist")
+	ErrLinkLoop     = errors.New("the file is a symbolic link that leads back to itself")
 	ErrNotRegular   = errors.New("the file is not a regular file")
+	// ErrChanged means the file (or, from WriteWindowsPath, the user
+	// Path) no longer holds what was read before the question was asked;
+	// writing would lose the newer edit.
+	ErrChanged = errors.New("the file changed after " + variant.Current.Binary + " init read it, so nothing was written; run " + variant.Current.Binary + " init again to retry")
 )
 
 // Target returns the file to edit for profile path: path itself, or for a
 // symbolic link (a dotfiles manager's ~/.zshrc, say) the file it points
 // at, so the link is kept and the block reaches the real file. It refuses
-// a dangling link, a non-regular file and a file that cannot be written.
+// a dangling link, a link loop, a non-regular file and a file that cannot
+// be written.
 // A missing path is returned as is (it will be created).
 func Target(path string) (string, error) {
 	fi, err := os.Lstat(path)
@@ -201,10 +209,10 @@ func Target(path string) (string, error) {
 	target := path
 	if fi.Mode()&os.ModeSymlink != 0 {
 		if target, err = filepath.EvalSymlinks(path); err != nil {
-			return "", ErrDanglingLink
+			return "", linkError(err)
 		}
 		if fi, err = os.Stat(target); err != nil {
-			return "", ErrDanglingLink
+			return "", linkError(err)
 		}
 	}
 	if !fi.Mode().IsRegular() {
@@ -221,6 +229,21 @@ func Target(path string) (string, error) {
 	return target, nil
 }
 
+// linkError names why a symbolic link could not be followed: its target
+// is missing, or the links form a loop. Anything else (a directory on the
+// way that cannot be searched, say) is reported as it is.
+func linkError(err error) error {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return ErrDanglingLink
+	case errors.Is(err, syscall.ELOOP), strings.Contains(err.Error(), "too many links"):
+		// filepath.EvalSymlinks gives up with a plain "too many links"
+		// error; the operating system reports ELOOP.
+		return ErrLinkLoop
+	}
+	return err
+}
+
 // ReadProfile reads a profile; a missing file is empty.
 func ReadProfile(path string) ([]byte, bool, error) {
 	b, err := os.ReadFile(path)
@@ -234,37 +257,114 @@ func ReadProfile(path string) ([]byte, bool, error) {
 // edited it.
 var BackupSuffix = "." + variant.Current.Binary + "-backup"
 
+// TmpSuffix names the file WriteProfile writes next to a profile and then
+// renames over it.
+var TmpSuffix = "." + variant.Current.Binary + "-tmp"
+
 // WriteProfile writes next to target (a path Target returned), keeping an
-// existing file's mode. Before kenaz first changes an existing file it
-// keeps a copy as target + BackupSuffix; a later change (a new install
-// directory) never overwrites that copy, so it stays the user's original.
-// It returns the backup path when it wrote one.
+// existing file's permission bits exactly (the umask does not apply). A
+// profile that did not exist gets what any new file gets: 0666 less the
+// umask.
+// cur and existed are what ReadProfile returned before the user was
+// asked: if the file has changed since, nothing is written and the error
+// is ErrChanged, so an edit made while the question was open is not lost.
+// Before kenaz first changes an existing file it keeps a copy as target +
+// BackupSuffix; a later change (a new install directory) never overwrites
+// that copy, so it stays the user's original. It returns the backup path
+// when it wrote one.
+//
+// The file is replaced by renaming a new one over it, so a crash or a
+// full disk cannot leave half a profile. The cost is that the new file
+// does not carry over extended attributes or ACLs, and is no longer the
+// same file as any other hard link to the old one.
 func WriteProfile(target string, cur []byte, existed bool, next []byte) (backup string, err error) {
-	mode := os.FileMode(0o644)
+	defer func() {
+		// A backup is kept only next to a profile kenaz did change.
+		if err != nil && backup != "" {
+			os.Remove(backup)
+			backup = ""
+		}
+	}()
+	// A new profile is created with newFileMode and left to the umask; an
+	// existing one keeps its mode exactly.
+	mode, exact := os.FileMode(newFileMode), false
 	if fi, err := os.Stat(target); err == nil {
-		mode = fi.Mode().Perm()
+		mode, exact = fi.Mode().Perm(), true
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", err
+	}
+	if err := unchanged(target, cur, existed); err != nil {
 		return "", err
 	}
 	if existed {
 		b := target + BackupSuffix
 		if _, err := os.Lstat(b); errors.Is(err, os.ErrNotExist) {
-			if err := os.WriteFile(b, cur, mode|0o600); err != nil {
+			if err := writeFileMode(b, cur, mode|0o600, true); err != nil {
 				return "", err
 			}
 			backup = b
 		}
 	}
-	tmp := target + "." + variant.Current.Binary + "-tmp"
-	if err := os.WriteFile(tmp, next, mode); err != nil {
-		return "", err
+	tmp := target + TmpSuffix
+	// A file left by an interrupted run would keep its own mode (and, as
+	// a link, its own target): start from a new one.
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return backup, err
+	}
+	if err := writeFileMode(tmp, next, mode, exact); err != nil {
+		os.Remove(tmp)
+		return backup, err
+	}
+	// Checked again as late as possible: the backup and the new file are
+	// written, and only the rename is left.
+	if err := unchanged(target, cur, existed); err != nil {
+		os.Remove(tmp)
+		return backup, err
 	}
 	if err := os.Rename(tmp, target); err != nil {
 		os.Remove(tmp)
-		return "", err
+		return backup, err
 	}
 	return backup, nil
+}
+
+// unchanged reports ErrChanged unless target still holds cur (or is still
+// missing, when it did not exist).
+func unchanged(target string, cur []byte, existed bool) error {
+	now, exists, err := ReadProfile(target)
+	if err != nil {
+		return err
+	}
+	if exists != existed || !bytes.Equal(now, cur) {
+		return ErrChanged
+	}
+	return nil
+}
+
+// newFileMode is what a profile that did not exist is created with; the
+// umask then takes its bits away, as for any new file.
+const newFileMode = 0o666
+
+// writeFileMode creates path (which must not exist) with data. With exact
+// it has exactly mode: creating it alone would take the umask's bits
+// away. Without, it is left as created, mode less the umask.
+func writeFileMode(path string, data []byte, mode os.FileMode, exact bool) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if !exact {
+		return nil
+	}
+	return os.Chmod(path, mode)
 }
 
 // UserEnv is the Windows per-user environment (HKCU\Environment). The
@@ -281,17 +381,42 @@ type UserEnv interface {
 }
 
 // WindowsEdit returns the user Path with dir prepended, and whether that
-// changes anything. Entries are compared after expanding %VAR% references
-// with getenv (nil: no expansion), so an entry written as
-// %LOCALAPPDATA%\... counts as dir.
-func WindowsEdit(cur, dir string, getenv func(string) string) (string, bool) {
-	if OnPath(ExpandPercent(cur, getenv), ExpandPercent(dir, getenv), ";", true) {
+// changes anything. When the Path is an expandable string (expand, a
+// REG_EXPAND_SZ value), its entries are compared after expanding %VAR%
+// references with getenv (nil: no expansion), so an entry written as
+// %LOCALAPPDATA%\... counts as dir. In a plain string (REG_SZ) Windows
+// does not expand them, so such an entry is a literal folder name and is
+// compared as written. dir is a real folder and is never expanded.
+func WindowsEdit(cur, dir string, expand bool, getenv func(string) string) (string, bool) {
+	have := cur
+	if expand {
+		have = ExpandPercent(cur, getenv)
+	}
+	if OnPath(have, dir, ";", true) {
 		return cur, false
 	}
 	if strings.TrimSpace(cur) == "" {
 		return dir, true
 	}
 	return dir + ";" + cur, true
+}
+
+// WriteWindowsPath sets the user Path to next. cur and expand are what
+// ue.Path returned before the user was asked: the Path is read again
+// first, and if its value or its type has changed since, nothing is
+// written and the error is ErrChanged, so a change made while the
+// question was open (by an installer, or in the Environment Variables
+// dialog) is not lost. The registry has no compare-and-set, so a change
+// made between this read and the write is still overwritten.
+func WriteWindowsPath(ue UserEnv, cur string, expand bool, next string) error {
+	now, nowExpand, err := ue.Path()
+	if err != nil {
+		return err
+	}
+	if now != cur || nowExpand != expand {
+		return ErrChanged
+	}
+	return ue.SetPath(next, expand)
 }
 
 // RemoveFromWindowsPath drops every entry equal to dir (used by tests and
@@ -309,8 +434,12 @@ func RemoveFromWindowsPath(cur, dir string) string {
 }
 
 // ExpandPercent expands Windows %VAR% references with getenv (variable
-// names compared case-insensitively by getenv's caller); unknown or
-// unterminated references are kept as they are.
+// names compared case-insensitively by getenv's caller), the way Windows
+// expands a REG_EXPAND_SZ value: when the text between two percent signs
+// is not a set variable (or is empty, as in "%%"), the first percent sign
+// is kept as it is and the scan goes on from the character after it, so
+// the second one can still open a reference. "%%A%%" is therefore "%",
+// the value of A, "%".
 func ExpandPercent(s string, getenv func(string) string) string {
 	if getenv == nil || !strings.Contains(s, "%") {
 		return s
@@ -331,9 +460,10 @@ func ExpandPercent(s string, getenv func(string) string) string {
 		b.WriteString(s[:i])
 		if v := getenv(name); name != "" && v != "" {
 			b.WriteString(v)
-		} else {
-			b.WriteString(s[i : i+2+j])
+			s = s[i+2+j:]
+			continue
 		}
-		s = s[i+2+j:]
+		b.WriteByte('%')
+		s = s[i+1:]
 	}
 }

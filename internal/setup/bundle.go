@@ -120,7 +120,9 @@ type marketplace struct {
 	// Remote is a git or GitHub source ("owner/repo" or a clone URL), ""
 	// for a local one.
 	Remote string
-	// Enabled is whether kenaz@kenaz is enabled.
+	// Enabled is whether kenaz@kenaz is enabled (in Codex: installed and
+	// not turned off, since a [plugins."id"] table with no enabled key is
+	// enabled).
 	Enabled bool
 	// Installed is whether kenaz@kenaz is installed at all, enabled or
 	// not (a user who disabled it still has it installed).
@@ -289,7 +291,11 @@ func (o Options) kenazMarketplace(h harness) marketplace {
 }
 
 // claudeInstalled reports whether Claude Code lists kenaz@kenaz in
-// plugins/installed_plugins.json (installed, whether or not enabled).
+// plugins/installed_plugins.json as installed for every project (enabled
+// or not). An install at project or local scope belongs to one repository
+// and does not run anywhere else, so it does not count: setup still
+// installs the plugin at user scope. Entries with no scope (the older
+// file format) and managed installs count.
 func (o Options) claudeInstalled() bool {
 	b, ok, _ := readFile(filepath.Join(o.ClaudeDir, "plugins", "installed_plugins.json"))
 	if !ok {
@@ -302,7 +308,22 @@ func (o Options) claudeInstalled() bool {
 		return false
 	}
 	raw, ok := f.Plugins[bundlePluginID]
-	return ok && string(raw) != "null" && string(raw) != "[]"
+	if !ok || string(raw) == "null" {
+		return false
+	}
+	var installs []struct {
+		Scope string `json:"scope"`
+	}
+	if json.Unmarshal(raw, &installs) != nil {
+		// Not a list of installs (the older format): installed.
+		return true
+	}
+	for _, in := range installs {
+		if in.Scope != "project" && in.Scope != "local" {
+			return true
+		}
+	}
+	return false
 }
 
 func codexRegistration(text string) (string, bool) {
@@ -314,12 +335,12 @@ var (
 	codexMarketplaceHdr = regexp.MustCompile(`^\s*\[\s*marketplaces\.("` + regexp.QuoteMeta(bundleMarketplace) + `"|` + regexp.QuoteMeta(bundleMarketplace) + `)\s*\]\s*(#.*)?$`)
 	codexPluginHdr      = regexp.MustCompile(`^\s*\[\s*plugins\.("` + regexp.QuoteMeta(bundlePluginID) + `"|'` + regexp.QuoteMeta(bundlePluginID) + `')\s*\]\s*(#.*)?$`)
 	codexStrKV          = regexp.MustCompile(`^\s*([A-Za-z_]+)\s*=\s*"((?:[^"\\]|\\.)*)"`)
-	codexEnabledKV      = regexp.MustCompile(`^\s*enabled\s*=\s*true\b`)
+	codexDisabledKV     = regexp.MustCompile(`^\s*enabled\s*=\s*false\b`)
 )
 
 func codexMarketplace(text string) marketplace {
 	section := ""
-	src, typ, ref, enabled := "", "", "", false
+	src, typ, ref, off := "", "", "", false
 	sawMk, sawPl := false, false
 	for _, line := range strings.Split(text, "\n") {
 		t := strings.TrimSpace(line)
@@ -351,25 +372,28 @@ func codexMarketplace(text string) marketplace {
 				}
 			}
 		case "pl":
-			if codexEnabledKV.MatchString(t) {
-				enabled = true
+			if codexDisabledKV.MatchString(t) {
+				off = true
 			}
 		}
 	}
 	// Codex keeps an installed plugin's [plugins."id"] table with
-	// enabled = false when it is turned off.
+	// enabled = false when it is turned off. enabled defaults to true
+	// (codex-rs config PluginConfig), so a table without the key is on.
+	off = sawPl && off
+	enabled := sawPl && !off
 	if !sawMk {
-		return marketplace{Enabled: enabled, Installed: sawPl, Off: sawPl && !enabled}
+		return marketplace{Enabled: enabled, Installed: sawPl, Off: off}
 	}
 	if typ != "local" {
-		m := marketplace{Present: true, Remote: src, Ref: ref, Enabled: enabled, Installed: sawPl, Off: sawPl && !enabled}
+		m := marketplace{Present: true, Remote: src, Ref: ref, Enabled: enabled, Installed: sawPl, Off: off}
 		if isCommit(ref) {
 			// A claim only: releasePin checks what Codex checked out.
 			m.Pin = strings.ToLower(ref)
 		}
 		return m
 	}
-	return marketplace{Present: true, Path: src, Enabled: enabled, Installed: sawPl, Off: sawPl && !enabled}
+	return marketplace{Present: true, Path: src, Enabled: enabled, Installed: sawPl, Off: off}
 }
 
 // hostRunner runs host CLIs with a timeout long enough for a plugin copy.
@@ -403,6 +427,8 @@ func (o Options) run(h harness, args []string) error {
 // does). The public GitHub marketplace is replaced (setup only gets here
 // for it with an explicit --bundle); any other kenaz marketplace that setup
 // did not register is refused, so the plugin is never registered twice.
+// One that setup registered for another Fleet environment is refused too,
+// naming that environment and the command that undoes it.
 func (o Options) planRegistration(h harness, mk marketplace, rendered, digest string, prev *BundleReg) ([][]string, error) {
 	cur, enabled := mk.source(), mk.Enabled
 	owned := prev != nil && (cur == prev.Rendered || (prev.formerRendered != "" && cur == prev.formerRendered))
@@ -412,6 +438,13 @@ func (o Options) planRegistration(h harness, mk marketplace, rendered, digest st
 	case mk.official():
 		return append(unregisterCmds(h), registerCmds(h, rendered)...), nil
 	case !owned && cur != rendered:
+		if other, ok := o.otherEnvRegistered(h, cur); ok {
+			// Setup did register it, for another environment: removing the
+			// marketplace by hand would leave that setup's record and its
+			// OTEL settings behind.
+			return nil, fmt.Errorf("%s is set up for the %s environment (its %q plugin marketplace is %s), and it can be set up for one environment at a time; to use %s instead, run `%s`, then re-run setup",
+				h.label(), other.Env, bundleMarketplace, cur, o.envName(), other.undo(h))
+		}
 		where := cur
 		if cur == "?" {
 			where = "a non-local source"

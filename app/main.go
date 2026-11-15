@@ -23,13 +23,14 @@ import (
 
 	kenaz "github.com/kameas-ai/kenaz-plugin"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/memory/capture"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Version is set at link time: -ldflags "-X .../app.Version=1.2.3".
-var Version = "0.0.0-dev"
+var Version = devVersion
 
 // Exit codes.
 const (
@@ -63,6 +64,14 @@ type Env struct {
 
 	cred   *credStore   // set once by RunEnv
 	layout *layoutState // set once by RunEnv
+	// cleanup is set once by RunEnv for a command that may still name a
+	// retired Fleet environment (retiredEnvCleanup).
+	cleanup bool
+	// retired is set once by RunEnv for a host-started command (hostStarted)
+	// whose app is still set up for a retired Fleet environment: the command
+	// runs signed out, its provider answers every Fleet call with this, and
+	// no state directory or relay exists for it.
+	retired *retiredEnvNotice
 }
 
 func (e Env) now() time.Time {
@@ -143,7 +152,7 @@ func RunEnv(env Env, args []string) int {
 		// The index shows the signed-in account's notes, so it needs the account:
 		// the same set-up as any command that reads it. The rest only queue.
 		if args[1] == capture.HookIndex {
-			env.Provider = guardSessionEnv(env.Provider)
+			env.Provider = guardSessionEnv(env.Provider, false)
 			env = env.withCredentialStore(args[0])
 		}
 		return runCaptureHook(env, args[1:])
@@ -155,12 +164,23 @@ func RunEnv(env Env, args []string) int {
 		return ExitUsage
 	}
 	env.layout = &layoutState{cmd: args[0]}
-	env.Provider = guardSessionEnv(env.Provider)
-	if code, refused := env.refuseEnv(args[0], args[1:]); refused {
-		return code
+	env.cleanup = retiredEnvCleanup(args[0], args[1:])
+	env.Provider = guardSessionEnv(env.Provider, env.cleanup)
+	if args[0] == "migrate" {
+		if note := env.migrateIgnoresRetired(args[1:]); note != "" {
+			fmt.Fprintln(stderr, note)
+		}
+	}
+	if err := env.envRefusal(args[0], args[1:]); err != nil {
+		if !errors.Is(err, config.ErrEnvRetired) || !hostStarted(args[0], args[1:]) {
+			fmt.Fprintln(stderr, err.Error())
+			return ExitUsage
+		}
+		env.retired = env.retiredNotice(err)
+		env.Provider = conflictProvider(env.Provider, env.retired)
 	}
 	if registrationCheckCommands[args[0]] {
-		env.warnBrokenRegistrations()
+		env.warnBrokenRegistrations(args[1:])
 	}
 	return cmd.Run(env.withCredentialStore(args[0]), args[1:])
 }

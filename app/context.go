@@ -179,6 +179,8 @@ func (e Env) contextFilesGroups(ctx context.Context) (local, team []mcp.Group) {
 const contextUsage = `usage:
   kenaz context sync [--team name]   share your team's folder, both ways
   kenaz context list [--json]
+  kenaz context grant on|off|status  let your AI tool share context files with your
+                                     teams without asking each time (off by default)
 
 Edit Markdown in ~/.kenaz/team-contexts/<team>/, or have your AI tool do it, then
 run kenaz context sync. It brings your team's changes down, lists what would go up,
@@ -187,7 +189,9 @@ and yours is saved beside it as "<name> (your version).md". Nothing is lost.
 
 Context files are long-term notes about your company and projects that you
 write and edit. Your AI tool can add and change your own files when you ask. Kenaz
-sends a file to Kameas Fleet only when you share it and approve the exact text.
+sends a file to Kameas Fleet only when you share it and approve the exact text,
+unless you turn on kenaz context grant: then your AI tool can share a file with a
+team without that approval, and you don't see its text first.
 Shared files are stored in Kameas Fleet and aren't end-to-end encrypted, under a
 short name you can see before you approve, never their full path on your device.
 What your AI tool reads becomes part of its session, like the rest of your
@@ -238,6 +242,9 @@ func runContext(env Env, args []string) int {
 	if args[0] == "sync" {
 		// Fleet's context_files decides it: runContextSync asks, with the session.
 		return runContextSync(env, args[1:])
+	}
+	if args[0] == "grant" {
+		return runContextGrant(env, args[1:])
 	}
 	if args[0] != "list" {
 		fmt.Fprintf(env.Stderr, "%s context: unknown subcommand %q\n\n", variant.Current.Binary, args[0])

@@ -115,11 +115,20 @@ var GenAIChatAttrs = []string{
 	"kenaz.session.hash",
 }
 
+// BatchIDAttr is the resource attribute that carries a request's batch id:
+// 32 lowercase hex characters from 128 random bits, drawn once when the
+// request body is serialized. It makes two distinct batches differ in bytes
+// even when their records are identical, so Fleet can treat a byte-identical
+// body as a replay. A retry re-sends the stored body, so it keeps its id.
+// The id is not derived from the user, device, session, time or content,
+// and Fleet does not store it.
+const BatchIDAttr = "kameas.batch.id"
+
 // ResourceAttrs are stamped by the relay, never copied from a harness.
 // ClientResourceAttrs are emitted only at
 // SchemaRevCostKnown or later.
 var (
-	ResourceAttrs       = []string{"kameas.user.id", "kameas.org.id", "kameas.machine.id", "kameas.tier", "kameas.vm.id", "service.name", "service.version"}
+	ResourceAttrs       = []string{"kameas.user.id", "kameas.org.id", "kameas.machine.id", "kameas.tier", "kameas.vm.id", "service.name", "service.version", BatchIDAttr}
 	ClientResourceAttrs = []string{"kameas.client.kind", "kameas.client.version"}
 )
 

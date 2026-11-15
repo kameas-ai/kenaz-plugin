@@ -10,16 +10,17 @@ import (
 // environment: the "SPA host" column of Fleet's API host table and the
 // fleet-admin --env mapping. The API hosts (api.<env>...) are the
 // provider implementation's; these are only ever shown to the member as
-// links to open in a browser.
+// links to open in a browser. A retired environment has no dashboard, and
+// so no entry: nothing shows a link to one.
 var dashboardOrigins = map[fleetapi.Env]string{
-	fleetapi.EnvProd:  "https://fleet.kameas.ai",
-	fleetapi.EnvStage: "https://stage.fleet.kameas.ai",
-	fleetapi.EnvDev:   "https://dev.fleet.kameas.ai",
+	fleetapi.EnvProd: "https://fleet.kameas.ai",
+	fleetapi.EnvDev:  "https://dev.fleet.kameas.ai",
 }
 
 // DashboardBase returns the dashboard origin for env (no trailing slash).
-// An unknown env returns "" so a caller never sends a member of one
-// environment to another environment's dashboard.
+// An unknown or retired env returns "" so a caller never sends a member of
+// one environment to another environment's dashboard, or to one that no
+// longer exists.
 func DashboardBase(env fleetapi.Env) string { return dashboardOrigins[env] }
 
 // DashboardURL resolves a dashboard-relative approval link against env's

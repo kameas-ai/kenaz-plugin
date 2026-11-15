@@ -168,7 +168,7 @@ func TestSideBySide(t *testing.T) {
 
 	// One environment, one build at a time: kenaz --env dev while
 	// kenaz-dev's dev relay runs is refused, naming kenaz-dev, and the
-	// reverse. The env variable is shared, so KENAZ_ENV=stage moves both.
+	// reverse.
 	for _, c := range []struct {
 		i     install
 		env   string
@@ -182,11 +182,12 @@ func TestSideBySide(t *testing.T) {
 			t.Errorf("%s --env %s next to %s's relay: exit %d %q", c.i.v.Name, c.env, c.other.Name, r.Code, r.Stderr)
 		}
 	}
+	// The env variable is shared, and stage was retired: KENAZ_ENV=stage
+	// stops both, each naming only what it can use.
 	for _, i := range all {
-		var st struct{ Env string }
-		json.Unmarshal([]byte(m.mustRun(i.bin, []string{variant.Shared.EnvVar + "=stage"}, "status", "--json").Stdout), &st)
-		if st.Env != "stage" {
-			t.Errorf("%s=stage left %s on %s", variant.Shared.EnvVar, i.v.Name, st.Env)
+		want := retiredStage[i.v.Name] + " (stage was selected by env)\n"
+		if r := m.run(i.bin, []string{variant.Shared.EnvVar + "=stage"}, "status", "--json"); r.Code != 64 || r.Stderr != want || r.Stdout != "" {
+			t.Errorf("%s=stage with %s: exit %d %q %q", variant.Shared.EnvVar, i.v.Name, r.Code, r.Stdout, r.Stderr)
 		}
 	}
 	// kenaz-dev refuses prod, however it is selected.
@@ -201,7 +202,7 @@ func TestSideBySide(t *testing.T) {
 		{nil, []string{"setup", "claude", "--env", "prod", "--yes"}},
 	} {
 		r := m.run(dev.bin, c.env, c.args...)
-		if r.Code != 64 || !strings.Contains(r.Stderr, "kenaz-dev connects only to dev or stage Fleet; use kenaz for prod") {
+		if r.Code != 64 || !strings.Contains(r.Stderr, "kenaz-dev connects only to dev Fleet; use kenaz for prod") {
 			t.Errorf("kenaz-dev %v %v: exit %d %q", c.env, c.args, r.Code, r.Stderr)
 		}
 	}

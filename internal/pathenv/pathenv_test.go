@@ -3,6 +3,7 @@ package pathenv
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -152,16 +153,16 @@ func (f *fakeUserEnv) Broadcast() { f.broadcast++ }
 func TestWindowsEdit(t *testing.T) {
 	var ue UserEnv = &fakeUserEnv{path: `%USERPROFILE%\bin;C:\tools`, expand: true}
 	cur, expand, _ := ue.Path()
-	next, changed := WindowsEdit(cur, `C:\Users\u\AppData\Local\kenaz\current\bin`, nil)
+	next, changed := WindowsEdit(cur, `C:\Users\u\AppData\Local\kenaz\current\bin`, true, nil)
 	if !changed || next != `C:\Users\u\AppData\Local\kenaz\current\bin;%USERPROFILE%\bin;C:\tools` {
 		t.Fatal(next)
 	}
 	ue.SetPath(next, expand)
-	again, changed := WindowsEdit(next, `c:\users\u\appdata\local\kenaz\current\bin\`, nil)
+	again, changed := WindowsEdit(next, `c:\users\u\appdata\local\kenaz\current\bin\`, true, nil)
 	if changed || again != next {
 		t.Fatal("not idempotent")
 	}
-	if got, changed := WindowsEdit("", `C:\k`, nil); !changed || got != `C:\k` {
+	if got, changed := WindowsEdit("", `C:\k`, true, nil); !changed || got != `C:\k` {
 		t.Fatal(got)
 	}
 	if got := RemoveFromWindowsPath(next, `C:\Users\u\AppData\Local\kenaz\current\bin`); got != `%USERPROFILE%\bin;C:\tools` {
@@ -262,6 +263,18 @@ func TestTarget(t *testing.T) {
 	if _, err := Target(dangling); err != ErrDanglingLink {
 		t.Fatal(err)
 	}
+	// A link loop: refused, and not called a missing file.
+	a, b := filepath.Join(dir, ".loop-a"), filepath.Join(dir, ".loop-b")
+	os.Symlink(a, b)
+	os.Symlink(b, a)
+	if _, err := Target(a); err != ErrLinkLoop {
+		t.Fatal(err)
+	}
+	self := filepath.Join(dir, ".loop-self")
+	os.Symlink(self, self)
+	if _, err := Target(self); err != ErrLinkLoop {
+		t.Fatal(err)
+	}
 	// Read-only: refused, and left alone.
 	ro := filepath.Join(dir, ".profile")
 	os.WriteFile(ro, []byte("x\n"), 0o444)
@@ -309,10 +322,164 @@ func TestWindowsEditExpands(t *testing.T) {
 		return ""
 	}
 	cur := `%LOCALAPPDATA%\kameas\kenaz\install\current\bin;C:\tools`
-	if got, changed := WindowsEdit(cur, `C:\Users\u\AppData\Local\kameas\kenaz\install\current\bin`, getenv); changed || got != cur {
+	if got, changed := WindowsEdit(cur, `C:\Users\u\AppData\Local\kameas\kenaz\install\current\bin`, true, getenv); changed || got != cur {
 		t.Fatalf("duplicate added: %s", got)
 	}
 	if got := ExpandPercent(`%UNKNOWN%\x;%LOCALAPPDATA%;50%`, getenv); got != `%UNKNOWN%\x;C:\Users\u\AppData\Local;50%` {
 		t.Fatal(got)
+	}
+}
+
+// In a plain string Path (REG_SZ) Windows does not expand %VAR%, so an
+// entry written that way is not the directory, and the directory is added.
+func TestWindowsEditPlainStringIsLiteral(t *testing.T) {
+	getenv := func(k string) string {
+		if strings.EqualFold(k, "LOCALAPPDATA") {
+			return `C:\Users\u\AppData\Local`
+		}
+		return ""
+	}
+	cur, dir := `%LOCALAPPDATA%\kenaz\bin;C:\tools`, `C:\Users\u\AppData\Local\kenaz\bin`
+	if got, changed := WindowsEdit(cur, dir, false, getenv); !changed || got != dir+";"+cur {
+		t.Fatalf("plain string: %q %v", got, changed)
+	}
+	if got, changed := WindowsEdit(cur, dir, true, getenv); changed || got != cur {
+		t.Fatalf("expandable string: %q %v", got, changed)
+	}
+	// The directory itself is a real folder name, never expanded.
+	if got, changed := WindowsEdit(`C:\tools`, `C:\%LOCALAPPDATA%\bin`, true, getenv); !changed || got != `C:\%LOCALAPPDATA%\bin;C:\tools` {
+		t.Fatalf("dir expanded: %q %v", got, changed)
+	}
+}
+
+// A percent sign that does not open a set variable is kept and the scan
+// goes on right after it, as Windows does.
+func TestExpandPercentEdges(t *testing.T) {
+	getenv := func(k string) string {
+		if strings.EqualFold(k, "A") {
+			return "val"
+		}
+		return ""
+	}
+	for in, want := range map[string]string{
+		`%%A%%`:       `%val%`,
+		`%%`:          `%%`,
+		`%A%`:         `val`,
+		`%a%%A%`:      `valval`,
+		`%NOPE%A%`:    `%NOPEval`,
+		`%NOPE%;%A%`:  `%NOPE%;val`,
+		`100%;%A%`:    `100%;val`,
+		`%A`:          `%A`,
+		`C:\x;%A%\b;`: `C:\x;val\b;`,
+	} {
+		if got := ExpandPercent(in, getenv); got != want {
+			t.Errorf("ExpandPercent(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The file's permission bits are kept exactly, whatever the umask and
+// whatever an interrupted run left behind.
+func TestWriteProfileKeepsMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no permission bits")
+	}
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	os.WriteFile(rc, []byte("x\n"), 0o600)
+	os.Chmod(rc, 0o664)
+	// A stale temporary file with another mode.
+	tmp := rc + "." + variant.Current.Binary + "-tmp"
+	os.WriteFile(tmp, []byte("stale"), 0o600)
+	os.Chmod(tmp, 0o400)
+	cur, existed, _ := ReadProfile(rc)
+	next, _, _ := Edit(cur, Zsh, "/k/bin")
+	b, err := WriteProfile(rc, cur, existed, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(rc); fi.Mode().Perm() != 0o664 {
+		t.Fatalf("mode %v, want 0664", fi.Mode().Perm())
+	}
+	if fi, _ := os.Stat(b); fi.Mode().Perm() != 0o664 {
+		t.Fatalf("backup mode %v, want 0664", fi.Mode().Perm())
+	}
+	if got, _ := os.ReadFile(rc); string(got) != string(next) {
+		t.Fatalf("%s", got)
+	}
+	if _, err := os.Lstat(tmp); !os.IsNotExist(err) {
+		t.Fatal("temporary file left behind")
+	}
+}
+
+// An edit made after the profile was read (while the question was open)
+// is not overwritten: nothing is written, and no backup is left.
+func TestWriteProfileRefusesChangedFile(t *testing.T) {
+	dir := t.TempDir()
+	rc := filepath.Join(dir, ".zshrc")
+	os.WriteFile(rc, []byte("x\n"), 0o600)
+	cur, existed, _ := ReadProfile(rc)
+	next, _, _ := Edit(cur, Zsh, "/k/bin")
+	os.WriteFile(rc, []byte("x\nexport EDITED=1\n"), 0o600)
+	if b, err := WriteProfile(rc, cur, existed, next); err != ErrChanged || b != "" {
+		t.Fatal(b, err)
+	}
+	if got, _ := os.ReadFile(rc); string(got) != "x\nexport EDITED=1\n" {
+		t.Fatalf("the newer edit was lost:\n%s", got)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 1 {
+		t.Fatalf("files left behind: %v", ents)
+	}
+	// A file created meanwhile, where there was none.
+	fresh := filepath.Join(dir, ".bashrc")
+	os.WriteFile(fresh, []byte("new\n"), 0o600)
+	if _, err := WriteProfile(fresh, nil, false, next); err != ErrChanged {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(fresh); string(got) != "new\n" {
+		t.Fatalf("%s", got)
+	}
+	// And one deleted meanwhile.
+	os.Remove(rc)
+	if _, err := WriteProfile(rc, cur, true, next); err != ErrChanged {
+		t.Fatal(err)
+	}
+}
+
+type fakeEnv struct {
+	path   string
+	expand bool
+	sets   int
+}
+
+func (u *fakeEnv) Path() (string, bool, error) { return u.path, u.expand, nil }
+func (u *fakeEnv) SetPath(v string, e bool) error {
+	u.path, u.expand, u.sets = v, e, u.sets+1
+	return nil
+}
+func (u *fakeEnv) Broadcast() {}
+
+// A user Path changed after it was read (while the question was open) is
+// not overwritten: nothing is written.
+func TestWriteWindowsPathRefusesChangedPath(t *testing.T) {
+	ue := &fakeEnv{path: `C:\tools`, expand: true}
+	cur, expand, _ := ue.Path()
+	next, _ := WindowsEdit(cur, `C:\k\bin`, expand, nil)
+	if err := WriteWindowsPath(ue, cur, expand, next); err != nil || ue.path != `C:\k\bin;C:\tools` || !ue.expand || ue.sets != 1 {
+		t.Fatalf("%v %+v", err, ue)
+	}
+	// Another entry added meanwhile.
+	ue = &fakeEnv{path: `C:\tools;C:\other`, expand: true}
+	if err := WriteWindowsPath(ue, cur, expand, next); err != ErrChanged || ue.path != `C:\tools;C:\other` || ue.sets != 0 {
+		t.Fatalf("the newer Path was lost: %v %+v", err, ue)
+	}
+	// The same text, but the value type changed (REG_EXPAND_SZ to REG_SZ).
+	ue = &fakeEnv{path: `C:\tools`, expand: false}
+	if err := WriteWindowsPath(ue, cur, expand, next); err != ErrChanged || ue.expand || ue.sets != 0 {
+		t.Fatalf("%v %+v", err, ue)
+	}
+	// Set meanwhile, where there was none.
+	ue = &fakeEnv{path: `C:\new`, expand: true}
+	if err := WriteWindowsPath(ue, "", true, `C:\k\bin`); err != ErrChanged || ue.path != `C:\new` {
+		t.Fatalf("%v %+v", err, ue)
 	}
 }

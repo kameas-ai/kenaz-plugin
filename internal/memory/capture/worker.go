@@ -405,6 +405,33 @@ func ResetOffer(p Paths) error {
 	return saveState(p, st)
 }
 
+// DropLeftBehind clears what an account that can no longer be signed in to
+// left: every waiting event is removed unprocessed and counted as dropped,
+// and the offer is forgotten (ResetOffer). It runs no model and asks Fleet
+// nothing. While a worker holds the lock it does nothing: that worker
+// decides. n is how many events were dropped.
+func DropLeftBehind(p Paths) (n int, err error) {
+	if err := p.ensure(); err != nil {
+		return 0, err
+	}
+	release, err := tryLock(p.lock())
+	if errors.Is(err, errLocked) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	n = QueueLen(p)
+	if err := ResetOffer(p); err != nil {
+		return 0, err
+	}
+	for i := 0; i < n; i++ {
+		noteDropped(p)
+	}
+	return n, nil
+}
+
 func offerPause(reason string) bool {
 	return reason == PauseNotOffered || reason == PauseUnconfirmed || reason == PauseSignedOutWriter
 }

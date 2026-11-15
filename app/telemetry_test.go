@@ -49,11 +49,16 @@ type laneFleet struct {
 	approvalsErr error
 	postErr      error
 	attempts     int
+	// postHook, when set, sees every upload attempt first (called with mu
+	// held); a non-nil error fails that attempt.
+	postHook func(fleetapi.ProjectedBatch) error
 	// user overrides the signed-in user ("" = sub-1); signedOut signs out.
 	user      string
 	signedOut bool
 	// refused counts uploads the account binding refused (nothing sent).
 	refused int
+	// failed holds the body of every upload attempt that got postErr.
+	failed [][]byte
 }
 
 func (f *laneFleet) Flavor() fleetapi.Flavor   { return fleetapi.FlavorOfficial }
@@ -165,10 +170,16 @@ func (p lanePoster) Post(ctx context.Context, b fleetapi.ProjectedBatch) (fleeta
 		return fleetapi.ExportResult{}, fleetapi.IdentityMismatch()
 	}
 	p.f.attempts++
+	if p.f.postHook != nil {
+		if err := p.f.postHook(b); err != nil {
+			return fleetapi.ExportResult{}, err
+		}
+	}
 	if p.f.postErr != nil {
 		if fleetapi.PlanRequired(p.f.postErr) {
 			p.f.approvalsErr = p.f.postErr // Fleet refuses the org everywhere
 		}
+		p.f.failed = append(p.f.failed, append([]byte(nil), b.Body...))
 		return fleetapi.ExportResult{}, p.f.postErr
 	}
 	p.f.posted = append(p.f.posted, b)
@@ -232,7 +243,11 @@ func newTestLaneIn(t *testing.T, f *laneFleet, dir string, ks *spool.Memory, bef
 	if err := l.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	stop := func() { cancel(); l.Stop() }
+	// A relay that stops is a process that exits, which closes its spool.
+	// Without the close, a test that "restarts" the lane on the same
+	// directory would hold the previous spool's segment open, and Windows
+	// refuses to remove an open file (the next lane's purge would fail).
+	stop := func() { cancel(); l.Stop(); sp.Close() }
 	t.Cleanup(stop)
 	return l, l.rx, stop
 }

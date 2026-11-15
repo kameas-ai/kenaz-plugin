@@ -112,7 +112,7 @@ type Pending struct {
 }
 
 // Submit prepares r with p and returns the reply a tool shows the model
-// and user. It never writes.
+// and user. It never writes; see Manager.Prepare for the one grant that can.
 func Submit(ctx context.Context, p Preparer, r Request) (Pending, error) {
 	if p == nil {
 		return Pending{Status: StatusApprovalUnavailable, Message: UnavailableMessage}, nil

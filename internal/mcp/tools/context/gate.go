@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/config"
 	"github.com/kameas-ai/kenaz-plugin/internal/daemon"
 	"github.com/kameas-ai/kenaz-plugin/internal/mcp"
 	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
@@ -31,6 +32,7 @@ const (
 	CodeCredentialDetected = "credential_detected"
 	CodeNotConfirmed       = "not_confirmed"
 	CodeFleetError         = "fleet_error"
+	CodeEnvRetired         = "env_retired"
 	// CodeFleetRejected is a 400/422 refusal; Message names only Fleet's
 	// machine reason code.
 	CodeFleetRejected = "fleet_rejected"
@@ -197,6 +199,11 @@ func MapError(err error) *ToolError {
 	}
 	if errors.Is(err, fleetapi.ErrNotSignedIn) {
 		return &ToolError{Code: CodeNotSignedIn, Message: "You are not signed in to Kameas Fleet.", Remedy: mcp.SignInRemedy()}
+	}
+	if errors.Is(err, config.ErrEnvRetired) {
+		// The app that started this server is still set up for a retired
+		// environment: the error itself says so and names the fix.
+		return &ToolError{Code: CodeEnvRetired, Message: err.Error()}
 	}
 	if cat, ok := fleetapi.OrgPaused(err); ok {
 		return orgPaused(cat)

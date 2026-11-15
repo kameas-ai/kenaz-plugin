@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Assemble a self-contained bundle around a staff build of the program, so that
 `kenaz setup claude --bundle DIR` can register it (internal/bundle.LoadBundle). It is
-for staff trying a build that no release carries: docs/memory-staff.md.
+for staff trying a build made from source: docs/memory-staff.md.
 
 usage: scripts/staff-bundle.py --binary PATH --out DIR [--suffix TEXT]
 

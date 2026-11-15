@@ -174,8 +174,8 @@ func TestIdle(t *testing.T) {
 	d := New(opt)
 	done := make(chan error, 1)
 	go func() { done <- d.Run(context.Background()) }()
-	waitFor(t, func() bool { _, err := Connect(context.Background(), dir); return err == nil })
-	c, _ := Connect(context.Background(), dir)
+	var c *Client
+	waitFor(t, func() (ok bool) { var err error; c, err = Connect(context.Background(), dir); return err == nil })
 	c.Ping(context.Background(), "mcp-1")
 
 	// A live client keeps the daemon up past the idle timeout.
@@ -193,16 +193,36 @@ func TestIdle(t *testing.T) {
 		t.Fatal("exited before 15 idle minutes")
 	default:
 	}
-	for i := 0; i < 3; i++ {
+	advanceUntilExit(t, clk, done, dir, "daemon did not idle-exit")
+}
+
+// advanceUntilExit moves the fake clock a minute at a time until the daemon exits.
+//
+// The idle check runs on a timer the daemon re-arms after each check, and the fake clock
+// only fires timers that are armed when it advances. A fixed number of advances followed
+// by a fixed wait is therefore a race with the daemon's goroutine: on a slow runner the
+// advance that crosses the idle timeout can land before the timer is re-armed and wake
+// nothing, and the exit itself (stopping lanes, closing the HTTP server) takes real time.
+// So time keeps moving until the daemon is gone; the deadline only bounds a daemon that
+// never exits.
+func advanceUntilExit(t *testing.T, clk *clock.Fake, done <-chan error, dir, failure string) {
+	t.Helper()
+	for end := time.Now().Add(30 * time.Second); ; {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		if time.Now().After(end) {
+			// It may be on its way out already, with nothing left to connect to.
+			if c, err := Connect(context.Background(), dir); err == nil {
+				c.Shutdown(context.Background(), false)
+			}
+			<-done
+			t.Fatal(failure)
+		}
 		clk.Advance(time.Minute)
 		time.Sleep(5 * time.Millisecond)
-	}
-	select {
-	case <-done:
-	case <-time.After(500 * time.Millisecond):
-		c.Shutdown(context.Background(), false)
-		<-done
-		t.Fatal("daemon did not idle-exit")
 	}
 }
 
@@ -232,23 +252,7 @@ func TestIdleWaitsForBusyLane(t *testing.T) {
 	default:
 	}
 	lane.busy.Store(false)
-	// The exit comes from the idle timer on the fake clock, and a slow runner can take a
-	// while to act on a tick or to finish going down, so time keeps moving during the wait.
-	for end := time.Now().Add(30 * time.Second); ; advance(1) {
-		select {
-		case <-done:
-			return
-		default:
-		}
-		if time.Now().After(end) {
-			// It may be on its way out already, with nothing left to connect to.
-			if c, err := Connect(context.Background(), dir); err == nil {
-				c.Shutdown(context.Background(), false)
-			}
-			<-done
-			t.Fatal("daemon did not idle-exit once the lane was done")
-		}
-	}
+	advanceUntilExit(t, clk, done, dir, "daemon did not idle-exit once the lane was done")
 }
 
 type busyLane struct {
@@ -311,7 +315,12 @@ func TestControlAuthAndSessionGate(t *testing.T) {
 	}
 	c, _ := Connect(context.Background(), dir)
 	c.Kick(context.Background())
-	waitFor(t, func() bool { s, _ := c.Status(context.Background()); return s.Enroll == string(enroll.StateEnrolled) })
+	// The heartbeat sets the enroll state and the capability poller sets
+	// the tier, each in its own goroutine and in either order: wait for both.
+	waitFor(t, func() bool {
+		s, _ := c.Status(context.Background())
+		return s.Enroll == string(enroll.StateEnrolled) && s.Tier == "team"
+	})
 	s, err := c.Status(context.Background())
 	if err != nil || s.Session != SessionSignedIn || s.Tier != "team" || !s.Daemon.Running {
 		t.Fatalf("status = %+v err=%v", s, err)

@@ -43,7 +43,10 @@ const (
 	// tagBatch: u64be(earliest event unix nanos) || JSON fleetapi.ProjectedBatch,
 	// written by earlier builds without an owner: dropped unsent.
 	tagBatch byte = 'b'
-	// tagHeld: JSON []project.Record held by a consent hold; re-gated on drain
+	// tagHeld: JSON []project.Record held by a consent hold. Drain re-gates
+	// it once: what may now be sent is encoded and written back as
+	// tagOwnedBatch records before the held record is marked done, so a
+	// failed upload is retried with the same bytes, never re-encoded.
 	tagHeld byte = 'r'
 	// tagOwnedBatch: u64be(earliest event unix nanos) || JSON ownedBatch,
 	// a batch with the account (ExpectedSession) that stamped it.
@@ -342,7 +345,10 @@ func (l *telemetryLane) Status() daemon.LaneStatus {
 		State:    "running",
 		Uploaded: l.uploaded.Load(),
 		Held:     l.held.Load(),
-		Dropped:  l.dropped.Load(),
+		// Includes what the spool discarded for age (7 days, applied on
+		// append and when a drain starts) or size, counted per spool record:
+		// their contents are not read.
+		Dropped: l.dropped.Load() + int64(l.sp.Dropped()),
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -585,6 +591,18 @@ func (l *telemetryLane) send(ctx context.Context, q queued) bool {
 	}
 }
 
+// ownedRecord is the spool record (tagOwnedBatch) for a queued batch.
+func ownedRecord(q queued) ([]byte, error) {
+	payload, err := json.Marshal(ownedBatch{Owner: q.owner, Batch: q.b})
+	if err != nil {
+		return nil, err
+	}
+	rec := make([]byte, 9, 9+len(payload))
+	rec[0] = tagOwnedBatch
+	binary.BigEndian.PutUint64(rec[1:], uint64(q.earliest.UnixNano()))
+	return append(rec, payload...), nil
+}
+
 // spoolBatch keeps a batch for a later retry. Only batches the
 // organization may send are kept.
 func (l *telemetryLane) spoolBatch(q queued) {
@@ -595,19 +613,53 @@ func (l *telemetryLane) spoolBatch(q queued) {
 		l.dropped.Add(int64(b.Records))
 		return
 	}
-	payload, err := json.Marshal(ownedBatch{Owner: q.owner, Batch: b})
+	rec, err := ownedRecord(q)
 	if err != nil {
 		l.dropped.Add(int64(b.Records))
 		return
 	}
-	rec := make([]byte, 9, 9+len(payload))
-	rec[0] = tagOwnedBatch
-	binary.BigEndian.PutUint64(rec[1:], uint64(q.earliest.UnixNano()))
-	rec = append(rec, payload...)
 	if err := l.sp.Append(telemetryLaneName, rec); err != nil {
 		l.dropped.Add(int64(b.Records))
 		l.log.Warn("spool append failed", "err", err.Error())
 	}
+}
+
+// spoolAppendAll is spool.AppendAll (tests make it fail like a full disk).
+var spoolAppendAll = func(sp *spool.Spool, lane, origin string, recs [][]byte) error {
+	return sp.AppendAll(lane, origin, recs)
+}
+
+// spoolRegated writes the batches one held record (spool record id
+// origin) became back to the spool, all or none (spool.AppendAll). kept is
+// false when they may not be sent any more and were dropped. A non-nil
+// error means nothing was written: the caller must keep the held record so
+// nothing is lost, and because nothing was written a retry cannot queue
+// the same events twice.
+//
+// The write is idempotent per held record. Every encoding gets a new
+// random batch id, so a second encoding of the same events is a different
+// body to Fleet. If the relay dies after the set was queued and before the
+// held record was marked done, the next drain re-gates the record, but
+// this call then writes nothing: the bytes queued the first time are the
+// only ones ever sent.
+func (l *telemetryLane) spoolRegated(origin string, qs []queued) (kept bool, err error) {
+	l.spMu.Lock()
+	defer l.spMu.Unlock()
+	n := 0
+	recs := make([][]byte, 0, len(qs))
+	for _, q := range qs {
+		n += q.b.Records
+		rec, err := ownedRecord(q)
+		if err != nil {
+			return false, err
+		}
+		recs = append(recs, rec)
+	}
+	if len(qs) == 0 || !l.sendable(qs[0].earliest) {
+		l.dropped.Add(int64(n))
+		return false, nil
+	}
+	return true, spoolAppendAll(l.sp, telemetryLaneName, origin, recs)
 }
 
 // holdRecords keeps records held by a consent hold (pause, lockdown,
@@ -633,12 +685,24 @@ func (l *telemetryLane) holdRecords(recs []project.Record, _ string) {
 
 var errStopDrain = errors.New("stop drain")
 
-// drain replays spooled batches and held records once nothing holds. It
-// does nothing while the organization is not admitted.
+// drain sends spooled batches and re-gates held records once nothing
+// holds. It does nothing while the organization is not admitted.
+//
+// The spool hands out each record once and resumes after the last one this
+// func accepted (returned nil for), so a batch Fleet accepted is not posted
+// again when a later batch in the same segment fails. A held record is
+// re-gated and encoded once: its batches go back to the spool as
+// tagOwnedBatch records, and a later drain sends those bytes.
 func (l *telemetryLane) drain(ctx context.Context) {
 	if _, ok := l.admittedSince(); !ok || l.uploadHeld() || l.sp.Empty() {
 		return
 	}
+	regated := false
+	defer func() {
+		if regated {
+			l.kick() // send what the held records became without waiting a tick
+		}
+	}()
 	_, err := l.sp.Drain(func(r spool.Record) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -692,8 +756,30 @@ func (l *telemetryLane) drain(ctx context.Context) {
 			if json.Unmarshal(r.Payload[1:], &recs) != nil {
 				return nil
 			}
+			// Re-checks consent: what is no longer permitted is dropped.
+			var qs []queued
+			heldAgain := false
+			l.pipe.RegateTo(recs, func(bs []fleetapi.ProjectedBatch, earliest time.Time, id project.Identity) {
+				owner := fleetapi.ExpectedSession{Env: id.Env, OrgID: id.OrgID, Subject: id.UserID}
+				for _, b := range bs {
+					qs = append(qs, queued{b, earliest, owner})
+				}
+			}, func([]project.Record, string) { heldAgain = true })
+			if heldAgain {
+				return errStopDrain // still held: the record stays where it is
+			}
+			if len(qs) > 0 {
+				// Written back all or nothing, before this record is marked
+				// done. On failure the held record is kept and re-gated by a
+				// later drain.
+				kept, err := l.spoolRegated(r.ID, qs)
+				if err != nil {
+					l.log.Warn("spool append failed", "err", err.Error())
+					return errStopDrain
+				}
+				regated = regated || kept
+			}
 			l.held.Add(-int64(len(recs)))
-			l.pipe.Regate(recs) // re-checks consent; may hold again
 		}
 		return nil
 	})

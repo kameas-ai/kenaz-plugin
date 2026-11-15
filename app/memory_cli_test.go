@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -67,7 +68,9 @@ func TestMemoryCLIAndToolsSignedOut(t *testing.T) {
 	if saved["notice"] != memory.Disclosure(db) {
 		t.Fatalf("first save notice = %v", saved["notice"])
 	}
-	if fi, err := os.Stat(db); err != nil || fi.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits (a file reports 0666); access
+	// there follows the ACL the profile directory gives its files.
+	if fi, err := os.Stat(db); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("store: %v %v", fi, err)
 	}
 

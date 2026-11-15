@@ -280,6 +280,40 @@ func TestPartialBatchRejection(t *testing.T) {
 	}
 }
 
+// The refusal wording tells the person that editing a refused note's text
+// saves it as a new note that can sync. That holds: the edit makes a new
+// id with a new creation time and clock, and it syncs.
+func TestEditingRefusedNoteSyncsAsNewNote(t *testing.T) {
+	f := fleetapitest.NewMemoryFleet()
+	a := newDevice(t, f, alice)
+	a.enable()
+	ahead := time.Now().Add(time.Hour)
+	a.st.SetClock(func() time.Time { return ahead })
+	bad := a.save("future", "future clock", true)
+	a.st.SetClock(time.Now)
+	a.sync()
+	n, _ := a.get(bad)
+	if n.SyncState != memory.StateRejected {
+		t.Fatalf("not refused: %+v", n)
+	}
+	body := "future clock, edited"
+	res, err := a.st.UpdateNote(context.Background(), bad, memory.Update{Body: &body}, memory.MutateOptions{SyncApproved: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ID == bad || res.State == memory.StateRejected {
+		t.Fatalf("the edit did not make a new note: %+v", res)
+	}
+	a.sync()
+	got, ok := a.get(res.ID)
+	if !ok || got.SyncState != memory.StateSynced || got.Body != body {
+		t.Fatalf("edited note = %+v, %v", got, ok)
+	}
+	if !got.CreatedAt.Before(ahead.Add(-30 * time.Minute)) {
+		t.Fatalf("edited note kept the old creation time %v", got.CreatedAt)
+	}
+}
+
 // Quota (retry:true) backs off and stays pending; 429 honours
 // Retry-After.
 func TestQuotaAndRateLimitBackoff(t *testing.T) {

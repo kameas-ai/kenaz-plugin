@@ -13,6 +13,16 @@
 # installed journey exists, that journey. Anything missing is recorded as
 # blocked with its gate, never as a pass. Cells for other OSes are
 # blocked until run on that OS's runner.
+#
+# The credential-free installed tier (test/conformance/README.md) is
+# recorded apart from the above and never satisfies the release gate:
+#
+#   scripts/conformance.sh run -tier installed [-out DIR] [-cell ...]
+#   scripts/conformance.sh verdict -tier installed [-evidence DIR] [-out FILE]
+#   scripts/conformance.sh report      per cell: not run / installed-tier pass (reduced) /
+#                                      installed-tier pass / live pass
+#
+# `check-verdict` says which tier it found and accepts only a live verdict.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"

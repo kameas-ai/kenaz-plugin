@@ -15,6 +15,7 @@ package setup
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -70,6 +71,17 @@ type Options struct {
 	ClaudeDir string // ~/.claude, or $CLAUDE_CONFIG_DIR
 	CodexDir  string // ~/.codex, or $CODEX_HOME
 	StateDir  string // relay $STATE for the selected environment
+	// OldRecord says StateDir is an earlier release's folder that is no
+	// longer used, read only so that --undo can clear a record left there.
+	// Each host has one plugin registration and one settings file for
+	// every environment and build, so what such a record set up may since
+	// have become the current setup's, and a later setup that found
+	// nothing to change left no record to say so. The undo therefore never
+	// restores or strips the host's settings from such a record, and runs
+	// the host CLI only to remove a plugin the host still loads from that
+	// folder (see Undo). Settings the earlier setup wrote may stay behind;
+	// that is the accepted cost of never removing a current setup's.
+	OldRecord bool
 
 	// OpenCode: its global config directory, the kenaz binary and adapter
 	// directory rendered into opencode.json (absolute paths), the Fleet env
@@ -295,6 +307,11 @@ type Hooks struct {
 	// Release is the signed release this kenaz was built from (the app's
 	// Version and BuildCommit).
 	Release Release
+	// OldRecordRoot, asked after Resolve, says the state directory Resolve
+	// returned is an earlier release's folder that is no longer used, by
+	// returning the state root that is in use ("" otherwise). See
+	// Options.OldRecord.
+	OldRecordRoot func() string
 }
 
 // Diff is the unified diff setup prints before a change.
@@ -302,33 +319,40 @@ func Diff(path string, before, after []byte) string {
 	return unifiedDiff(path, path+" (after kenaz)", string(before), string(after))
 }
 
-// CommandHooks is Command with every app seam.
-func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, hk Hooks) int {
-	resolve := hk.Resolve
+// commandFlags are `kenaz setup`'s flags as parsed.
+type commandFlags struct {
+	yes, dry, traces, undo, raw, noBundle      *bool
+	env, pinTag, pinCommit, bundleDir, adapter *string
+	port                                       *int
+}
+
+// parseCommand parses `kenaz setup`'s arguments: flags may come before,
+// between and after the positional ones. ok is false on a flag error,
+// which the flag package has reported on stderr.
+func parseCommand(args []string, stderr io.Writer) (f commandFlags, pos []string, ok bool) {
 	fl := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fl.SetOutput(stderr)
-	yes := fl.Bool("yes", false, "apply without asking")
-	dry := fl.Bool("dry-run", false, "show the diff and change nothing")
-	traces := fl.Bool("traces", false, "Claude Code only: also export traces (beta)")
-	undo := fl.Bool("undo", false, "restore what setup changed")
-	env := fl.String("env", "", "Kameas Fleet environment ("+variant.Current.EnvChoices(", ")+")")
-	port := fl.Int("port", variant.Shared.RelayPorts[0], "print-managed: relay port to pin fleet-wide")
-	raw := fl.Bool("raw", false, "print-managed: print only the file content")
-	pinTag := fl.String("release", "", "print-managed: release tag to pin the plugin to (default: this kenaz's release)")
-	pinCommit := fl.String("commit", "", "print-managed: full commit of --release (default: this kenaz's release commit)")
-	bundleDir := fl.String("bundle", "", "register a self-contained release bundle (default: the bundle this kenaz runs from, if any)")
-	noBundle := fl.Bool("no-bundle", false, "ignore the bundle this kenaz runs from and use kenaz from PATH")
-	adapter := new(string)
+	f.yes = fl.Bool("yes", false, "apply without asking")
+	f.dry = fl.Bool("dry-run", false, "show the diff and change nothing")
+	f.traces = fl.Bool("traces", false, "Claude Code only: also export traces (beta)")
+	f.undo = fl.Bool("undo", false, "restore what setup changed")
+	f.env = fl.String("env", "", "Kameas Fleet environment ("+variant.Current.EnvChoices(", ")+")")
+	f.port = fl.Int("port", variant.Shared.RelayPorts[0], "print-managed: relay port to pin fleet-wide")
+	f.raw = fl.Bool("raw", false, "print-managed: print only the file content")
+	f.pinTag = fl.String("release", "", "print-managed: release tag to pin the plugin to (default: this kenaz's release)")
+	f.pinCommit = fl.String("commit", "", "print-managed: full commit of --release (default: this kenaz's release commit)")
+	f.bundleDir = fl.String("bundle", "", "register a self-contained release bundle (default: the bundle this kenaz runs from, if any)")
+	f.noBundle = fl.Bool("no-bundle", false, "ignore the bundle this kenaz runs from and use kenaz from PATH")
+	f.adapter = new(string)
 	if features.OpenCode {
-		adapter = fl.String("adapter", "", "opencode: the Kenaz OpenCode adapter directory (default: opencode/ next to the binary's bin/)")
+		f.adapter = fl.String("adapter", "", "opencode: the Kenaz OpenCode adapter directory (default: opencode/ next to the binary's bin/)")
 	}
 	fl.Usage = func() { fmt.Fprint(stderr, Usage()) }
 
-	var pos []string
 	rest := args
 	for {
 		if err := fl.Parse(rest); err != nil {
-			return exitUsage
+			return f, nil, false
 		}
 		if fl.NArg() == 0 {
 			break
@@ -336,6 +360,68 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 		pos = append(pos, fl.Arg(0))
 		rest = fl.Args()[1:]
 	}
+	return f, pos, true
+}
+
+// UndoRequested reports whether args, parsed exactly as the command parses
+// them, run the undo of one host's setup (`setup --undo claude`), which
+// only removes what an earlier setup left. Everything else, a dry run of an
+// apply and the doctor included, is not an undo.
+func UndoRequested(args []string) bool {
+	_, ok := UndoTarget(args)
+	return ok
+}
+
+// UndoTarget is UndoRequested together with the host whose setup the
+// arguments undo ("claude", "codex", "opencode").
+func UndoTarget(args []string) (host string, ok bool) {
+	f, pos, ok := parseCommand(args, io.Discard)
+	if !ok || !*f.undo || len(pos) != 1 {
+		return "", false
+	}
+	if _, isHost := parseHarness(pos[0]); !isHost {
+		return "", false
+	}
+	return pos[0], true
+}
+
+// EnvRequested is the --env value the command reads from args, parsed
+// exactly as the command parses them (flags before, between and after the
+// positional arguments, and a flag's value never taken for a flag). ok is
+// false when the command would reject the arguments as a flag error, which
+// it does before it acts.
+func EnvRequested(args []string) (env string, ok bool) {
+	f, _, ok := parseCommand(args, io.Discard)
+	if !ok {
+		return "", false
+	}
+	return *f.env, true
+}
+
+// Recorded reports whether the setup state in stateDir holds a record of
+// host's setup, whichever build made it. It only reads the file.
+func Recorded(stateDir, host string) bool {
+	h, ok := parseHarness(host)
+	if !ok {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(stateDir, stateFile))
+	if err != nil {
+		return false
+	}
+	var s State
+	return json.Unmarshal(b, &s) == nil && s.get(h) != nil
+}
+
+// CommandHooks is Command with every app seam.
+func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, hk Hooks) int {
+	resolve := hk.Resolve
+	f, pos, ok := parseCommand(args, stderr)
+	if !ok {
+		return exitUsage
+	}
+	yes, dry, traces, undo, env, port, raw := f.yes, f.dry, f.traces, f.undo, f.env, f.port, f.raw
+	pinTag, pinCommit, bundleDir, noBundle, adapter := f.pinTag, f.pinCommit, f.bundleDir, f.noBundle, f.adapter
 
 	if len(pos) == 2 && pos[0] == "print-managed" {
 		h, ok := parseHarness(pos[1])
@@ -369,6 +455,7 @@ func CommandHooks(ctx context.Context, args []string, stdout, stderr io.Writer, 
 	opts.Yes, opts.DryRun, opts.Traces = *yes, *dry, *traces
 	opts.Release = hk.Release
 	opts.FleetEnv = *env
+	opts.OldRecord = hk.OldRecordRoot != nil && hk.OldRecordRoot() != ""
 	if hk.In != nil {
 		opts.In = hk.In
 	}
@@ -493,6 +580,9 @@ func Apply(o Options, h harness) error {
 	if h != harnessOpenCode && mk.official() {
 		pinned, why = o.releasePin(h, mk, bundle)
 	}
+	// recheckCache: setup (re)installs the plugin from a pinned Codex
+	// marketplace, and checks afterwards that Codex now runs that copy.
+	recheckCache := false
 	// A Claude Code "settings" (inline) catalog named kenaz is declared in
 	// a settings file, typically managed settings: Claude Code allows one
 	// marketplace per name, so setup neither adds a second nor removes it.
@@ -543,7 +633,16 @@ func Apply(o Options, h harness) error {
 			// Installed by the user and turned off: their choice. Setup
 			// neither re-enables it nor, on --undo, uninstalls it.
 			fmt.Fprintf(o.Err, "warning: the Kenaz plugin (%s) is installed in %s but turned off, so it will not run. %s\n", bundlePluginID, h.label(), enableHint(h))
+		case h == harnessCodex && pinned:
+			// Codex runs the copy it made when the plugin was installed,
+			// not the marketplace clone, and keeps that copy when the
+			// marketplace is removed and added again with --ref.
+			if why := o.codexCacheStale(); why != "" {
+				fmt.Fprintf(o.Out, "The marketplace is pinned to this release, but the copy of the Kenaz plugin that Codex runs %s. Setup reinstalls the plugin from the pinned marketplace.\n", why)
+				cmds = [][]string{uninstallCmd(h), installCmd(h)}
+			}
 		}
+		recheckCache = h == harnessCodex && pinned && len(cmds) > 0
 		o.warnNotOnPath(h)
 	}
 	if bundle != nil && h != harnessOpenCode {
@@ -624,6 +723,11 @@ func Apply(o Options, h harness) error {
 		}
 		if err := o.runAll(h, cmds); err != nil {
 			return err
+		}
+		if recheckCache {
+			if why := o.codexCacheStale(); why != "" {
+				fmt.Fprintf(o.Err, "warning: after installing the Kenaz plugin from the pinned marketplace, the copy that Codex runs still %s. Run `codex plugin remove %s`, then re-run setup.\n", why, bundlePluginID)
+			}
 		}
 		// The host CLI edited the same file: apply the owned keys to what
 		// it wrote.
@@ -762,6 +866,43 @@ func Undo(o Options, h harness) error {
 		fmt.Fprintf(o.Out, "Nothing to undo for %s.\n", h.label())
 		return nil
 	}
+	// A record in an earlier release's folder. What it set up may be the
+	// current setup's by now, and removing a current setup by mistake is
+	// worse than leaving a stale one, so:
+	if o.OldRecord {
+		recordOnly := ""
+		switch {
+		case fs.Bundle == nil || h == harnessOpenCode:
+			// It registered no plugin of its own (kenaz from PATH, or a
+			// marketplace the person had added), so nothing tells its work
+			// from a later setup's: that one finds the same settings, changes
+			// nothing and records nothing. Nothing in the host is touched.
+			recordOnly = fmt.Sprintf("This earlier setup of %s (recorded in %s) registered no plugin of its own, so the plugin and the settings %s has now may be the current setup's. They were left as they are; to remove the current setup, run `%s setup --undo %s`.",
+				h.label(), o.StateDir, h.label(), variant.Current.Binary, hostCLI(h))
+			if h == harnessOpenCode {
+				recordOnly = fmt.Sprintf("This earlier setup of %s (recorded in %s) may have been replaced by the current one, so its configuration was left as it is; to remove the current setup, run `%s setup --undo opencode`.", h.label(), o.StateDir, variant.Current.Binary)
+			}
+		case !o.stillOwns(h, fs):
+			// The app has been set up again since: its one plugin
+			// registration and its settings are the current setup's now.
+			recordOnly = fmt.Sprintf("%s has been set up again since this earlier setup (recorded in %s), so its plugin registration and its settings are the current setup's and were not changed.", h.label(), o.StateDir)
+		}
+		// Otherwise the host still loads the plugin this record registered
+		// from the old folder: that registration is the record's own and is
+		// removed below. The settings are left there too (keepSettings).
+		if recordOnly != "" {
+			fmt.Fprintln(o.Out, recordOnly)
+			if o.DryRun {
+				fmt.Fprintln(o.Out, "(dry run: the record of the earlier setup was kept)")
+				return nil
+			}
+			if err := o.forget(state, h, fs); err != nil {
+				return err
+			}
+			fmt.Fprintln(o.Out, "Removed only the record of the earlier setup.")
+			return nil
+		}
+	}
 	cur, exists, err := readFile(fs.Path)
 	if err != nil {
 		return err
@@ -811,6 +952,22 @@ func Undo(o Options, h harness) error {
 		if fs.Bundle.Replaced != "" {
 			fmt.Fprintf(o.Out, "Setup had replaced the %q marketplace from %s. To use it again: %s\n", bundleMarketplace, fs.Bundle.Replaced, readdHint(h, o.Release))
 		}
+	}
+	if o.OldRecord {
+		// The settings may be a current setup's: one that found them as it
+		// would write them changed nothing and recorded nothing, and another
+		// build writes the same keys with the same values. They are neither
+		// restored nor stripped, and no backup of them is made.
+		fmt.Fprintf(o.Out, "The settings this earlier setup wrote to %[1]s were left as they are: they may be the current setup's. If %[2]s is set up now, `%[3]s setup --undo %[4]s` removes that setup with its settings; `%[3]s init` sets it up again from here. Settings no current setup owns can be deleted from that file by hand.\n",
+			fs.Path, h.label(), variant.Current.Binary, hostCLI(h))
+		if o.DryRun {
+			return nil
+		}
+		if err := o.forget(state, h, fs); err != nil {
+			return err
+		}
+		fmt.Fprintln(o.Out, "Removed the record of the earlier setup.")
+		return pluginErr
 	}
 	if !exists {
 		fmt.Fprintf(o.Err, "warning: %s no longer exists; forgetting setup state\n", fs.Path)
@@ -878,6 +1035,17 @@ func Undo(o Options, h harness) error {
 	}
 	fmt.Fprintf(o.Out, "Restored %s.\n", fs.Path)
 	return pluginErr
+}
+
+// stillOwns reports whether the plugin marketplace the host has registered
+// is the one fs recorded rendering. Each host has one plugin registration
+// for every environment, so a later setup replaces it.
+func (o Options) stillOwns(h harness, fs *FileState) bool {
+	if fs.Bundle == nil || h == harnessOpenCode {
+		return false
+	}
+	cur, _ := o.registeredMarketplace(h)
+	return cur != "" && (cur == fs.Bundle.Rendered || cur == fs.Bundle.registered())
 }
 
 // confirmRun asks before running host commands (same rules as confirm).
@@ -1006,8 +1174,8 @@ func (o Options) warnVersionedLaunch(b *Bundle) {
 	if !ok || b.Launch != b.Exe {
 		return
 	}
-	fmt.Fprintf(o.Err, "warning: %[3]s runs from Homebrew's versioned directory %[1]s, and %[2]s does not link to it, so this registration will stop working after `brew upgrade`. Run `brew reinstall --cask %[4]s`, then `%[3]s init`.\n",
-		filepath.Dir(filepath.Dir(b.Exe)), filepath.Join(prefix, "bin", filepath.Base(b.Exe)), variant.Current.Binary, variant.Current.CaskToken)
+	fmt.Fprintf(o.Err, "warning: %[3]s runs from Homebrew's versioned directory %[1]s, and %[2]s does not link to it, so this registration will stop working after `brew upgrade`. Run `brew reinstall --cask %[4]s`, then `%[5]s`.\n",
+		filepath.Dir(filepath.Dir(b.Exe)), filepath.Join(prefix, "bin", filepath.Base(b.Exe)), variant.Current.Binary, variant.Current.CaskToken, o.initCmd())
 }
 
 // warnNotOnPath warns when the adopted GitHub plugin would not find
@@ -1020,7 +1188,7 @@ func (o Options) warnNotOnPath(h harness) {
 	if o.KenazBin != "" {
 		dir = filepath.Dir(o.KenazBin)
 	}
-	fmt.Fprintf(o.Err, "warning: the Kenaz plugin from GitHub starts `%[3]s` from PATH, and %[3]s is not on PATH. Run `%[3]s init` to add %[1]s to PATH, then restart %[2]s.\n", dir, h.label(), variant.Current.Binary)
+	fmt.Fprintf(o.Err, "warning: the Kenaz plugin from GitHub starts `%[3]s` from PATH, and %[3]s is not on PATH. Run `%[4]s` to add %[1]s to PATH, then restart %[2]s.\n", dir, h.label(), variant.Current.Binary, o.initCmd())
 }
 
 // enableHint says how to turn the plugin back on in h.

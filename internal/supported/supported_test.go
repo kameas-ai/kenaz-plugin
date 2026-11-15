@@ -1,6 +1,7 @@
 package supported
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kameas-ai/kenaz-plugin/internal/canon"
 	"github.com/kameas-ai/kenaz-plugin/internal/features"
 )
 
@@ -47,6 +49,12 @@ type toolRow struct {
 // lenient about gated hosts only: one CI run covers every build mode, and
 // the copy is synced to the docs at release time, so until then it may
 // predate the gated rows.
+//
+// OpenCode is the third gated dimension (unreleasedHosts): no release ships
+// it, so the list must never name it, in any build. A build with
+// -tags kenaz_opencode supports a host the list leaves out; that is
+// expected when checking the vendored copy and fails the release check,
+// because such a build must not be released.
 func TestSupportedToolsMatchHosts(t *testing.T) {
 	path := os.Getenv(SupportedToolsEnv)
 	release := path != ""
@@ -62,9 +70,12 @@ func TestSupportedToolsMatchHosts(t *testing.T) {
 	if err := dec.Decode(&d); err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
-	problems, pending := checkTools(d, Hosts(), GatedHosts(), release)
+	problems, pending, unreleased := checkTools(d, Hosts(), GatedHosts(), unreleasedHosts(), release)
 	for _, p := range problems {
 		t.Errorf("%s: %s", path, p)
+	}
+	if len(unreleased) > 0 {
+		t.Logf("%s: this build supports %v, which no release ships; the Supported Tools list rightly leaves them out (the release check fails such a build)", path, unreleased)
 	}
 	if len(pending) > 0 {
 		msg := fmt.Sprintf("%s: this build supports %v but the Supported Tools list does not name them; add the rows (and a change-log line) before release", path, pending)
@@ -76,16 +87,39 @@ func TestSupportedToolsMatchHosts(t *testing.T) {
 	}
 }
 
-// checkTools checks d against the hosts a build supports and the known
-// feature-gated hosts. problems always fail; pending lists the gated hosts
-// the build supports that d leaves out (the caller fails them in release
-// mode). Only when !release is a row for a gated host this build lacks
-// accepted; in release mode it is a problem.
-func checkTools(d doc, hosts, gated []Host, release bool) (problems, pending []string) {
+// unreleasedHosts returns the hosts behind a feature that no release
+// ships, as a build with the feature reports them, whatever this build's
+// tags: OpenCode (-tags kenaz_opencode). It is the third gated dimension
+// beside the Claude desktop app's chat and Cowork, with the opposite rule
+// for the list: a gated host's row may be on the Supported Tools list
+// before every build has it, but an unreleased host's row may never be on
+// it, because customers would read it as supported. It lives in the tests
+// because only they need it: supported.GatedHosts deliberately leaves
+// OpenCode out.
+func unreleasedHosts() []Host {
+	return []Host{{string(canon.OpenCode), true}}
+}
+
+// checkTools checks d against the hosts a build supports, the known
+// feature-gated hosts and the hosts no release ships. problems always fail;
+// pending lists the gated hosts the build supports that d leaves out (the
+// caller fails them in release mode). Only when !release is a row for a
+// gated host this build lacks accepted; in release mode it is a problem.
+//
+// A row for an unreleased host is a problem in every build and mode, even
+// in a build that supports the host. A build that supports an unreleased
+// host the list leaves out is reported in unreleasedOn: that is expected
+// when checking the vendored copy, and a problem in release mode (such a
+// build must not be released).
+func checkTools(d doc, hosts, gated, unreleased []Host, release bool) (problems, pending, unreleasedOn []string) {
 	bad := func(format string, a ...any) { problems = append(problems, fmt.Sprintf(format, a...)) }
 	if d.Schema != 1 {
 		bad("schema %d, want 1", d.Schema)
-		return problems, nil
+		return problems, nil, nil
+	}
+	isUnreleased := map[string]bool{}
+	for _, h := range unreleased {
+		isUnreleased[h.ID] = true
 	}
 	want := map[string]bool{} // host -> usage telemetry
 	for _, h := range hosts {
@@ -115,6 +149,10 @@ func checkTools(d doc, hosts, gated []Host, release bool) (problems, pending []s
 			bad("on-device row %q names no hosts", tool.ID)
 		}
 		for _, h := range tool.Hosts {
+			if isUnreleased[h] {
+				bad("row %q lists host %q, which no release ships; the Supported Tools list must not name it", tool.ID, h)
+				continue
+			}
 			tel, ok := want[h]
 			if !ok && isGated[h] {
 				if release {
@@ -145,13 +183,19 @@ func checkTools(d doc, hosts, gated []Host, release bool) (problems, pending []s
 	}
 	sort.Strings(missing)
 	for _, h := range missing {
-		if isGated[h] {
+		switch {
+		case isUnreleased[h]:
+			unreleasedOn = append(unreleasedOn, h)
+			if release {
+				problems = append(problems, fmt.Sprintf("this build supports %q, which no release ships; a release build must be built without its feature tag", h))
+			}
+		case isGated[h]:
 			pending = append(pending, h)
-		} else {
+		default:
 			problems = append(problems, fmt.Sprintf("this build supports %q but the Supported Tools list does not name it; add the row (and a change-log line) before release", h))
 		}
 	}
-	return problems, pending
+	return problems, pending, unreleasedOn
 }
 
 // row is an on-device Supported Tools row for hosts.
@@ -159,18 +203,33 @@ func row(id string, telemetry bool, hosts ...string) toolRow {
 	return toolRow{ID: id, Name: id, Maker: "maker", Connection: "on-device", UsageTelemetry: &telemetry, Status: "available", ListedSince: "2026-10-31", Hosts: hosts}
 }
 
-// withFeatures runs fn with features.ClaudeDesktopChat and features.Cowork
-// set as given, so one test binary covers every build mode.
-func withFeatures(t *testing.T, chat, cowork bool, fn func()) {
+// withFeatures runs fn with features.ClaudeDesktopChat, features.Cowork and
+// features.OpenCode set as given, so one test binary covers every build
+// mode whatever tags it was built with.
+func withFeatures(t *testing.T, chat, cowork, opencode bool, fn func()) {
 	t.Helper()
-	oldChat, oldCowork := features.ClaudeDesktopChat, features.Cowork
-	features.ClaudeDesktopChat, features.Cowork = chat, cowork
-	defer func() { features.ClaudeDesktopChat, features.Cowork = oldChat, oldCowork }()
+	oldChat, oldCowork, oldOpenCode := features.ClaudeDesktopChat, features.Cowork, features.OpenCode
+	features.ClaudeDesktopChat, features.Cowork, features.OpenCode = chat, cowork, opencode
+	defer func() {
+		features.ClaudeDesktopChat, features.Cowork, features.OpenCode = oldChat, oldCowork, oldOpenCode
+	}()
 	fn()
 }
 
-// buildModes are every combination of the two gated features.
-var buildModes = []struct{ chat, cowork bool }{{false, false}, {true, false}, {false, true}, {true, true}}
+// buildModes are every combination of the three gated features: the Claude
+// desktop app's chat, Cowork, and OpenCode (which no release ships).
+var buildModes = []struct{ chat, cowork, opencode bool }{
+	{false, false, false}, {true, false, false}, {false, true, false}, {true, true, false},
+	{false, false, true}, {true, false, true}, {false, true, true}, {true, true, true},
+}
+
+// enabledUnreleased lists the unreleased hosts a build mode supports.
+func enabledUnreleased(opencode bool) []string {
+	if opencode {
+		return []string{string(canon.OpenCode)}
+	}
+	return nil
+}
 
 // enabledGated lists, sorted, the gated hosts a build mode supports, minus
 // those in listed.
@@ -198,6 +257,7 @@ func TestCheckToolsGatedHostsAllBuilds(t *testing.T) {
 	base := []toolRow{row("claude-code", true, "claude-code"), row("codex", true, "codex")}
 	plus := func(rows ...toolRow) []toolRow { return append(append([]toolRow(nil), base...), rows...) }
 	chatRow, coworkRow := row("claude-desktop-chat", false, "claude-desktop"), row("cowork", false, "cowork")
+	openCodeRow := row("opencode", true, "opencode")
 	cases := []struct {
 		name         string
 		tools        []toolRow
@@ -205,6 +265,11 @@ func TestCheckToolsGatedHostsAllBuilds(t *testing.T) {
 		problems     bool
 		problemMatch string
 	}{
+		// OpenCode: a row for it fails every build, with or without the
+		// feature, and whatever else is listed.
+		{name: "opencode row", tools: plus(openCodeRow), problems: true, problemMatch: "no release ships"},
+		{name: "opencode row beside gated rows", tools: plus(chatRow, coworkRow, openCodeRow), listed: []string{"claude-desktop", "cowork"}, problems: true, problemMatch: "no release ships"},
+		{name: "opencode row without telemetry", tools: plus(row("opencode", false, "opencode")), problems: true, problemMatch: "no release ships"},
 		{name: "both gated rows", tools: plus(chatRow, coworkRow), listed: []string{"claude-desktop", "cowork"}},
 		{name: "v0.7.0 list (chat only)", tools: plus(chatRow), listed: []string{"claude-desktop"}},
 		{name: "cowork row only", tools: plus(coworkRow), listed: []string{"cowork"}},
@@ -218,10 +283,15 @@ func TestCheckToolsGatedHostsAllBuilds(t *testing.T) {
 	}
 	for _, tc := range cases {
 		for _, m := range buildModes {
-			withFeatures(t, m.chat, m.cowork, func() {
-				problems, pending := checkTools(doc{Schema: 1, Tools: tc.tools}, Hosts(), GatedHosts(), false)
+			withFeatures(t, m.chat, m.cowork, m.opencode, func() {
+				problems, pending, unreleased := checkTools(doc{Schema: 1, Tools: tc.tools}, Hosts(), GatedHosts(), unreleasedHosts(), false)
 				if (len(problems) > 0) != tc.problems {
 					t.Errorf("%s, %+v: problems = %q, want any = %v", tc.name, m, problems, tc.problems)
+				}
+				// A build with OpenCode on is reported, never failed, when
+				// the vendored copy leaves OpenCode out.
+				if want := enabledUnreleased(m.opencode); strings.Join(unreleased, ",") != strings.Join(want, ",") {
+					t.Errorf("%s, %+v: unreleased = %v, want %v", tc.name, m, unreleased, want)
 				}
 				if tc.problems && tc.problemMatch != "" && !strings.Contains(strings.Join(problems, "\n"), tc.problemMatch) {
 					t.Errorf("%s, %+v: problems %q do not mention %s", tc.name, m, problems, tc.problemMatch)
@@ -239,6 +309,9 @@ func TestCheckToolsGatedHostsAllBuilds(t *testing.T) {
 // v0.7.0 list (the Claude desktop app's chat, no Cowork) passes only the
 // build with the chat feature and without Cowork; a list with a Cowork row
 // fails any build without features.Cowork. Misspellings fail every build.
+// No list passes a build with features.OpenCode: no release ships it, so
+// such a build fails the release check whether the list names OpenCode or
+// not.
 func TestCheckToolsReleaseMatchesBuildExactly(t *testing.T) {
 	base := []toolRow{row("claude-code", true, "claude-code"), row("codex", true, "codex")}
 	plus := func(rows ...toolRow) []toolRow { return append(append([]toolRow(nil), base...), rows...) }
@@ -253,13 +326,17 @@ func TestCheckToolsReleaseMatchesBuildExactly(t *testing.T) {
 		{name: "cowork row only", tools: plus(coworkRow), passIn: func(c, w bool) bool { return !c && w }},
 		{name: "without gated rows", tools: base, passIn: func(c, w bool) bool { return !c && !w }},
 		{name: "misspelled gated host", tools: plus(row("claude-desktop-chat", false, "claude-desktp")), passIn: func(c, w bool) bool { return false }},
+		{name: "opencode row", tools: plus(chatRow, row("opencode", true, "opencode")), passIn: func(c, w bool) bool { return false }},
 	}
 	for _, tc := range cases {
 		for _, m := range buildModes {
-			withFeatures(t, m.chat, m.cowork, func() {
-				problems, pending := checkTools(doc{Schema: 1, Tools: tc.tools}, Hosts(), GatedHosts(), true)
+			withFeatures(t, m.chat, m.cowork, m.opencode, func() {
+				problems, pending, _ := checkTools(doc{Schema: 1, Tools: tc.tools}, Hosts(), GatedHosts(), unreleasedHosts(), true)
 				fails := len(problems) > 0 || len(pending) > 0 // the release check fails pending too
-				if want := !tc.passIn(m.chat, m.cowork); fails != want {
+				if m.opencode && !strings.Contains(strings.Join(problems, "\n"), "no release ships") {
+					t.Errorf("%s, %+v: a build with OpenCode must fail the release check as unreleased: %q", tc.name, m, problems)
+				}
+				if want := !tc.passIn(m.chat, m.cowork) || m.opencode; fails != want {
 					t.Errorf("%s, %+v: release check fails = %v (problems %q, pending %v), want %v", tc.name, m, fails, problems, pending, want)
 				}
 				if !m.cowork && hasHost(tc.tools, HostCowork) && !strings.Contains(strings.Join(problems, "\n"), "this release build does not") {
@@ -282,8 +359,9 @@ func hasHost(rows []toolRow, host string) bool {
 }
 
 // The vendored copy is the v0.7.0 docs list: the release check passes it for
-// the release build (-tags kenaz_claude_desktop_chat, no kenaz_cowork) and
-// fails it for every other build mode.
+// the release build (-tags kenaz_claude_desktop_chat, no kenaz_cowork, no
+// kenaz_opencode) and fails it for every other build mode. It names no
+// host that no release ships.
 func TestVendoredListReleaseBuild(t *testing.T) {
 	b, err := os.ReadFile("testdata/supported-tools.json")
 	if err != nil {
@@ -294,13 +372,104 @@ func TestVendoredListReleaseBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, m := range buildModes {
-		withFeatures(t, m.chat, m.cowork, func() {
-			problems, pending := checkTools(d, Hosts(), GatedHosts(), true)
+		withFeatures(t, m.chat, m.cowork, m.opencode, func() {
+			problems, pending, _ := checkTools(d, Hosts(), GatedHosts(), unreleasedHosts(), true)
 			pass := len(problems) == 0 && len(pending) == 0
-			if want := m.chat && !m.cowork; pass != want {
+			if want := m.chat && !m.cowork && !m.opencode; pass != want {
 				t.Errorf("%+v: release check passes = %v (problems %q, pending %v), want %v", m, pass, problems, pending, want)
 			}
 		})
+	}
+	for _, u := range unreleasedHosts() {
+		if hasHost(d.Tools, u.ID) {
+			t.Errorf("the vendored Supported Tools list names %q, which no release ships", u.ID)
+		}
+	}
+}
+
+// vendoredListSHA256 pins the bytes of testdata/supported-tools.json, the
+// copy of the customer-facing Supported Tools list. Modelling OpenCode in
+// these tests must not change the list: update this only together with a
+// docs change (scripts/check-supported-tools.sh compares the copy with the
+// live list at release time).
+const vendoredListSHA256 = "c4d7013c416d539899be6273739795d337f37605b74b0a4331c00941e9663a78"
+
+func TestVendoredListUnchanged(t *testing.T) {
+	b, err := os.ReadFile("testdata/supported-tools.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(b)); got != vendoredListSHA256 {
+		t.Fatalf("testdata/supported-tools.json changed (sha256 %s); it is the customer-facing list and changes only with the docs", got)
+	}
+	var d doc
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, tool := range d.Tools {
+		ids = append(ids, tool.ID+":"+strings.Join(tool.Hosts, "+"))
+	}
+	if got, want := strings.Join(ids, ","), "claude-code:claude-code,codex:codex,claude-desktop-chat:claude-desktop"; got != want {
+		t.Fatalf("vendored rows = %s, want %s", got, want)
+	}
+}
+
+// OpenCode is the third gated dimension. features.OpenCode adds exactly the
+// opencode host, with usage telemetry, and nothing else; without it no
+// build mode supports OpenCode; and it is never a GatedHosts entry, so the
+// lenient vendored-copy check can never accept an OpenCode row.
+func TestUnreleasedHostsMatchFeature(t *testing.T) {
+	for _, m := range buildModes {
+		var hs []Host
+		withFeatures(t, m.chat, m.cowork, m.opencode, func() { hs = Hosts() })
+		var off []Host
+		withFeatures(t, m.chat, m.cowork, false, func() { off = Hosts() })
+		added := []Host{}
+		in := map[string]bool{}
+		for _, h := range off {
+			in[h.ID] = true
+			for _, u := range unreleasedHosts() {
+				if h.ID == u.ID {
+					t.Errorf("%+v: unreleased host %q is supported without its feature", m, h.ID)
+				}
+			}
+		}
+		for _, h := range hs {
+			if !in[h.ID] {
+				added = append(added, h)
+			}
+		}
+		want := []Host{}
+		if m.opencode {
+			want = unreleasedHosts()
+		}
+		if fmt.Sprint(added) != fmt.Sprint(want) {
+			t.Errorf("%+v: features.OpenCode adds %v, want %v", m, added, want)
+		}
+	}
+	for _, g := range GatedHosts() {
+		for _, u := range unreleasedHosts() {
+			if g.ID == u.ID {
+				t.Errorf("GatedHosts lists %q, which no release ships: the vendored-copy check would accept a row for it", g.ID)
+			}
+		}
+	}
+}
+
+// The build's own tag decides features.OpenCode: on exactly with
+// -tags kenaz_opencode (and never in the kenaz_dev variant), so the
+// default and official tag sets ship without OpenCode.
+func TestOpenCodeFollowsBuildTag(t *testing.T) {
+	supports := false
+	for _, h := range Hosts() {
+		supports = supports || h.ID == string(canon.OpenCode)
+	}
+	if supports != features.OpenCode {
+		t.Fatalf("Hosts() lists opencode = %v, features.OpenCode = %v", supports, features.OpenCode)
+	}
+	if features.OpenCode != openCodeTag {
+		t.Fatalf("features.OpenCode = %v in a build with kenaz_opencode tag = %v", features.OpenCode, openCodeTag)
 	}
 }
 
@@ -309,7 +478,7 @@ func TestVendoredListReleaseBuild(t *testing.T) {
 // only its own host.
 func TestGatedHostsMatchFeature(t *testing.T) {
 	ids := func(chat, cowork bool) (hs []Host) {
-		withFeatures(t, chat, cowork, func() { hs = Hosts() })
+		withFeatures(t, chat, cowork, false, func() { hs = Hosts() })
 		return hs
 	}
 	added := func(from, to []Host) (out []Host) {
@@ -348,7 +517,7 @@ func TestGatedHostsMatchFeature(t *testing.T) {
 // with usage telemetry. Claude Code and Codex are always listed.
 func TestHostsClaudeDesktopChatAndCowork(t *testing.T) {
 	for _, m := range buildModes {
-		withFeatures(t, m.chat, m.cowork, func() {
+		withFeatures(t, m.chat, m.cowork, m.opencode, func() {
 			got := map[string]bool{}
 			for _, h := range Hosts() {
 				got[h.ID] = h.UsageTelemetry

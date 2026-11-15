@@ -8,15 +8,15 @@ import (
 	"testing"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
+	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
 // Approval links open the selected environment's
-// dashboard in prod, stage and dev.
+// dashboard in prod and dev.
 func TestDashboardURLPerEnvironment(t *testing.T) {
 	want := map[fleetapi.Env]string{
-		fleetapi.EnvProd:  "https://fleet.kameas.ai",
-		fleetapi.EnvStage: "https://stage.fleet.kameas.ai",
-		fleetapi.EnvDev:   "https://dev.fleet.kameas.ai",
+		fleetapi.EnvProd: "https://fleet.kameas.ai",
+		fleetapi.EnvDev:  "https://dev.fleet.kameas.ai",
 	}
 	for env, base := range want {
 		if got := DashboardBase(env); got != base {
@@ -34,6 +34,37 @@ func TestDashboardURLPerEnvironment(t *testing.T) {
 	}
 }
 
+// A retired environment has no dashboard: no link to one is ever built.
+// The origins are exactly the environments some build still connects to,
+// so no entry can outlive its environment unnoticed.
+func TestNoDashboardForARetiredEnvironment(t *testing.T) {
+	for _, env := range variant.RetiredEnvs {
+		if got := DashboardBase(fleetapi.Env(env)); got != "" {
+			t.Errorf("%s: dashboard %q", env, got)
+		}
+		if got := DashboardURL(fleetapi.Env(env), "/settings"); got != "" {
+			t.Errorf("%s: link %q", env, got)
+		}
+		if got := ApprovalURL(fleetapi.Env(env), fleetapi.Approval{Link: "/x"}); got != "" {
+			t.Errorf("%s: approval link %q", env, got)
+		}
+	}
+	connected := map[string]bool{}
+	for _, v := range variant.Variants {
+		for _, env := range v.AllowedEnvs {
+			connected[env] = true
+			if DashboardBase(fleetapi.Env(env)) == "" {
+				t.Errorf("%s has no dashboard", env)
+			}
+		}
+	}
+	for env, origin := range dashboardOrigins {
+		if !connected[string(env)] || variant.Retired(string(env)) {
+			t.Errorf("%s (%s) is an environment no build connects to", env, origin)
+		}
+	}
+}
+
 // Only dashboard-relative links are followed; anything that could leave the
 // selected environment's origin falls back to its dashboard root.
 func TestDashboardURLRejectsForeignLinks(t *testing.T) {
@@ -41,7 +72,7 @@ func TestDashboardURLRejectsForeignLinks(t *testing.T) {
 		"https://evil.example/approve", "//evil.example/x", "/\\evil.example", "settings",
 		"/a b", "/x\x00", "javascript:alert(1)", "/" + strings.Repeat("a", 600),
 	} {
-		if got := DashboardURL(fleetapi.EnvStage, link); got != "https://stage.fleet.kameas.ai/" {
+		if got := DashboardURL(fleetapi.EnvDev, link); got != "https://dev.fleet.kameas.ai/" {
 			t.Errorf("link %q resolved to %q", link, got)
 		}
 	}
@@ -50,7 +81,7 @@ func TestDashboardURLRejectsForeignLinks(t *testing.T) {
 // The status model, `kenaz status` text and the SessionStart banner carry
 // the selected environment's link, never another environment's.
 func TestPendingApprovalLinksFollowEnv(t *testing.T) {
-	for _, env := range []fleetapi.Env{fleetapi.EnvProd, fleetapi.EnvStage, fleetapi.EnvDev} {
+	for _, env := range []fleetapi.Env{fleetapi.EnvProd, fleetapi.EnvDev} {
 		f := newFake(allClasses()...)
 		f.approvals = []fleetapi.Approval{
 			{ID: "a1", Kind: "legal_acceptance", Title: "Terms", Blocking: true, Required: true},

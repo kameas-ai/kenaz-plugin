@@ -101,15 +101,31 @@ func doctorBundle(o Options) []Check {
 			if mk.official() {
 				pinned, why = o.releasePin(h, mk, verified)
 			}
+			// What Codex runs is its own copy of the plugin, made at
+			// install time, not the pinned clone.
+			stale := ""
+			if h == harnessCodex && pinned {
+				stale = o.codexCacheStale()
+			}
 			switch {
 			case h == harnessClaude && mk.Inline && !pinned:
 				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin marketplace is declared inline (managed or user settings) and is not pinned to this release's commit; deploy the extraKnownMarketplaces entry from this release's `%s setup print-managed claude`", variant.Current.Binary)})
-			case !mk.official() || (!mk.Enabled && !mk.Inline):
-				cs = append(cs, Check{h.label(), "warn", "the Kenaz plugin from GitHub is no longer registered or enabled; re-run setup"})
+			// The same reading of the host's files as setup: turned off
+			// means explicitly off (mk.Off). A plugin that is installed
+			// but not listed as enabled may be enabled by settings setup
+			// cannot read, so it is not reported as off.
+			case !mk.official():
+				cs = append(cs, Check{h.label(), "warn", "the Kenaz plugin marketplace from GitHub is no longer registered; re-run setup"})
+			case mk.Off:
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin (%s) is installed but turned off, so it will not run. %s", bundlePluginID, enableHint(h))})
+			case !mk.Installed && !mk.Inline:
+				cs = append(cs, Check{h.label(), "warn", "the Kenaz plugin from GitHub is no longer installed; re-run setup"})
 			case !pinned:
-				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin from GitHub %s; run `%s init` from a release download to use its verified copy", why, variant.Current.Binary)})
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin from GitHub %s; run `%s` from a release download to use its verified copy", why, o.initCmd())})
+			case h == harnessCodex && stale != "":
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the marketplace is pinned to this release, but the copy of the Kenaz plugin that Codex runs %s; re-run setup to reinstall it", stale)})
 			case o.KenazOnPath != nil && !o.KenazOnPath():
-				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin from GitHub starts %[1]s from PATH, and %[1]s is not on PATH; run `%[1]s init`", variant.Current.Binary)})
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the Kenaz plugin from GitHub starts %[1]s from PATH, and %[1]s is not on PATH; run `%[2]s`", variant.Current.Binary, o.initCmd())})
 			default:
 				cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin from GitHub (%s) pinned to %s, launching %s from PATH", OfficialRepo, mk.Pin, variant.Current.Binary)})
 			}
@@ -119,20 +135,20 @@ func doctorBundle(o Options) []Check {
 			continue
 		}
 		src, enabled := o.registeredMarketplace(h)
-		exe, broken := registeredLauncher(fs.Bundle)
+		exe, broken := o.registeredLauncher(fs.Bundle)
 		switch {
 		case broken != "":
 			cs = append(cs, Check{h.label(), "fail", broken})
 		case src != fs.Bundle.Rendered || !enabled:
 			cs = append(cs, Check{h.label(), "warn", "the bundle plugin registration was changed outside setup; re-run setup"})
 		case bundle.StablePath(exe) != exe:
-			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s, which an upgrade removes; run `%s init` to register it through %s", exe, variant.Current.Binary, bundle.StablePath(exe))})
+			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s, which an upgrade removes; run `%s` to register it through %s", exe, o.initCmd(), bundle.StablePath(exe))})
 		case fs.Bundle.Launcher == "" && isHomebrewCask(exe):
-			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s from Homebrew's versioned directory, which `brew upgrade` removes; run `%s init`", exe, variant.Current.Binary)})
+			cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the plugin launches %s from Homebrew's versioned directory, which `brew upgrade` removes; run `%s`", exe, o.initCmd())})
 		default:
 			cur := currentBundleVersion(o)
 			if cur != "" && cur != fs.Bundle.Version {
-				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the registered plugin files are from %[1]s %[2]s and this %[1]s is %[3]s; run `%[1]s init` to refresh them", variant.Current.Binary, fs.Bundle.Version, cur)})
+				cs = append(cs, Check{h.label(), "warn", fmt.Sprintf("the registered plugin files are from %[1]s %[2]s and this %[1]s is %[3]s; run `%[4]s` to refresh them", variant.Current.Binary, fs.Bundle.Version, cur, o.initCmd())})
 				continue
 			}
 			cs = append(cs, Check{h.label(), "ok", fmt.Sprintf("plugin registered from bundle %s (launches %s)", fs.Bundle.Version, exe)})
@@ -163,7 +179,7 @@ func currentBundleVersion(o Options) string {
 // rendered plugin launches, and a non-empty problem when that executable
 // is gone (for example the versioned Homebrew directory `brew upgrade`
 // deleted, from state written before the launcher was recorded).
-func registeredLauncher(reg *BundleReg) (exe, problem string) {
+func (o Options) registeredLauncher(reg *BundleReg) (exe, problem string) {
 	// A bundle that is still there must still verify. One that is gone is
 	// expected after an upgrade removed its version, as long as the
 	// recorded launcher (a version-independent path) still exists.
@@ -177,14 +193,14 @@ func registeredLauncher(reg *BundleReg) (exe, problem string) {
 	if reg.Launcher != "" {
 		fi, err := os.Stat(reg.Launcher)
 		if err != nil || fi.IsDir() {
-			return reg.Launcher, fmt.Sprintf("the plugin launches %[1]s, which no longer exists; run `%[2]s init` to register this %[2]s again", reg.Launcher, variant.Current.Binary)
+			return reg.Launcher, fmt.Sprintf("the plugin launches %[1]s, which no longer exists; run `%[3]s` to register this %[2]s again", reg.Launcher, variant.Current.Binary, o.initCmd())
 		}
 		return reg.Launcher, ""
 	}
 	if exe == "" {
 		// Before the launcher was recorded, the plugin launched the
 		// bundle's own executable, and the bundle is gone.
-		return "", fmt.Sprintf("the bundle at %[1]s is missing, so the plugin cannot start; run `%[2]s init` to register this %[2]s again", reg.Root, variant.Current.Binary)
+		return "", fmt.Sprintf("the bundle at %[1]s is missing, so the plugin cannot start; run `%[3]s` to register this %[2]s again", reg.Root, variant.Current.Binary, o.initCmd())
 	}
 	return exe, ""
 }
@@ -193,8 +209,10 @@ func registeredLauncher(reg *BundleReg) (exe, problem string) {
 // Code or Codex plugin registration whose launcher no longer exists (for
 // example after `brew upgrade` removed the version a pre-0.6.0 setup
 // registered), as one sentence each. It only reads files; the fix is
-// `kenaz init` (or `kenaz setup claude|codex`), which re-registers.
+// `kenaz init` (or `kenaz setup claude|codex`), which re-registers, with
+// --env when stateDir is not the build's default environment's.
 func BrokenRegistrations(stateDir string) []string {
+	initCmd := Options{StateDir: stateDir}.initCmd()
 	state, err := loadState(stateDir)
 	if err != nil {
 		return nil
@@ -215,14 +233,14 @@ func BrokenRegistrations(stateDir string) []string {
 			missing = err != nil
 		}
 		if missing {
-			out = append(out, fmt.Sprintf("the Kenaz plugin in %[1]s points at a %[3]s that no longer exists (it was registered from %[2]s). Run `%[3]s init` to fix it.", h.label(), fs.Bundle.Root, variant.Current.Binary))
+			out = append(out, fmt.Sprintf("the Kenaz plugin in %[1]s points at a %[3]s that no longer exists (it was registered from %[2]s). Run `%[4]s` to fix it.", h.label(), fs.Bundle.Root, variant.Current.Binary, initCmd))
 			continue
 		}
 		// The state directory moved (to ~/.kenaz/plugin): the host still
 		// loads the plugin files from the old location, through the link
 		// left there or not at all.
 		if reg := fs.Bundle.registered(); !within(stateDir, reg) {
-			out = append(out, fmt.Sprintf("the Kenaz plugin in %[1]s still uses its files from %[2]s, where an earlier version kept them. Run `%[3]s init` to fix it.", h.label(), filepath.Dir(reg), variant.Current.Binary))
+			out = append(out, fmt.Sprintf("the Kenaz plugin in %[1]s still uses its files from %[2]s, where an earlier version kept them. Run `%[3]s` to fix it.", h.label(), filepath.Dir(reg), initCmd))
 		}
 	}
 	return out
@@ -230,24 +248,54 @@ func BrokenRegistrations(stateDir string) []string {
 
 // Registrations returns, from the setup state in stateDir, the path each
 // Claude Code ("claude") or Codex ("codex") plugin registration loads the
-// plugin from, as recorded, whichever build wrote it. It only reads files;
-// a missing or unreadable record has none.
+// plugin from, as recorded, whichever build wrote it. In builds with
+// OpenCode support it also has the relay state directory the OpenCode
+// adapter entry was given ("opencode"), which opencode.json embeds. It
+// only reads files; a missing or unreadable record has none.
 func Registrations(stateDir string) map[string]string {
-	out := map[string]string{}
+	_, regs := RecordedRegistrations(stateDir)
+	return regs
+}
+
+// RecordedRegistrations is Registrations together with the build that
+// recorded them (a variant name; kenaz for records from before builds were
+// recorded). One build's `init` or `setup` never changes what another
+// build registered, so a record replaces another only within one build.
+func RecordedRegistrations(stateDir string) (build string, regs map[string]string) {
+	regs = map[string]string{}
 	b, err := os.ReadFile(filepath.Join(stateDir, stateFile))
 	if err != nil {
-		return out
+		return variant.Kenaz.Name, regs
 	}
 	var s State
 	if json.Unmarshal(b, &s) != nil {
-		return out
+		return variant.Kenaz.Name, regs
 	}
 	for host, fs := range map[string]*FileState{"claude": s.Claude, "codex": s.Codex} {
 		if fs != nil && fs.Bundle != nil && fs.Bundle.Rendered != "" {
-			out[host] = fs.Bundle.Rendered
+			regs[host] = fs.Bundle.Rendered
 		}
 	}
-	return out
+	if features.OpenCode && s.OpenCode != nil {
+		if dir := adapterStateDir(json.RawMessage(s.OpenCode.Keys[openCodeKeyPlugin].Written)); dir != "" {
+			regs["opencode"] = dir
+		}
+	}
+	return s.build(), regs
+}
+
+// adapterStateDir returns the state_dir option of an OpenCode "plugin"
+// entry for the Kenaz adapter (["<adapter dir>", {"state_dir": ...}]), or
+// "" when raw is not one.
+func adapterStateDir(raw json.RawMessage) string {
+	var tuple []json.RawMessage
+	var opts struct {
+		StateDir string `json:"state_dir"`
+	}
+	if json.Unmarshal(raw, &tuple) == nil && len(tuple) > 1 {
+		_ = json.Unmarshal(tuple[1], &opts)
+	}
+	return opts.StateDir
 }
 
 // Within reports whether p is dir or inside it (lexically).
@@ -310,7 +358,7 @@ func doctorClaude(ctx context.Context, o Options, port int, run Runner) []Check 
 	}
 	if v, ok := env.get(claudeEndpointKey); ok {
 		s, _ := rawString(v)
-		checkEndpoint(add, s, port)
+		o.checkUserEndpoint(harnessClaude, add, s, port)
 	} else {
 		add("warn", "telemetry is not routed to the relay; run `kenaz setup claude`")
 	}
@@ -374,7 +422,7 @@ func doctorCodex(ctx context.Context, o Options, port int, run Runner) []Check {
 				continue
 			}
 			for _, m := range tomlEndpointRe.FindAllStringSubmatch(joinLines(lines[e.start:e.end]), -1) {
-				checkEndpoint(add, m[1], port)
+				o.checkUserEndpoint(harnessCodex, add, m[1], port)
 			}
 		}
 	}
@@ -525,15 +573,8 @@ func doctorOpenCode(ctx context.Context, o Options, run Runner) []Check {
 			continue
 		}
 		found = true
-		var tuple []json.RawMessage
-		var opts struct {
-			StateDir string `json:"state_dir"`
-		}
-		if json.Unmarshal(p, &tuple) == nil && len(tuple) > 1 {
-			_ = json.Unmarshal(tuple[1], &opts)
-		}
-		if opts.StateDir != o.StateDir {
-			add("warn", "the Kenaz adapter reports to %q, but this environment's relay state is %q; re-run `kenaz setup opencode`", opts.StateDir, o.StateDir)
+		if sd := adapterStateDir(p); sd != o.StateDir {
+			add("warn", "the Kenaz adapter reports to %q, but this environment's relay state is %q; re-run `kenaz setup opencode`", sd, o.StateDir)
 		} else {
 			add("ok", "the Kenaz adapter is loaded from %s", spec)
 		}

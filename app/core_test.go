@@ -384,7 +384,7 @@ func TestStartupReportsBrokenRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, errb := h.run(t, "status", "--json")
-	if !strings.Contains(errb, "Claude Code points at a "+variant.Current.Binary+" that no longer exists") || !strings.Contains(errb, "`"+variant.Current.Binary+" init`") {
+	if !strings.Contains(errb, "Claude Code points at a "+variant.Current.Binary+" that no longer exists") || !strings.Contains(errb, "`"+variant.Current.Command("init", "dev")+"`") {
 		t.Fatalf("status stderr: %q", errb)
 	}
 	for _, args := range [][]string{{"version"}, {"hook", "session-end"}} {

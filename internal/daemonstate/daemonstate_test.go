@@ -18,7 +18,7 @@ func TestEnv(t *testing.T) {
 	cases := map[string]string{
 		"":                         def,
 		"dev":                      "dev",
-		"stage":                    "stage",
+		"stage":                    "error", // retired
 		"${user_config.fleet_env}": def,
 		"bogus":                    "error",
 	}
@@ -39,8 +39,16 @@ func TestEnv(t *testing.T) {
 		}
 	}
 	// Every env variable selects it, in order, like config.ResolveEnv.
-	if got, _ := resolver(map[string]string{"CLAUDE_PLUGIN_OPTION_FLEET_ENV": "stage"}, "linux").Env(); got != "stage" {
+	if got, _ := resolver(map[string]string{"CLAUDE_PLUGIN_OPTION_FLEET_ENV": "dev"}, "linux").Env(); got != "dev" {
 		t.Errorf("plugin option: %q", got)
+	}
+	// The retired environment is refused by name, whichever variable selects it.
+	want := map[string]string{
+		"kenaz":     "The stage environment has been retired. Use dev or prod. (CLAUDE_PLUGIN_OPTION_FLEET_ENV=stage)",
+		"kenaz-dev": "The stage environment has been retired. Use dev. (CLAUDE_PLUGIN_OPTION_FLEET_ENV=stage)",
+	}[variant.Current.Name]
+	if _, err := resolver(map[string]string{"CLAUDE_PLUGIN_OPTION_FLEET_ENV": "stage"}, "linux").Env(); err == nil || err.Error() != want {
+		t.Errorf("stage: %v, want %q", err, want)
 	}
 }
 

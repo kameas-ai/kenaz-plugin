@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -141,6 +143,9 @@ func TestInitFullFlow(t *testing.T) {
 }
 
 func TestInitAlreadyOnPathAndYes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("not portable: the test builds a POSIX PATH (colon-separated, /usr/bin) and a bash profile; on Windows the list separator is ';' and init edits the user Path in the registry")
+	}
 	home := t.TempDir()
 	f := &fakeInit{t: t, signedIn: true, found: allApps()[:1]}
 	d := f.deps(home, "/bin/bash", "", "", false)
@@ -202,6 +207,49 @@ func TestInitWindowsPath(t *testing.T) {
 	// Idempotent.
 	if code := doInit(&out, &errb, initOptions{yes: true}, d); code != ExitOK || f.ue.path != dir+`;C:\tools` || f.ue.broadcast != 1 {
 		t.Fatalf("%+v", f.ue)
+	}
+}
+
+// readFunc is an io.Reader that runs a function: here, what happens while
+// the question is open.
+type readFunc func([]byte) (int, error)
+
+func (f readFunc) Read(p []byte) (int, error) { return f(p) }
+
+// A user Path changed while the question is open is not overwritten:
+// init writes nothing and says so.
+func TestInitWindowsPathChangedWhileAsking(t *testing.T) {
+	f := &fakeInit{t: t, signedIn: true, ue: &fakeUserEnv{path: `C:\tools`, expand: true}}
+	d := f.deps(t.TempDir(), "", `C:\Windows`, "", true)
+	d.goos = "windows"
+	d.exe = `C:\Users\u\AppData\Local\kameas\kenaz\install\current\bin\kenaz.exe`
+	answered := false
+	d.in = bufio.NewReader(readFunc(func(p []byte) (int, error) {
+		if answered {
+			return 0, io.EOF
+		}
+		answered = true
+		// Another installer adds its folder before the answer arrives.
+		f.ue.path = `C:\other;C:\tools`
+		return copy(p, "y\n"), nil
+	}))
+	var out, errb bytes.Buffer
+	if code := doInit(&out, &errb, initOptions{noBrowser: true}, d); code != ExitOK {
+		t.Fatal(code, errb.String())
+	}
+	if !answered {
+		t.Fatal("the question was not asked")
+	}
+	if f.ue.path != `C:\other;C:\tools` || f.ue.broadcast != 0 {
+		t.Fatalf("the newer Path was lost: %+v", f.ue)
+	}
+	if !strings.Contains(out.String(), "Your user Path changed after") || strings.Contains(out.String(), "Updated your user Path") {
+		t.Fatal(out.String())
+	}
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "path-added") {
+			t.Fatalf("recorded as added: %v", f.calls)
+		}
 	}
 }
 
@@ -368,5 +416,52 @@ func TestInitMacBashKeepsProfile(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(home, ".profile")); !strings.Contains(string(got), variant.Current.Binary+" PATH") {
 		t.Fatalf("%s", got)
+	}
+}
+
+// editOnRead answers "y" to the PATH question, after changing the profile
+// the way a user's editor would while the question is open.
+type editOnRead struct {
+	path string
+	done bool
+}
+
+func (r *editOnRead) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	r.done = true
+	if err := os.WriteFile(r.path, []byte("export A=1\nexport EDITED=1\n"), 0o600); err != nil {
+		return 0, err
+	}
+	return copy(p, "y\n"), nil
+}
+
+// A profile edited while the PATH question is open is left as the user
+// saved it: init writes nothing and says to run again.
+func TestInitProfileChangedWhileAsking(t *testing.T) {
+	home := t.TempDir()
+	rc := filepath.Join(home, ".zshrc")
+	os.WriteFile(rc, []byte("export A=1\n"), 0o600)
+	f := &fakeInit{t: t, signedIn: true}
+	d := f.deps(home, "/bin/zsh", "/usr/bin:/bin", "", true)
+	d.in = bufio.NewReader(&editOnRead{path: rc})
+	var out, errb bytes.Buffer
+	if code := doInit(&out, &errb, initOptions{}, d); code != ExitOK {
+		t.Fatalf("code %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if got, _ := os.ReadFile(rc); string(got) != "export A=1\nexport EDITED=1\n" {
+		t.Fatalf("the edit made while the question was open was lost:\n%s", got)
+	}
+	if _, err := os.Lstat(rc + pathenv.BackupSuffix); !os.IsNotExist(err) {
+		t.Fatal("a backup was left although nothing was changed")
+	}
+	if s := out.String(); !strings.Contains(s, "changed after") || !strings.Contains(s, "init again") || !strings.Contains(s, "export PATH=") {
+		t.Fatalf("output:\n%s", s)
+	}
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "path-added") {
+			t.Fatalf("PATH reported as added: %v", f.calls)
+		}
 	}
 }

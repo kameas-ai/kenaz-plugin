@@ -2,7 +2,7 @@
 
 Run `kenaz memory on`. One notice, one Enter: capture, sync and your earlier notes are set up. `kenaz memory off` stops capture and sync. The rest of this page is what's underneath.
 
-Automatic capture is behind the build tag `kenaz_memory_capture`, and no release sets it. This is how staff run it without a customer release, and what has to happen before customers get it.
+Automatic capture is behind the build tag `kenaz_memory_capture`. The official build has compiled it since 0.8.x, together with `kenaz_memory_project_scope` (project notes) and `kenaz_context_library` (context files); the public build in this repository doesn't. Where it is compiled in, it stays off until a person turns it on. This page is how staff build and run it from source, and what has to hold before the tag is removed.
 
 ## Turning it on
 
@@ -48,4 +48,4 @@ Deleting `kenaz_memory_capture` means making `features.MemoryCapture` true in ev
 - Fleet's quotas have been raised: steady use fills the old defaults within months. Kenaz reads each account's limits from Fleet.
 - A real Codex run shows the hooks registered, trusted and doing nothing.
 
-A release that carries this hooks file reaches every customer even with the tag still in place. Each prompt, tool call and stop then starts the program, which returns in about 12 ms without reading the session, and Codex users get the trust prompt. Decide that on purpose.
+The official build carries this hooks file, so it reaches every customer. Until a person turns capture on, each prompt, tool call and stop starts the program, which returns in about 12 ms without reading the session, and Codex users get the trust prompt.

@@ -37,19 +37,19 @@ func TestBuildShareNode(t *testing.T) {
 }
 
 func TestBuildShareNodeRejects(t *testing.T) {
-	ok := ShareInput{Title: "t", Body: "b", Kind: "fact"}
+	ok := ShareInput{Title: "t", Body: "b", Kind: "explanation"}
 	cases := map[string]struct {
 		in   ShareInput
 		team string
 	}{
-		"empty title":   {ShareInput{Body: "b", Kind: "fact"}, "t"},
-		"long title":    {ShareInput{Title: strings.Repeat("x", MaxTitleLen+1), Body: "b", Kind: "fact"}, "t"},
-		"empty body":    {ShareInput{Title: "t", Body: "  ", Kind: "fact"}, "t"},
-		"big body":      {ShareInput{Title: "t", Body: strings.Repeat("x", MaxShareBodyLen+1), Kind: "fact"}, "t"},
+		"empty title":   {ShareInput{Body: "b", Kind: "explanation"}, "t"},
+		"long title":    {ShareInput{Title: strings.Repeat("x", MaxTitleLen+1), Body: "b", Kind: "explanation"}, "t"},
+		"empty body":    {ShareInput{Title: "t", Body: "  ", Kind: "explanation"}, "t"},
+		"big body":      {ShareInput{Title: "t", Body: strings.Repeat("x", MaxShareBodyLen+1), Kind: "explanation"}, "t"},
 		"bad kind":      {ShareInput{Title: "t", Body: "b", Kind: "skill"}, "t"},
 		"artifact kind": {ShareInput{Title: "t", Body: "b", Kind: "artifact"}, "t"},
 		"no team":       {ok, ""},
-		"bad utf8":      {ShareInput{Title: "t", Body: "\xff", Kind: "fact"}, "t"},
+		"bad utf8":      {ShareInput{Title: "t", Body: "\xff", Kind: "explanation"}, "t"},
 	}
 	for name, c := range cases {
 		if _, err := BuildShareNode(c.in, c.team, fixedNow, nil); err == nil {

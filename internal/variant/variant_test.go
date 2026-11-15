@@ -59,7 +59,7 @@ func TestPortsIsACopy(t *testing.T) {
 // and a machine can have both builds installed. Values every build uses
 // belong in Shared, not in Identity.
 var sharedIdentityFields = map[string]bool{
-	"AllowedEnvs": true, // both connect to dev and stage
+	"AllowedEnvs": true, // both connect to dev
 }
 
 // Every identity field differs between the builds, compared by
@@ -80,7 +80,7 @@ func TestIdentityFieldsDiffer(t *testing.T) {
 // The staff dev build never connects to prod and is never published.
 func TestKenazDev(t *testing.T) {
 	d := KenazDev
-	if d.Allowed("prod") || !d.Allowed("dev") || !d.Allowed("stage") || d.DefaultEnv != "dev" {
+	if d.Allowed("prod") || !d.Allowed("dev") || len(d.AllowedEnvs) != 1 || d.DefaultEnv != "dev" {
 		t.Fatalf("dev envs: default %q, allowed %v", d.DefaultEnv, d.AllowedEnvs)
 	}
 	if d.MarketplaceRepo != "" {
@@ -91,6 +91,28 @@ func TestKenazDev(t *testing.T) {
 	}
 	if !slices.Contains(Kenaz.AllowedEnvs, "prod") {
 		t.Error("kenaz does not connect to prod")
+	}
+}
+
+// The stage environment was retired: no build connects to it, and each
+// build's refusal names only what that build can use.
+func TestStageIsRetired(t *testing.T) {
+	if !Retired("stage") || Retired("prod") || Retired("dev") || Retired("") {
+		t.Fatalf("RetiredEnvs = %v", RetiredEnvs)
+	}
+	for _, v := range Variants {
+		if v.Allowed("stage") {
+			t.Errorf("%s still connects to stage", v.Name)
+		}
+		if Retired(v.DefaultEnv) {
+			t.Errorf("%s defaults to a retired env", v.Name)
+		}
+	}
+	if got := Kenaz.RetiredMessage("stage"); got != "The stage environment has been retired. Use dev or prod." {
+		t.Errorf("kenaz: %q", got)
+	}
+	if got := KenazDev.RetiredMessage("stage"); got != "The stage environment has been retired. Use dev." {
+		t.Errorf("kenaz-dev: %q", got)
 	}
 }
 
@@ -121,5 +143,26 @@ func TestApprovalsCSRFCookieFor(t *testing.T) {
 	}
 	if got := Shared.ApprovalsCSRFCookieFor("dev"); got != "kenaz_dev_approvals_csrf" {
 		t.Errorf("dev cookie %q", got)
+	}
+}
+
+func TestCommandNamesNonDefaultEnv(t *testing.T) {
+	for _, tc := range []struct {
+		id       Identity
+		sub, env string
+		want     string
+	}{
+		{Kenaz, "init", "prod", "kenaz init"},
+		{Kenaz, "init", "dev", "kenaz init --env dev"},
+		{Kenaz, "setup opencode", "stage", "kenaz setup opencode"}, // retired
+		{Kenaz, "init", "", "kenaz init"},
+		{Kenaz, "init", "elsewhere", "kenaz init"},
+		{KenazDev, "init", "dev", "kenaz-dev init"},
+		{KenazDev, "init", "stage", "kenaz-dev init"}, // retired
+		{KenazDev, "init", "prod", "kenaz-dev init"},  // not one of its envs
+	} {
+		if got := tc.id.Command(tc.sub, tc.env); got != tc.want {
+			t.Errorf("%s.Command(%q, %q) = %q, want %q", tc.id.Name, tc.sub, tc.env, got, tc.want)
+		}
 	}
 }
