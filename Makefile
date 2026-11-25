@@ -95,3 +95,9 @@ check: fmt-check vet test check-no-policy check-names check-legacy-name check-pr
 
 clean:
 	rm -rf bin
+
+# The OpenAI directory package for the hosted Kameas Fleet connector
+# (openai/SUBMISSION.md). TestOpenAIPackage, part of `test`, checks it.
+.PHONY: openai-package
+openai-package:
+	scripts/build-openai-package.sh

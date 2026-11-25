@@ -85,12 +85,19 @@ type Session struct {
 	Caps fleetapi.Capabilities
 }
 
+// Teams is the member's teams, split into those they belong to and those they
+// can only read. Every team a tool picks or checks comes from here.
+func (s Session) Teams() Teams { return TeamsOfMe(s.Me) }
+
 // Check reports whether op can be attempted. It mirrors Fleet's own gates
 // so the user gets a clear remedy instead of a bare 403; Fleet stays the
 // enforcer. Write operations also refuse locally while uploads are held for
 // lockdown, org pause or a blocking approval.
 func Check(ctx context.Context, p fleetapi.Provider, st StatusSource, op Op) (Session, *ToolError) {
-	me, err := p.Me().Get(ctx)
+	// The context tools handle teams the member can only read: every team they
+	// pick or check goes through Session.Teams, which shares only to the member's
+	// own. That is the promise that asks for those rows.
+	me, err := p.Me().Get(fleetapi.WithInheritedTeams(ctx))
 	if err != nil {
 		return Session{}, MapError(err)
 	}
@@ -225,6 +232,13 @@ func MapError(err error) *ToolError {
 			return &ToolError{Code: CodeLockdown, Message: "Your organization has paused sharing from Kameas Fleet (emergency lockdown)."}
 		case "tier_required", "capability_required":
 			return tierRequired("team")
+		}
+		// Fleet shares only to a team the member belongs to. Reading a team's context,
+		// as a member of a team above or below it, isn't belonging to it, and no
+		// role changes that: an admin can't lift it, so don't send the person to one.
+		if ae.Code == CodeNotTeamMember {
+			return &ToolError{Code: CodeNotTeamMember, Need: safeCode(ae.Code), Message: "Nothing was shared: Kameas Fleet refused this because you are not a member of that team.",
+				Remedy: "You can share only to teams you belong to; team_members lists them, and the teams whose context you can only read."}
 		}
 		// A stale write or someone else's node: neither is about the person's role.
 		if ae.Code == "not_permitted" {

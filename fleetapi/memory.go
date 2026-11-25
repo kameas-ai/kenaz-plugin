@@ -380,10 +380,15 @@ type MemoryExportTrailer struct {
 	Count      int    `json:"count"`
 }
 
-// RetryAfter reports a 429's back-off hint.
+// RetryAfter reports the back-off hint of a refusal Fleet sends one with: a
+// 429, a 503 (busy) and erase_in_progress on any status. ok says err is such
+// a refusal; the duration is zero when it carried no usable hint.
+//
+// The duration is whatever was sent, by Fleet or by anything between: it is
+// not bounded here. A caller that waits on it must bound it for its own use.
 func RetryAfter(err error) (time.Duration, bool) {
 	var ae *APIError
-	if !errors.As(err, &ae) || (ae.Status != 429 && ae.Code != CodeEraseInProgress) {
+	if !errors.As(err, &ae) || (ae.Status != 429 && ae.Status != 503 && ae.Code != CodeEraseInProgress) {
 		return 0, false
 	}
 	if n, e := strconv.Atoi(ae.Details["retry_after_seconds"]); e == nil && n > 0 {

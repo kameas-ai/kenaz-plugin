@@ -67,6 +67,13 @@ var messages = map[approvals.Status]string{
 	approvals.StatusFailed:      "Approved, but the destination refused the write; see result.error.",
 }
 
+// failures says in words what a failed write's result.error means, for the codes
+// whose meaning the generic line would get wrong.
+var failures = map[string]string{
+	// Kameas Fleet shares only to a team the member belongs to.
+	"not_team_member": "Approved, but the share was refused because the user is not a member of that team. Nothing was shared. They can share only to teams they belong to; team_members lists them. See result.error.",
+}
+
 // Status implements approval_status.
 func Status(ctx context.Context, p approvals.Preparer, in StatusInput) (StatusOutput, error) {
 	if !approvals.ValidID(in.RequestID) {
@@ -85,6 +92,14 @@ func Status(ctx context.Context, p approvals.Preparer, in StatusInput) (StatusOu
 	out := StatusOutput{RequestID: in.RequestID, Status: string(st), Message: messages[st]}
 	if len(res) > 0 && json.Valid(res) {
 		out.Result = res
+	}
+	if st == approvals.StatusFailed {
+		var failed struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(res, &failed) == nil && failures[failed.Error] != "" {
+			out.Message = failures[failed.Error]
+		}
 	}
 	if st == approvals.StatusPending {
 		out.ApproveURL, _ = p.ApprovalURL(ctx, in.RequestID)

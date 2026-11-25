@@ -42,7 +42,8 @@ func SampleEnrollBody() fleetapi.EnrollBody {
 // stored team tree: the default (all-members) team at the root, a team
 // directly under it, and that team's sub-team. The default team is first, as
 // Fleet lists it, and is never a parent or in a path. Slug and Membership are
-// left empty, as Fleet does not send them yet. The unofficial stub refuses
+// left empty, as a Fleet that predates them sends the list
+// (SampleTeamsWithInherited has both). The unofficial stub refuses
 // Me.Get, so it has no teams to fill; fakes and the official adapter's tests use
 // this.
 func SampleTeams() []fleetapi.TeamRef {
@@ -56,6 +57,37 @@ func SampleTeams() []fleetapi.TeamRef {
 		{ID: platform, Name: "Platform", Role: fleetapi.TeamRoleLead, Depth: 1, Path: []string{}},
 		{ID: payments, Name: "Payments", Role: fleetapi.TeamRoleMember, ParentTeamID: platform, Depth: 2, Path: []string{platform}},
 	}
+}
+
+// SampleTeamsWithInherited is MeInfo.Teams as Fleet sends it once reading
+// context across the team tree is on, for a member of the default team and of
+// Payments: those two rows are direct, and three more are inherited (teams
+// the member can read context from but is not in, so they carry no role):
+// Platform, the ancestor of Payments, and the two teams below Payments.
+func SampleTeamsWithInherited() []fleetapi.TeamRef {
+	const (
+		everyone = "0b8f6f0e-0000-4000-8000-000000000001"
+		platform = "0b8f6f0e-0000-4000-8000-000000000002"
+		payments = "0b8f6f0e-0000-4000-8000-000000000003"
+		billing  = "0b8f6f0e-0000-4000-8000-000000000004"
+		ledgers  = "0b8f6f0e-0000-4000-8000-000000000005"
+	)
+	return []fleetapi.TeamRef{
+		{ID: everyone, Name: "Everyone", Slug: "everyone", IsDefault: true, Role: fleetapi.TeamRoleMember, Depth: 0, Path: []string{}, Membership: fleetapi.TeamMembershipDirect},
+		{ID: platform, Name: "Platform", Slug: "platform", Depth: 1, Path: []string{}, Membership: fleetapi.TeamMembershipInherited},
+		{ID: payments, Name: "Payments", Slug: "payments", Role: fleetapi.TeamRoleLead, ParentTeamID: platform, Depth: 2, Path: []string{platform}, Membership: fleetapi.TeamMembershipDirect},
+		{ID: billing, Name: "Billing", Slug: "billing", ParentTeamID: payments, Depth: 3, Path: []string{platform, payments}, Membership: fleetapi.TeamMembershipInherited},
+		{ID: ledgers, Name: "Ledgers", Slug: "ledgers", ParentTeamID: billing, Depth: 4, Path: []string{platform, payments, billing}, Membership: fleetapi.TeamMembershipInherited},
+	}
+}
+
+// SampleTeamsDefaultInherited is SampleTeamsWithInherited for a member with
+// no membership row on the default team: Fleet still lists it, flagged, but
+// as an inherited row, so the member reads it and cannot share to it.
+func SampleTeamsDefaultInherited() []fleetapi.TeamRef {
+	teams := SampleTeamsWithInherited()
+	teams[0].Role, teams[0].Membership = "", fleetapi.TeamMembershipInherited
+	return teams
 }
 
 // Run executes the suite against p.

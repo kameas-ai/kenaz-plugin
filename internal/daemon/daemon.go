@@ -26,6 +26,7 @@ import (
 	"github.com/kameas-ai/kenaz-plugin/internal/consent"
 	"github.com/kameas-ai/kenaz-plugin/internal/enroll"
 	"github.com/kameas-ai/kenaz-plugin/internal/spool"
+	"github.com/kameas-ai/kenaz-plugin/internal/usertext"
 	"github.com/kameas-ai/kenaz-plugin/internal/variant"
 )
 
@@ -556,6 +557,14 @@ func (d *Daemon) Status(ctx context.Context) Status {
 		s.OrgName = d.me.OrgName
 		s.OrgPaused = d.me.OrgPaused
 		s.PausedCategory = d.me.PausedCategory
+		// Teams the provider couldn't hand over, so that a person who seems to be
+		// in no team can tell that from being in none. Counts only.
+		deg := d.me.TeamsDegraded
+		for _, note := range []string{usertext.TeamsHidden(deg.Hidden(), deg.NotAList), usertext.TeamTreeUnread(deg.TreeDropped)} {
+			if note != "" {
+				s.Notes = append(s.Notes, note)
+			}
+		}
 	}
 	for k, v := range d.caps.Keys {
 		if v {

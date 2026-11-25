@@ -331,6 +331,8 @@ func (w *Worker) Run(ctx context.Context) error {
 			return ctx.Err()
 		case errors.Is(err, errEraseRunning):
 			wait = w.eraseWait(err)
+		case errors.Is(err, errEraseWaiting):
+			wait = w.allowanceWait(ctx)
 		case err != nil:
 			wait = w.nextBackoff(err)
 		default:
@@ -356,14 +358,91 @@ func (w *Worker) eraseWait(err error) time.Duration {
 	w.mu.Lock()
 	w.backoff = 0
 	w.mu.Unlock()
-	if ra, ok := fleetapi.RetryAfter(err); ok && ra > 0 {
+	if ra, ok := retryAfter(err, maxEraseWait); ok {
 		return ra
 	}
 	return eraseRetryWait
 }
 
-// nextBackoff doubles from 2 s to 5 min with jitter, and honours a 429's
-// Retry-After when that is longer.
+// How long a Retry-After is honoured for, by what the wait is for. Fleet sends
+// 1 s for a push over its allowance, 5 s when a member's state is held, 30 s when
+// the server is busy with erases or one is still running, and up to 1800 s when
+// the forget-all allowance has run out.
+const (
+	// maxRetryAfter bounds the retry of a push, a pull or a settings read: the
+	// sync cycle's own longest backoff.
+	maxRetryAfter = maxBackoff
+	// maxEraseWait bounds the wait for an erase Fleet is still running.
+	maxEraseWait = 5 * time.Minute
+	// maxAllowanceWait and minAllowanceWait bound how far ahead a forget-all
+	// that Fleet refused for its allowance is put off. Fleet's allowance is a
+	// bucket of two requests that refills one every 1800 s, and a refused
+	// request costs nothing; the time Fleet names with the refusal is 1800 s
+	// from the refusal, not the time until it has room. Waiting that long
+	// could delay an erase by half an hour past when Fleet would take it, so
+	// the erase is asked for again on the cycle's own longest backoff at most:
+	// a person's request to erase their data isn't held back to save a few
+	// requests that cost Fleet nothing. The minimum keeps a burst of kicks, or
+	// a Retry-After of a second, from sending one request after another.
+	maxAllowanceWait = maxBackoff
+	minAllowanceWait = time.Minute
+)
+
+// errEraseWaiting means a forget-all is put off until the time Fleet named when
+// it refused the last one for its allowance.
+var errEraseWaiting = errors.New("memory sync: waiting to ask Kameas Fleet for the erase again")
+
+// eraseDue reports whether a pending forget-all may be sent now. It may not while
+// the time set when Fleet last refused one for its allowance is still ahead. A
+// time further ahead than maxAllowanceWait isn't one this worker set (the clock
+// moved, the store is damaged, or an earlier version wrote it), and doesn't hold
+// the erase back.
+func (w *Worker) eraseDue(ctx context.Context) (due bool, at time.Time) {
+	at, err := w.o.Store.EraseRetryAt(ctx)
+	now := w.o.Now()
+	if err != nil || at.IsZero() || !at.After(now) || at.Sub(now) > maxAllowanceWait {
+		return true, time.Time{}
+	}
+	return false, at
+}
+
+// allowanceWait is how long the cycle sleeps while a forget-all waits for Fleet's
+// allowance: until the erase is due, and never longer than the cycle's longest
+// backoff, so that a sign-out, a change of settings or a damaged store is still
+// noticed in minutes. The erase itself is sent no sooner than it is due, however
+// often the cycle runs or is kicked. It isn't a failure, so the backoff starts over.
+func (w *Worker) allowanceWait(ctx context.Context) time.Duration {
+	w.mu.Lock()
+	w.backoff = 0
+	w.mu.Unlock()
+	_, at := w.eraseDue(ctx)
+	wait := at.Sub(w.o.Now())
+	if at.IsZero() || wait < time.Second {
+		wait = time.Second
+	}
+	return min(wait, maxBackoff)
+}
+
+// retryAfter is the wait Fleet asked for with err, as far as this worker honours
+// it: at most max. The number comes from a header that Fleet, a proxy in between
+// or a faulty client could set to anything, and it becomes a timer and the time
+// an op is next tried, so it is bounded here, where it is used, whatever the
+// provider did: a value that is zero, negative or too large to be a duration is
+// no answer, and one past max is cut to it. Without that, one answer like
+// 9000000000 seconds would stop memory sync until the process ended.
+func retryAfter(err error, max time.Duration) (time.Duration, bool) {
+	ra, ok := fleetapi.RetryAfter(err)
+	if !ok || ra <= 0 {
+		return 0, false
+	}
+	if ra > max {
+		ra = max
+	}
+	return ra, true
+}
+
+// nextBackoff doubles from 2 s to 5 min with jitter, and honours Fleet's
+// Retry-After (a 429 or a 503) when that is longer, up to maxRetryAfter.
 func (w *Worker) nextBackoff(err error) time.Duration {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -377,7 +456,7 @@ func (w *Worker) nextBackoff(err error) time.Duration {
 		w.backoff = maxBackoff
 	}
 	d := w.backoff/2 + rand.N(w.backoff/2+1)
-	if ra, ok := fleetapi.RetryAfter(err); ok && ra > d {
+	if ra, ok := retryAfter(err, maxRetryAfter); ok && ra > d {
 		d = ra
 	}
 	return d
@@ -565,6 +644,11 @@ const eraseRetryWait = 30 * time.Second
 // erase delivers a confirmed forget-all. Only Fleet's answer completes
 // it; a failure leaves the barrier up (nothing new is sent).
 func (w *Worker) erase(ctx context.Context, l memory.Lease) error {
+	if due, _ := w.eraseDue(ctx); !due {
+		// Fleet refused the last one for its allowance and said when to ask again.
+		w.setCode(ctx, CodeRateLimited)
+		return errEraseWaiting
+	}
 	w.setCode(ctx, CodeErasePending)
 	if err := w.checkIdentity(ctx); err != nil {
 		return err
@@ -591,6 +675,21 @@ func (w *Worker) erase(ctx context.Context, l memory.Lease) error {
 		// Fleet took it and is still working: not a failure. The barrier stays, and the
 		// same call comes back when Fleet says to.
 		return fmt.Errorf("%w: %w", errEraseRunning, err)
+	}
+	if fleetapi.APICode(err) == fleetapi.CodeRateLimited {
+		// The erase allowance is spent. The next try is put off by Fleet's time
+		// or the cycle's longest backoff, whichever is shorter, and by a minute
+		// at least; it is kept in the store, so a kick or a restart doesn't ask
+		// sooner. Nothing sleeps on it: the cycle keeps running, and sends the
+		// erase when it is due.
+		wait, ok := retryAfter(err, maxAllowanceWait)
+		if !ok {
+			wait = maxAllowanceWait
+		}
+		wait = max(wait, minAllowanceWait)
+		if serr := w.o.Store.SetEraseRetryAt(ctx, w.o.Now().Add(wait)); serr == nil {
+			return fmt.Errorf("%w: %w", errEraseWaiting, w.classify(ctx, err))
+		}
 	}
 	if err != nil {
 		return w.classify(ctx, err)
@@ -784,7 +883,7 @@ func (w *Worker) pushAll(ctx context.Context, l memory.Lease) error {
 			// Unknown outcome: the server may have applied the batch. The
 			// same immutable payloads are replayed later (idempotent).
 			delay := memory.OpBackoff(b.Ops[0].Attempt)
-			if ra, ok := fleetapi.RetryAfter(err); ok && ra > delay {
+			if ra, ok := retryAfter(err, maxRetryAfter); ok && ra > delay {
 				delay = ra
 			}
 			if _, paused := fleetapi.OrgPaused(err); paused {

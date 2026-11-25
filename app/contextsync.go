@@ -64,7 +64,8 @@ func runContextSync(env Env, args []string) int {
 	// The person is about to say yes in this terminal, as this account. A write checks the
 	// session is still that one, as it does for an approved request.
 	ctx = approvals.ContextWithIdentity(ctx, approvals.Identity{Env: string(acct.Env), OrgID: acct.OrgID, UserID: acct.UserID})
-	chosen, ok := pickSyncTeam(env, in, *team, sess.Me.Teams)
+	teams := sess.Teams()
+	chosen, ok := pickSyncTeam(env, in, *team, teams)
 	if !ok {
 		return ExitError
 	}
@@ -72,19 +73,42 @@ func runContextSync(env Env, args []string) int {
 	cwd, _ := os.Getwd()
 	led := contextlib.NewLedger(env.contextLedgerDir())
 	s := &contexttools.Syncer{Store: contexttools.NodeStore(p, nil, led), Set: contextlib.Open(dir, cwd).WithViewer(viewer), Led: led,
-		Acct: *viewer, Team: chosen}
+		Acct: *viewer, Team: chosen, Teams: teams}
 
 	pulled, err := s.Pull(ctx)
 	if err != nil {
 		return fail(syncErrorMessage(err))
 	}
 	writeSyncPull(env, pulled)
+	// A team the member can read and isn't in: its files came down, and nothing in
+	// its folder goes up. Said before any file is looked at, in the words a share
+	// to that team gets.
+	if refusal := teams.ShareRefusal(chosen.ID); refusal != nil {
+		fmt.Fprintln(env.Stdout, safetext.Terminal(safetext.OneLine(refusal.Message, 2000)))
+		// What a sync says about the folder itself holds here too, and so does its
+		// exit code: a record that can't be read, and a folder of this name that
+		// was passed over because it holds files that aren't this team's.
+		legacy := pulled.Legacy
+		if legacy.Unreadable {
+			fmt.Fprintln(env.Stdout, safetext.Terminal(usertext.SyncFolderUnreadable(legacy.Folder)))
+		}
+		if beside := legacy.Beside; !legacy.Unreadable && (beside != "" || (legacy.Files > 0 && legacy.Folder != s.Folder())) {
+			if beside == "" {
+				beside = legacy.Folder
+			}
+			fmt.Fprintln(env.Stdout, safetext.Terminal(usertext.SyncReadOnlyFolderBeside(beside, s.Folder(), safetext.OneLine(chosen.Name, 80))))
+		}
+		if legacy.Unreadable {
+			return ExitError
+		}
+		return ExitOK
+	}
 	plan, err := s.Plan(ctx)
 	if err != nil {
 		return fail(syncErrorMessage(err))
 	}
 	writeSyncPlan(env, s, plan, pulled)
-	unclaimed := unclaimedFolders(s, sess.Me.Teams)
+	unclaimed := unclaimedFolders(s, teams.Readable())
 	for _, folder := range unclaimed {
 		fmt.Fprintln(env.Stdout, safetext.Terminal(usertext.SyncUnclaimed(folder)))
 	}
@@ -167,26 +191,35 @@ func syncErrorMessage(err error) string {
 
 // pickSyncTeam is the team asked for, the configured default, the only one, or else
 // asks once.
-func pickSyncTeam(env Env, in *bufio.Reader, want string, teams []fleetapi.TeamRef) (fleetapi.TeamRef, bool) {
-	t, terr := contexttools.ResolveTeam(want, contexttools.ConfiguredDefaultTeam(), teams)
+//
+// A team named with --team, or as the default, can be one the member only reads:
+// sync then brings its files down and sends nothing (runContextSync). The menu
+// offers only the teams the member belongs to, since those are the ones a sync
+// can share to, and "the only one" is the only team they belong to.
+func pickSyncTeam(env Env, in *bufio.Reader, want string, teams contexttools.Teams) (fleetapi.TeamRef, bool) {
+	t, terr := teams.ReadTarget(want, contexttools.ConfiguredDefaultTeam())
 	if terr == nil {
 		return t, true
 	}
-	if strings.TrimSpace(want) != "" || len(teams) < 2 {
+	own := teams.Own()
+	if strings.TrimSpace(want) != "" || len(own) < 2 {
 		fmt.Fprintln(env.Stderr, variant.Current.Binary+": "+terr.Message)
 		return fleetapi.TeamRef{}, false
 	}
-	for i, t := range teams {
+	for i, t := range own {
 		fmt.Fprintf(env.Stdout, "  %d. %s\n", i+1, safetext.OneLine(t.Name, 80))
+	}
+	if len(own) != len(teams.Readable()) {
+		fmt.Fprintln(env.Stdout, usertext.SyncReadOnlyTeamsHint)
 	}
 	fmt.Fprint(env.Stdout, usertext.SyncPickTeam)
 	line, _ := in.ReadString('\n')
 	line = strings.TrimSpace(line)
-	if n, err := strconv.Atoi(line); err == nil && n >= 1 && n <= len(teams) {
-		return teams[n-1], true
+	if n, err := strconv.Atoi(line); err == nil && n >= 1 && n <= len(own) {
+		return own[n-1], true
 	}
 	if line != "" {
-		if t, terr := contexttools.ResolveTeam(line, "", teams); terr == nil {
+		if t, terr := teams.ReadTarget(line, ""); terr == nil {
 			return t, true
 		}
 	}
@@ -340,6 +373,8 @@ func sendSyncItems(ctx context.Context, env Env, s *contexttools.Syncer, plan co
 			fails = append(fails, failed{it.Name, usertext.SyncPromotedLine})
 		case contexttools.SyncBlocked:
 			fails = append(fails, failed{it.Name, usertext.SyncBlockedLine})
+		case contexttools.SyncNotMember:
+			fails = append(fails, failed{it.Name, usertext.SyncNotMemberLine})
 		case contexttools.SyncUnreachable:
 			fails = append(fails, failed{it.Name, usertext.SyncUnreachLine})
 		default:

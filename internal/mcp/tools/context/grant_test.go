@@ -60,7 +60,7 @@ func newGrantDesk(t *testing.T, g *fleetGraph, user string, teams ...fleetapi.Te
 	m.Register(ShareFileOperation, ExecuteShareFile(d.m, nil, d.led))
 	m.RegisterRenderer(ShareFileOperation, RenderShareFile(nil))
 	m.RegisterAutoApprover(ShareFileOperation, AutoApproveShareFile(ShareGrantOptions{
-		Grant: grant, Ledger: d.led, Provider: d.m, Now: d.opts.Now,
+		Grant: grant, Ledger: d.led, Provider: d.m, Now: d.opts.Now, FailureCode: m.FailureCode,
 	}))
 	m.Register(ShareOperation, ExecuteShare(d.m, nil))
 	m.RegisterRenderer(ShareOperation, RenderShare(nil))
@@ -81,6 +81,7 @@ func (d *grantDesk) status() fakeStatus {
 	_, on := d.grant.On(d.acct)
 	return fakeStatus{st: daemon.Status{ContextShareGrant: &daemon.ContextShareGrant{
 		On: on, HourlyCap: contextlib.MaxGrantedSharesPerHour, UsedThisHour: d.grant.UsedThisHour(d.acct, fixedNow),
+		RefusedCap: contextlib.MaxRefusedGrantSharesPerHour, RefusedThisHour: d.grant.RefusedThisHour(d.acct, fixedNow),
 	}}}
 }
 
@@ -431,7 +432,7 @@ func TestShareApprovalSaysWhenTheWholeOrganizationCanRead(t *testing.T) {
 			d := newGrantDesk(t, newGraph(), "u1", platform)
 			d.desk.m.me.Teams = c.teams
 			asked := 0
-			d.mgr.RegisterRenderer(ShareFileOperation, RenderShareFile(func() []fleetapi.TeamRef { asked++; return c.teams }))
+			d.mgr.RegisterRenderer(ShareFileOperation, RenderShareFile(func() Teams { asked++; return TeamsOf(c.teams) }))
 			d.put(t, "a.md", "one\n")
 			in := ShareFileInput{Path: "personal/a.md", Team: c.team.ID}
 			out := d.share(in)

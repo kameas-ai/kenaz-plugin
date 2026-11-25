@@ -135,6 +135,81 @@ type telemetryLane struct {
 	lastUpload time.Time
 	lastErr    string
 	lastErrAt  time.Time
+
+	// When Fleet answers an upload with a time to wait (forward.Result.RetryAfter),
+	// the spool isn't drained before retryAt, and retryTimer wakes the sender
+	// then, without waiting for the next drain tick. retryOff says the lane is
+	// stopped, and nothing arms a hold or a timer until it starts again.
+	retryMu    sync.Mutex
+	retryAt    time.Time
+	retryTimer *time.Timer
+	retryOff   bool
+}
+
+// maxUploadRetryWait is the longest the spool is held on a time Fleet named:
+// forward.MaxRetryAfter, a minute. Tests shorten it.
+var maxUploadRetryWait = forward.MaxRetryAfter
+
+// noteRetryHint acts on Fleet's answer to an upload it will take later: the
+// batch is in the spool, with the bytes that were sent, and is sent again once
+// the time Fleet named has passed, neither at every drain tick before then nor a
+// whole tick after. A result with no time changes nothing: the next tick
+// retries, as it always has.
+//
+// The hold is on the whole backlog, so it is kept short and easy to lose. It is
+// never longer than maxUploadRetryWait, counted from the latest answer (a new
+// hint replaces the old one; hints don't add up). It ends at once when any
+// upload is accepted, since that shows Fleet is taking uploads (clearRetryHold
+// in noteResult), when the lane is purged (a sign-out or an opt-out must not
+// leave the next account, or the next opt-in, waiting out someone else's
+// hold), and when the lane stops or starts. Nothing waits on it, so stopping
+// the lane isn't held up, and a stopped lane arms nothing.
+func (l *telemetryLane) noteRetryHint(res forward.Result) {
+	if res.Disposition != forward.Retry || res.RetryAfter <= 0 {
+		return
+	}
+	wait := min(res.RetryAfter, maxUploadRetryWait)
+	l.retryMu.Lock()
+	defer l.retryMu.Unlock()
+	if l.retryOff {
+		return
+	}
+	l.retryAt = time.Now().Add(wait)
+	if l.retryTimer != nil {
+		l.retryTimer.Stop()
+	}
+	l.retryTimer = time.AfterFunc(wait, l.kick)
+}
+
+// retryWaiting reports whether Fleet's time for the next upload is still ahead.
+func (l *telemetryLane) retryWaiting() bool {
+	l.retryMu.Lock()
+	defer l.retryMu.Unlock()
+	return time.Now().Before(l.retryAt)
+}
+
+// clearRetryHold ends the hold, if there is one, and its wake-up.
+func (l *telemetryLane) clearRetryHold() {
+	l.retryMu.Lock()
+	defer l.retryMu.Unlock()
+	l.clearRetryHoldLocked()
+}
+
+func (l *telemetryLane) clearRetryHoldLocked() {
+	l.retryAt = time.Time{}
+	if l.retryTimer != nil {
+		l.retryTimer.Stop()
+		l.retryTimer = nil
+	}
+}
+
+// setRetryOff ends the hold and says whether the lane is stopped: while it is,
+// noteRetryHint arms nothing.
+func (l *telemetryLane) setRetryOff(off bool) {
+	l.retryMu.Lock()
+	defer l.retryMu.Unlock()
+	l.retryOff = off
+	l.clearRetryHoldLocked()
 }
 
 var _ daemon.Lane = (*telemetryLane)(nil)
@@ -274,6 +349,7 @@ func (l *telemetryLane) Start(ctx context.Context) error {
 	l.mu.Lock()
 	l.cancel, l.stopped = cancel, false
 	l.mu.Unlock()
+	l.setRetryOff(false) // a lane that starts, starts with no hold
 
 	l.wg.Add(3)
 	go func() { defer l.wg.Done(); l.runConsent(ctx) }()
@@ -287,6 +363,9 @@ func (l *telemetryLane) Stop() error {
 	cancel := l.cancel
 	l.stopped = true
 	l.mu.Unlock()
+	// Off before the sender is waited for: a send still in flight then finds the
+	// lane stopped and arms nothing, so no timer outlives the lane.
+	l.setRetryOff(true)
 	if cancel != nil {
 		cancel()
 	}
@@ -330,6 +409,9 @@ func (l *telemetryLane) Purge() error {
 	// Open sessions are aggregated in memory; drop them too so nothing
 	// collected before the purge is sent later as part of a summary.
 	l.pipe.Reset()
+	// What was held is gone, and so is the hold: the next account, or the next
+	// opt-in, doesn't wait out a time Fleet named for someone else's upload.
+	l.clearRetryHold()
 	for {
 		select {
 		case <-l.queue:
@@ -587,6 +669,7 @@ func (l *telemetryLane) send(ctx context.Context, q queued) bool {
 			return true
 		}
 		l.spoolBatch(q)
+		l.noteRetryHint(res)
 		return false
 	}
 }
@@ -696,6 +779,9 @@ var errStopDrain = errors.New("stop drain")
 func (l *telemetryLane) drain(ctx context.Context) {
 	if _, ok := l.admittedSince(); !ok || l.uploadHeld() || l.sp.Empty() {
 		return
+	}
+	if l.retryWaiting() {
+		return // Fleet said when to send again; retryTimer wakes the sender then
 	}
 	regated := false
 	defer func() {
@@ -819,6 +905,7 @@ func (l *telemetryLane) sendDirect(ctx context.Context, owner fleetapi.ExpectedS
 		if res.Err != nil {
 			l.cm.ObserveUploadError(res.Err)
 		}
+		l.noteRetryHint(res)
 		return false
 	}
 }
@@ -887,6 +974,11 @@ func (l *telemetryLane) noteResult(ctx context.Context, res forward.Result) {
 	l.outMu.Lock()
 	defer l.outMu.Unlock()
 	if res.Disposition == forward.Sent {
+		// Fleet took an upload: whatever it said about waiting is over.
+		if l.retryWaiting() {
+			l.clearRetryHold()
+			l.kick()
+		}
 		l.lastUpload = now
 		return
 	}

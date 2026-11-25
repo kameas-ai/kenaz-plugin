@@ -198,6 +198,10 @@ func newTestLane(t *testing.T, f *laneFleet) (*telemetryLane, http.Handler, func
 // session check can observe an account change.
 var testRefreshEvery = 20 * time.Millisecond
 
+// testDrainEvery is the spool drain interval of lanes built by newTestLane*. A
+// test may raise it so that only a wake-up, never a tick, can resend a batch.
+var testDrainEvery = 20 * time.Millisecond
+
 // testNow is the lane clock in tests; lane goroutines read it concurrently.
 var testNow atomic.Value
 
@@ -213,7 +217,7 @@ func newTestLaneWith(t *testing.T, f *laneFleet, before func(*spool.Spool)) (*te
 func newTestLaneIn(t *testing.T, f *laneFleet, dir string, ks *spool.Memory, before func(*spool.Spool)) (*telemetryLane, http.Handler, func()) {
 	t.Helper()
 	oldRefresh, oldDrain, oldNow := consentRefreshEvery, drainEvery, laneNow
-	consentRefreshEvery, drainEvery = testRefreshEvery, 20*time.Millisecond
+	consentRefreshEvery, drainEvery = testRefreshEvery, testDrainEvery
 	// Admission is observed before the fixture's events by default.
 	testNow.Store(fixtures.Base.Add(-time.Hour))
 	laneNow = func() time.Time { return testNow.Load().(time.Time) }

@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "fleet": {
+      "url": "https://mcp.fleet.kameas.ai/mcp",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": {
+              "mode": "cimd"
+            }
+          }
+        }
+      }
+    }
+  }
+}

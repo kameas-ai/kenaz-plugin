@@ -131,3 +131,43 @@ func (p countingPoster) Post(context.Context, fleetapi.ProjectedBatch) (fleetapi
 	*p.n++
 	return fleetapi.ExportResult{Accepted: 1}, nil
 }
+
+// A retry carries the time Fleet named, bounded at MaxRetryAfter (a minute); anything that
+// isn't a usable time is no hint, and only a retry carries one.
+func TestRetryAfterOnAResult(t *testing.T) {
+	with := func(status int, seconds string) error {
+		return &fleetapi.APIError{Status: status, Code: "try_again", Details: map[string]string{"retry_after_seconds": seconds}}
+	}
+	for _, c := range []struct {
+		err  error
+		disp Disposition
+		want time.Duration
+	}{
+		{with(503, "5"), Retry, 5 * time.Second},
+		{with(503, "60"), Retry, time.Minute},
+		{with(503, "61"), Retry, MaxRetryAfter},
+		{with(503, "3600"), Retry, MaxRetryAfter},
+		{with(503, "9000000000"), Retry, MaxRetryAfter},
+		{with(503, "0"), Retry, 0},
+		{with(503, "-5"), Retry, 0},
+		{with(503, "soon"), Retry, 0},
+		{with(503, ""), Retry, 0},
+		{&fleetapi.APIError{Status: 503}, Retry, 0},
+		{with(500, "5"), Retry, 0},
+		{errors.New("connection lost"), Retry, 0},
+		{with(400, "5"), Quarantine, 0},
+	} {
+		res := (&Forwarder{Poster: poster{err: c.err}}).Send(context.Background(), owner, fleetapi.ProjectedBatch{})
+		if res.Disposition != c.disp || res.RetryAfter != c.want {
+			t.Errorf("%v: %+v, want disposition %v and %v", c.err, res, c.disp, c.want)
+		}
+	}
+	// A number of seconds too large for a duration wraps: whatever it wraps to, the
+	// hint is never negative and never past the bound.
+	for _, seconds := range []string{"9223372036", "9223372037", "13835058055", "9223372036854775807"} {
+		res := (&Forwarder{Poster: poster{err: with(503, seconds)}}).Send(context.Background(), owner, fleetapi.ProjectedBatch{})
+		if res.RetryAfter < 0 || res.RetryAfter > MaxRetryAfter {
+			t.Errorf("Retry-After %s: %v", seconds, res.RetryAfter)
+		}
+	}
+}

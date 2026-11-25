@@ -114,14 +114,14 @@ func runPullFiles(ctx context.Context, p fleetapi.Provider, st StatusSource, o F
 		}
 	} else {
 		var terr *ToolError
-		nodes, out.NextCursor, terr = listTeamFiles(ctx, p, in.Team, in.Cursor, sess.Me.Teams)
+		nodes, out.NextCursor, terr = listTeamFiles(ctx, p, in.Team, in.Cursor, sess.Teams())
 		if terr != nil {
 			out.Error = terr
 			return out
 		}
 	}
 	w := pullWriter{
-		set: o.set(), led: contextlib.NewLedger(o.LedgerDir), overwrite: in.Overwrite, me: sess.Me.UserID, teams: sess.Me.Teams,
+		set: o.set(), led: contextlib.NewLedger(o.LedgerDir), overwrite: in.Overwrite, me: sess.Me.UserID, teams: sess.Teams(),
 		acct: contextlib.Account{Env: string(acct.Env), OrgID: acct.OrgID, UserID: acct.UserID},
 	}
 	for _, n := range nodes {
@@ -142,14 +142,15 @@ func runPullFiles(ctx context.Context, p fleetapi.Provider, st StatusSource, o F
 // to about MaxPullFiles from cursor, and returns where to continue. Fleet includes
 // organization-wide nodes when listing one team, so naming a team is narrowed here.
 // A build whose Fleet client can't list says so, and the caller can still pull by id.
-func listTeamFiles(ctx context.Context, p fleetapi.Provider, wantTeam, cursor string, teams []fleetapi.TeamRef) ([]fleetapi.NodeContent, string, *ToolError) {
+func listTeamFiles(ctx context.Context, p fleetapi.Provider, wantTeam, cursor string, teams Teams) ([]fleetapi.NodeContent, string, *ToolError) {
 	lister, ok := p.Context().(fleetapi.ContextLister)
 	if !ok {
 		return nil, "", &ToolError{Code: CodeListUnavailable, Message: "This version of Kenaz can't list a team's files.", Remedy: "Find them with context_search and pass their ids."}
 	}
 	teamID := ""
 	if strings.TrimSpace(wantTeam) != "" {
-		t, terr := ResolveTeam(wantTeam, "", teams)
+		// A read: a team the member can only read can be named here.
+		t, terr := teams.ReadTarget(wantTeam, "")
 		if terr != nil {
 			return nil, "", terr
 		}
@@ -184,7 +185,7 @@ type pullWriter struct {
 	acct      contextlib.Account
 	overwrite bool
 	me        string
-	teams     []fleetapi.TeamRef
+	teams     Teams
 }
 
 // save brings one node to this device. known is false for an id that neither Fleet
@@ -283,13 +284,14 @@ func (w pullWriter) newRef(n fleetapi.NodeContent) (string, error) {
 	label := "org"
 	if n.Node.TeamID != "" {
 		label = "team-" + shortID(n.Node.TeamID)
-		for _, t := range w.teams {
-			if t.ID == n.Node.TeamID {
-				label = t.Name
-			}
+		// Any team the member can read, their own or not: the folder is a copy to read.
+		if name := w.teams.Name(n.Node.TeamID); name != "" {
+			label = name
 		}
 	}
-	folder, _, err := ResolveTeamFolder(w.set, w.led, contextlib.FolderOwner{Env: w.acct.Env, OrgID: w.acct.OrgID, UserID: w.acct.UserID, TeamID: n.Node.TeamID}, label)
+	folder, _, err := ResolveTeamFolder(w.set, w.led, contextlib.FolderOwner{Env: w.acct.Env, OrgID: w.acct.OrgID, UserID: w.acct.UserID, TeamID: n.Node.TeamID}, label,
+		// A team the member isn't in is only read: its copies never take a folder that holds files.
+		n.Node.TeamID != "" && !w.teams.Member(n.Node.TeamID))
 	if err != nil {
 		return "", err
 	}

@@ -172,6 +172,7 @@ func registerFiles(s *sdk.Server, d mcp.Deps, o FilesOptions) {
 		Title: "Share a context file with your team",
 		Description: "Prepares sharing one local context file, picked by the user, with a team in Kameas Fleet, or updating the copy already shared. " +
 			"Only share files the user asked to share. Never include secrets. " +
+			shareOwnTeamsOnly + " A working copy pulled from such a team can't be shared back to it. " +
 			"Unless the exception below applies: " + usertext.ToolApproval + " " +
 			"The file reaches Fleet under a short name shown on that page, never its path on this device. " +
 			ShareGrantDescription,
@@ -189,7 +190,7 @@ func registerFiles(s *sdk.Server, d mcp.Deps, o FilesOptions) {
 		Description: "Save files your team shared in Kameas Fleet as local working copies under ~/.kenaz/team-contexts, when the user asks. " +
 			"Give ids from context_search, or no ids for all the team and organization files you can see, where this version supports it; a long list comes in parts, so pass next_cursor as cursor to continue. Changes nothing on Fleet. " +
 			"A copy with local changes is left as it is unless overwrite is set; what overwrite replaces stays in the folder's .trash for 30 days. " +
-			"Read a copy with context_read. " + contextlib.TeamNotice,
+			"Read a copy with context_read. " + readAnyTeam + " A copy from a team the user is not a member of is for reading: it can't be shared back to that team. " + contextlib.TeamNotice,
 		Annotations: &sdk.ToolAnnotations{Title: "Save team files to this device", DestructiveHint: ptr(true), OpenWorldHint: ptr(true)},
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in PullFilesInput) (*sdk.CallToolResult, PullFilesOutput, error) {
 		touch()
@@ -285,7 +286,10 @@ func runShareFile(ctx context.Context, p fleetapi.Provider, ap approvals.Prepare
 	}
 
 	held, reserved := rec.ReservationFor(acctKey)
-	team, terr := pickTeam(in.Team, o.DefaultTeam(), sess.Me.Teams, link, held, update)
+	teams := sess.Teams()
+	// Only a team the member belongs to, settled before an id is reserved or an
+	// approval prepared: a team they can only read is refused here.
+	team, terr := pickTeam(in.Team, o.DefaultTeam(), teams, link, held, update)
 	if terr != nil {
 		out.Error = terr
 		return out
@@ -348,7 +352,7 @@ func runShareFile(ctx context.Context, p fleetapi.Provider, ap approvals.Prepare
 	}
 	// Whether this team is the organization's all-members team, as Kameas Fleet
 	// marks it: then the whole organization reads what is shared with it.
-	everyone, known := SharedWithWholeOrg(sess.Me.Teams, team.ID)
+	everyone, known := teams.WholeOrg(team.ID)
 	pend, terr := submit(ctx, p, ap, approvals.Request{
 		Operation: ShareFileOperation, TargetIDs: []string{"team:" + team.Name, "file:" + slug},
 		Payload: raw, IdempotencyKey: ShareFileOperation + ":" + nodeID + ":" + contextlib.HashOf(raw)[:32],
@@ -406,15 +410,22 @@ func mayBeOnFleet(ctx context.Context, p fleetapi.Provider, id string) bool {
 
 // pickTeam returns the team a file goes to. A file already shared stays with its
 // team: moving it would change who can read it, which needs its own decision.
-func pickTeam(want, def string, teams []fleetapi.TeamRef, link contextlib.Link, held contextlib.Reservation, shared bool) (fleetapi.TeamRef, *ToolError) {
+//
+// Either way it is a team the member belongs to. A team they can only read is
+// refused: named for a new share, or the team of a copy they once shared there.
+func pickTeam(want, def string, teams Teams, link contextlib.Link, held contextlib.Reservation, shared bool) (fleetapi.TeamRef, *ToolError) {
 	if !shared {
 		// Asked before and not approved yet: the same team, unless they say otherwise.
 		if want == "" && held.TeamID != "" {
 			want = held.TeamID
 		}
-		return ResolveTeam(want, def, teams)
+		return teams.ShareTarget(want, def)
 	}
-	for _, t := range teams {
+	if refusal := teams.ShareRefusal(link.TeamID); refusal != nil && refusal.Code == CodeNotTeamMember {
+		refusal.Remedy = "To share it with one of your own teams, call this again with as_new and that team's id."
+		return fleetapi.TeamRef{}, refusal
+	}
+	for _, t := range teams.Own() {
 		if t.ID != link.TeamID {
 			continue
 		}
@@ -499,27 +510,24 @@ func FromMemoryBanner(team string) string {
 
 // RenderShareFile describes a file share for the approval page from the payload
 // alone: the short name, who can read it and the exact text. teams, when given,
-// is the member's teams as Kameas Fleet lists them now, asked once per request:
-// it names the team, and a share with the one Fleet marks as the organization's
-// all-members team (SharedWithWholeOrg) says that everyone in the organization
-// will be able to read the file.
-func RenderShareFile(teams func() []fleetapi.TeamRef) approvals.Renderer {
+// is the member's teams as Kameas Fleet lists them now, asked once per request.
+// It names the team, if it is one the member belongs to (a share goes to no
+// other, and a team they only read is never shown as the one they share with:
+// then the page shows the id); and a share with the one Fleet marks as the
+// organization's all-members team (SharedWithWholeOrg) says that everyone in
+// the organization will be able to read the file.
+func RenderShareFile(teams func() Teams) approvals.Renderer {
 	return func(payload []byte) (approvals.Rendered, error) {
 		sp, slug, err := decodeShareFile(payload)
 		if err != nil {
 			return approvals.Rendered{}, err
 		}
 		n := sp.Node
-		var listed []fleetapi.TeamRef
+		var listed Teams
 		if teams != nil {
 			listed = teams()
 		}
-		name := ""
-		for _, t := range listed {
-			if t.ID == n.TeamID {
-				name = t.Name
-			}
-		}
+		name := listed.OwnName(n.TeamID)
 		team, shown := n.TeamID, "this team"
 		if name != "" {
 			team, shown = name+" ("+n.TeamID+")", name
@@ -528,9 +536,16 @@ func RenderShareFile(teams func() []fleetapi.TeamRef) approvals.Renderer {
 		if sp.Update {
 			verb = "Update the shared file"
 		}
-		everyone, known := SharedWithWholeOrg(listed, n.TeamID)
+		everyone, known := listed.WholeOrg(n.TeamID)
 		impact := shareFileImpact(team, everyone, known) + " Kameas Fleet stores it under the short name " + slug + ", never its full path on your device."
+		if refusal := listed.ApprovalRefusal(n.TeamID); refusal != "" {
+			// Not a team the member is in: the page doesn't promise a share that
+			// Fleet will refuse.
+			impact = refusal
+		}
 		if sp.FromMemory {
+			// A required notice: shown whenever the text was drafted from memory,
+			// whatever else the page has to say.
 			impact = FromMemoryBanner(shown) + "\n\n" + impact
 		}
 		return approvals.Rendered{
@@ -562,12 +577,10 @@ func ExecuteShareFile(p fleetapi.Provider, st StatusSource, led contextlib.Ledge
 		if err := recheckSession(ctx, p); err != nil {
 			return nil, err
 		}
-		member := false
-		for _, t := range sess.Me.Teams {
-			member = member || t.ID == sp.Node.TeamID
-		}
-		if !member {
-			return nil, approvals.ErrorCode(failScopeChanged)
+		// Still a team the member belongs to: one they left is scope_changed, and one
+		// they can now only read is not_team_member.
+		if refusal := sess.Teams().ShareRefusal(sp.Node.TeamID); refusal != nil {
+			return nil, approvals.ErrorCode(refusal.Code)
 		}
 		cur, found, err := fileNode(ctx, p, sp.Node)
 		if err != nil {

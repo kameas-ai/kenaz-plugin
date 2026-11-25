@@ -71,8 +71,15 @@ func (e fakeEnroller) Enroll(_ context.Context, b fleetapi.EnrollBody) (fleetapi
 
 type fakeMe struct{}
 
+// fakeTeamsDegraded is what the fake's /me says about teams it couldn't hand over.
+var fakeTeamsDegraded atomic.Pointer[fleetapi.TeamsDegraded]
+
 func (fakeMe) Get(context.Context) (fleetapi.MeInfo, error) {
-	return fleetapi.MeInfo{UserID: "u", OrgID: "o", Tier: "team"}, nil
+	me := fleetapi.MeInfo{UserID: "u", OrgID: "o", Tier: "team"}
+	if d := fakeTeamsDegraded.Load(); d != nil {
+		me.TeamsDegraded = *d
+	}
+	return me, nil
 }
 func (fakeMe) Capabilities(context.Context) (fleetapi.Capabilities, error) {
 	return fleetapi.Capabilities{Keys: map[string]bool{"context_sync": true}}, nil
@@ -592,4 +599,30 @@ func TestSessionWatchSelfHeals(t *testing.T) {
 		st, _ := c.Status(context.Background())
 		return st.Session == SessionSignedOut && st.Enroll == string(enroll.StateSignedOut)
 	})
+}
+
+// Teams the provider could not hand over are said in the status, in counts only,
+// so that a person who seems to be in no team can tell that from being in none.
+func TestStatusSaysTeamsWereHidden(t *testing.T) {
+	notes := func(deg *fleetapi.TeamsDegraded) []string {
+		fakeTeamsDegraded.Store(deg)
+		t.Cleanup(func() { fakeTeamsDegraded.Store(nil) })
+		d, _, _ := startDaemon(t, testOpts(t, newFake(true), t.TempDir()))
+		waitFor(t, func() bool { return d.Status(context.Background()).Tier == "team" })
+		return d.Status(context.Background()).Notes
+	}
+	got := notes(&fleetapi.TeamsDegraded{Skipped: 2, Withheld: 1, TreeDropped: 1})
+	want := []string{
+		"Kameas Fleet sent 3 teams this version of Kenaz could not read; they are hidden. Updating Kenaz may fix this.",
+		"Kameas Fleet sent 1 team whose place in the team tree this version of Kenaz could not read, so Kenaz can't say which is your organization's all-members team. Updating Kenaz may fix this.",
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("%q", got)
+	}
+	if got := notes(&fleetapi.TeamsDegraded{NotAList: true}); len(got) != 1 || got[0] != "Kameas Fleet sent your teams in a form this version of Kenaz could not read; they are hidden. Updating Kenaz may fix this." {
+		t.Fatalf("%q", got)
+	}
+	if got := notes(nil); len(got) != 0 {
+		t.Fatalf("%q", got)
+	}
 }

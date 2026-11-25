@@ -194,7 +194,7 @@ files
   },
   "plugins": [
     {
-      "description": "Kenaz (dev), a Kameas AI product. Connects AI tools such as Claude Code and Codex to your organization's Kameas Fleet: shared skills, team context, your private memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
+      "description": "Kenaz (dev), a Kameas AI product. Connects AI tools such as Claude Code, Cowork and Codex to your organization's Kameas Fleet: shared skills, team context, your private memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
       "homepage": "https://kameas.ai",
       "license": "Apache-2.0",
       "name": "kenaz-dev",
@@ -211,7 +211,7 @@ $SHA256
     "name": "Kameas AI, Inc.",
     "url": "https://kameas.ai"
   },
-  "description": "Kenaz (dev), a Kameas AI product. Connects Claude Code on your computer to your organization's Kameas Fleet: shared skills, team context and your private memory, and in Claude Code, usage summaries you choose to share. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic.",
+  "description": "Kenaz (dev), a Kameas AI product. Connects Claude Code and Cowork on your computer to your organization's Kameas Fleet: shared skills, team context and your private memory, and in Claude Code, usage summaries you choose to share. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic.",
   "homepage": "https://kameas.ai",
   "license": "Apache-2.0",
   "name": "kenaz-dev",
@@ -297,6 +297,209 @@ $SHA256
     }
   }
 }
+== .kenaz/plugin/dev/setup/bundle/$VERSION_$PLATFORM/plugin/LICENSE
+
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
 == .kenaz/plugin/dev/setup/bundle/$VERSION_$PLATFORM/plugin/README.md
 # Kenaz plugin
 
@@ -319,7 +522,7 @@ Then run `kenaz-dev init`, as the installer tells you. Other ways to install are
 
 Our Privacy Policy is at https://kenaz.kameas.ai/privacy.html, and the full list of what Kenaz can send is at https://kenaz.kameas.ai/telemetry. In short:
 
-- **Where data goes:** to your organization's Kameas Fleet, run by Kameas AI, Inc. Kenaz sends nothing to any other company, unless you turn on automatic memory capture and set it to use another company's model to write your notes. Session content then goes to that company. See "Your AI tool" below.
+- **Where data goes:** to your organization's Kameas Fleet, run by Kameas AI, Inc. Kameas runs Fleet and sign-in with its service providers (sign-in uses ZITADEL). Kenaz sends nothing to any other company for its own purposes, unless you turn on automatic memory capture and set it to use another company's model to write your notes. Session content then goes to that company. See "Your AI tool" below.
 - **Signing in and your device:** when you sign in, Kenaz registers this device with your organization's Fleet: an opaque device ID, a display name you control, the operating system, architecture and software version. Before you sign in, nothing is sent.
 - **Usage telemetry, only the classes you turn on:** session counts and timing, tool kinds, error categories, model names, token counts and estimated cost, linked to your account and device. Every class is off until you turn it on (`kenaz-dev optin`). It comes from your AI tool's own OpenTelemetry export, which `kenaz-dev setup` points at the `kenaz-dev` program on your computer, not from the plugin's hooks or tools. Prompts, AI responses, tool inputs and outputs, code, file contents and file paths are never sent.
 - **Memory:** notes are kept on your device. They are sent to Kameas Fleet, for your account alone, only if you turn on memory sync, which is off until you turn it on and shows its own notice first. Your organization's administrators and Kameas staff have no screen for viewing synced notes. They are not end-to-end encrypted: our systems can read them, and people at Kameas with administrator access to those systems could technically read them.
@@ -327,6 +530,65 @@ Our Privacy Policy is at https://kenaz.kameas.ai/privacy.html, and the full list
 - **Your AI tool:** anything Kenaz gives your AI tool during a session (a memory note, a skill, team context, or teammates' names where your administrator allows it) becomes part of that session and is handled by the company that makes the tool, like the rest of your conversation. If you turn on automatic memory capture and use another company's model, session content, including tool inputs and outputs, goes to that company under your account or key, and under its terms.
 
 For the usage, memory, skills and context data above, your organization is the controller and Kameas processes it on its behalf. Kameas is the controller for account and sign-in security data, as the Privacy Policy explains. Questions: dpo@kameas.ai.
+
+### What this plugin runs, sends and fetches
+
+This is the complete list of what the Kenaz plugin does on your computer and over the network, so you can check it before you install. The [Privacy Policy](https://kenaz.kameas.ai/privacy.html) and [what Kenaz can send](https://kenaz.kameas.ai/telemetry) have the full detail.
+
+#### The `kenaz-dev` program is installed separately
+
+The plugin package itself contains no executable code: only its manifests, hook and MCP configuration, slash commands and a skill. Every hook and its MCP server run the `kenaz-dev` program from your `PATH`, which you install separately:
+
+- macOS and Linux: `curl -fsSL https://downloads.kameas.ai/kenaz-plugin/install.sh | sh`
+- Windows (PowerShell): `irm https://downloads.kameas.ai/kenaz-plugin/install.ps1 | iex`
+- Other ways (release archives, package managers) are on https://kenaz.kameas.ai/. Then run `kenaz-dev init`.
+
+Without `kenaz-dev` the hooks and tools fail to start and nothing is sent.
+
+#### Commands it runs
+
+| Registered in | Command | What it does |
+|---|---|---|
+| `.mcp.json` (Claude Code, Cowork); `.codex-mcp.json` (Codex) | `kenaz-dev mcp` | A local MCP server over stdio. It provides the `memory_*`, `context_*`, `skills_*`, `team_members`, `fleet_status` and `approval_status` tools. Tools that write to Kameas Fleet only prepare a request: nothing is uploaded until you approve the exact content (see [Approving writes](https://github.com/kameas-ai/kenaz-plugin#approving-writes)), except context file shares after you turn on the context share grant yourself in a terminal, and memory notes, which sync to your account without an approval for each once you turn on memory sync. |
+| `SessionStart` hook | `kenaz-dev hook session-start` | Starts the local `kenaz-dev` relay (`kenaz-dev daemon`) if it isn't running. Adds to the session: a short Fleet status and notice line when you are signed in, an index of your memory note titles for the current project, and a list of your local context files. In Claude Code it asks for a skills reload when skills from Fleet changed. It sends nothing itself. |
+| `SessionStart` hook (startup, clear, compact) | `kenaz-dev hook memory-index` | Adds the memory index (note titles and ids, and the summary of your last turn if automatic capture is on). It reads only the working directory from the hook input. |
+| `UserPromptSubmit`, `PostToolUse` (async), `Stop` hooks | `kenaz-dev hook memory-prompt`, `kenaz-dev hook memory-tool`, `kenaz-dev hook memory-stop` | Automatic memory capture. **Off by default:** until you turn capture on, they exit without reading their input. When it is on, they queue the prompt, tool use or end of turn on this device (common credential shapes, email addresses, home directory paths and `<private>` blocks are removed first: a safety net, not a guarantee) and start `kenaz-dev memory capture worker` in the background to write notes from the queue. Claude Code only: Codex has no capture path, and under Codex these hooks always exit at once. |
+| `SessionEnd` hook | `kenaz-dev hook session-end` | Tells the local relay that a session ended (a hash of the session id and which AI tool), so it can close that session's usage summary, which is uploaded only if you opted in. |
+
+Each hook has a 1 to 5 second limit and always exits successfully, so it can't block or change your session. No hook makes permission decisions or rewrites tool input. `kenaz-dev` also runs `open` (macOS), `xdg-open` (Linux) or `rundll32` (Windows) to open sign-in and approval pages in your browser, and `claude --version` and `codex --version` to name your AI tools' versions in the telemetry notice it shows you. On macOS it runs `/usr/bin/security` to store sign-in tokens and the queue key in your Keychain. Only when you run `kenaz-dev setup` or `kenaz-dev setup doctor`, it runs `claude plugin …` or `codex plugin …` to add, list or remove this plugin.
+
+#### Where it connects
+
+| Destination | When | What is sent |
+|---|---|---|
+| Kameas Fleet API: `https://api.fleet.kameas.ai` (`https://api.dev.fleet.kameas.ai` only if you choose the dev environment). Links Kenaz opens in your browser go to the Fleet dashboard, `https://fleet.kameas.ai`. | Only after you sign in | Device registration (an opaque device id, a display name you control, operating system, architecture and Kenaz version). Usage telemetry, only for the classes you opt in to: session counts and timing, tool kinds, error categories, model names, token counts and estimated cost. Skill searches and installs, team context searches and reads, and content you publish or share. Memory notes, only if you turn on memory sync. Checks of your organization's plan, notices and settings. A check, about every 5 minutes while you are signed in, for skills your organization requires. |
+| Kameas sign-in: `https://prod-bq6woq.us1.zitadel.cloud` (ZITADEL, Kameas's identity provider, US region), with sign-in pages at `https://login.kameas.ai`. | `kenaz-dev login`, and to refresh your sign-in | A standard OAuth 2.0 sign-in with PKCE in your browser, redirected back to a one-time listener on `127.0.0.1`. Kenaz receives sign-in tokens and keeps them in your OS keychain. Kenaz sends the one-time code, and later its refresh token, to that identity provider. |
+| Your AI tool's model provider | Only if you turn on automatic memory capture and choose a writer that uses one | Session content (prompts, tool inputs and outputs, responses) for the notes it writes. The `host-cli` writer runs `claude --safe-mode -p` under your own Claude login. The `api-key` writer runs `claude --bare -p` with your own Anthropic API key, or with your Amazon Bedrock, Google Vertex AI or Microsoft Foundry credentials if you set Claude Code to use them. The content goes to Anthropic or that cloud provider under your terms with it. The `local` writer runs a command you name. The `session-agent` writer asks your current session to write the note. |
+| `127.0.0.1` only | While the relay runs | The relay listens on loopback for your AI tool's OpenTelemetry export (port 4318 by default), the MCP server's control calls and the local approval page (`http://localhost:<port>/approvals/`). Nothing on your network can reach it. |
+
+Nothing else. The plugin and `kenaz-dev` have no analytics or crash reporting of their own, send nothing to Kameas before you sign in, and don't check for updates: your AI tool updates the plugin from its marketplace, and you update `kenaz-dev` with its installer or package manager. Prompts, AI responses, tool inputs and outputs, code, file contents and file paths are never sent as telemetry. Usage telemetry comes from your AI tool's own OpenTelemetry export, which `kenaz-dev setup` points at the local relay, not from the plugin's hooks or tools.
+
+#### What it keeps on your computer
+
+Everything is under `~/.kenaz/plugin` (`%USERPROFILE%\.kenaz\plugin` on Windows; `KENAZ_HOME` moves it), readable only by you:
+
+- `config.toml`: your settings.
+- `<env>/`: the relay's state, the encrypted queue of telemetry waiting to upload, pending approvals and installed-skill records.
+- `memory/`: your memory notes (SQLite files) and, when capture is on, its queue in `memory/capture/queue/`, which `kenaz-dev memory capture disable` deletes.
+- `credentials/`: sign-in tokens and the queue key, only on a machine with no OS keychain. Otherwise they are in the macOS Keychain, Windows Credential Manager or the Linux Secret Service.
+
+Skills from Fleet are written to `~/.claude/skills/` (Claude Code) and `~/.agents/skills/` (Codex): ones you install and, while you are signed in, ones your organization's administrator requires, which the relay installs without asking. A required skill keeps its `allowed-tools` and hooks, which can pre-approve tools and run commands in your AI tool, only if an administrator reviewed exactly that version; every other skill from Fleet has them removed. `kenaz-dev logout` removes them. Your personal context files are in `~/.kenaz/contexts/`, and team context files you sync are in `~/.kenaz/team-contexts/`.
+
+#### Turning each part off
+
+- **The whole plugin:** disable or uninstall it in your AI tool (in Claude Code, `/plugin`), or run `kenaz-dev setup --undo claude` (or `codex`). `kenaz-dev logout` signs out and deletes queued uploads.
+- **Usage telemetry:** off until you opt in. `kenaz-dev optin --all-off` turns every class off again.
+- **Memory:** `kenaz-dev memory disable` turns off the tools and the session index; your notes stay. `kenaz-dev memory purge` deletes the signed-out notebook.
+- **Skills from Fleet:** uninstall one you installed with the `skills_uninstall` tool or `/kenaz:skills`; `kenaz-dev logout` removes every skill from Fleet, including ones your organization requires.
+- **Automatic memory capture:** off until you turn it on. `kenaz-dev memory capture disable` turns it off; `kenaz-dev memory capture exclude [path]`, or a `.kenaz-no-capture` file in a project, excludes a project.
+- **Memory sync:** off until you turn it on. `kenaz-dev memory sync disable` stops it.
+- **Context share grant:** off until you turn it on. `kenaz-dev context grant off` turns it off.
+- **Context index at session start:** `context_index = "off"` in `config.toml`.
 
 The plugin registers hooks in your AI tool so that automatic memory capture can work. They do nothing until you turn capture on. Your AI tool may ask you to trust them first.
 

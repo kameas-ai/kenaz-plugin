@@ -28,6 +28,10 @@ type ShareGrantOptions struct {
 	Ledger   contextlib.Ledger
 	Provider fleetapi.Provider
 	Now      func() time.Time
+	// FailureCode is the machine code a failed request ended with
+	// (approvals.Manager.FailureCode). Without it every failed share counts toward
+	// the cap.
+	FailureCode func(requestID string) string
 }
 
 // AutoApproveShareFile decides whether a prepared file share runs under the grant;
@@ -36,6 +40,25 @@ type ShareGrantOptions struct {
 // when this account hasn't given it, when the member isn't in the team, when the
 // request is one the grant never covers (grantCovers), and when the hour's cap is
 // spent. A yes is written to the history first: no record, no share.
+//
+// What counts toward the cap: every share the grant takes, whatever becomes of
+// it, since a failed upload may still have reached Fleet and a runaway agent's
+// failures are attempts too. The one exception is a share Fleet (or the
+// executor's own recheck) refused because the member isn't in the team
+// (not_team_member): nothing was shared and none can be, so its slot is handed
+// back when it settles. The tools refuse such a share before it is prepared, so
+// this is only for a membership that changed in between.
+//
+// Those free refusals have a bound of their own,
+// contextlib.MaxRefusedGrantSharesPerHour: up to that many in a clock hour hand
+// their slot back, any more keep it (so they are bounded by the cap), and once
+// the hour has that many the grant takes nothing more until the next hour.
+//
+// The relay keeps its own counts beside the history's, so that losing the history
+// can't reset either bound. A slot is handed back only to the request that holds
+// it: held is the requests taken since the count for this hour began, so a share
+// taken in another hour, or before the clock was set back, has nothing to hand
+// back, and the count can't be brought below what was taken.
 //
 // The one Fleet read (who the member is and their teams) happens before the lock, and
 // is bounded by ctx; the lock covers only the count and the history file, so shares
@@ -46,7 +69,9 @@ func AutoApproveShareFile(o ShareGrantOptions) approvals.AutoApprover {
 	}
 	var mu sync.Mutex
 	var hour int64
-	var spent int // this relay's own count, so that losing the history can't reset the cap
+	var spent int   // this relay's own count, so that losing the history can't reset the cap
+	var refused int // and its count of the hour's not_team_member refusals
+	held := map[string]bool{}
 	return func(ctx context.Context, who approvals.Identity, id string, payload []byte) (func(approvals.Status), bool) {
 		acct := contextlib.Account{Env: who.Env, OrgID: who.OrgID, UserID: who.UserID}
 		if !OrgAllowsShareGrant(ctx, o.Provider) {
@@ -58,7 +83,8 @@ func AutoApproveShareFile(o ShareGrantOptions) approvals.AutoApprover {
 		// Any team the member is in is covered, the organization's all-members team
 		// included. One they aren't in is decided here, before a slot or a history
 		// line is used.
-		me, err := o.Provider.Me().Get(ctx)
+		// With the read-only rows, which grantCovers refuses (TeamsOf(...).Member).
+		me, err := o.Provider.Me().Get(fleetapi.WithInheritedTeams(ctx))
 		if err != nil || ctx.Err() != nil {
 			return nil, false
 		}
@@ -70,31 +96,51 @@ func AutoApproveShareFile(o ShareGrantOptions) approvals.AutoApprover {
 		defer mu.Unlock()
 		now := o.Now()
 		if h := now.Unix() / 3600; h != hour {
-			hour, spent = h, 0
+			hour, spent, refused = h, 0, 0
+			clear(held)
 		}
 		if used := o.Grant.UsedThisHour(acct, now); used > spent {
 			spent = used
 		}
-		if spent >= contextlib.MaxGrantedSharesPerHour {
+		if n := o.Grant.RefusedThisHour(acct, now); n > refused {
+			refused = n
+		}
+		if spent >= contextlib.MaxGrantedSharesPerHour || refused >= contextlib.MaxRefusedGrantSharesPerHour {
 			return nil, false
 		}
 		e := contextlib.ShareAudit{
 			Account: acct, Slug: slug, TeamID: sp.Node.TeamID, SHA256: contextlib.HashOf([]byte(sp.Node.Body)),
 			At: now, RequestID: id, Status: string(approvals.StatusExecuting),
 		}
-		for _, t := range me.Teams {
-			if t.ID == sp.Node.TeamID {
-				e.TeamName = t.Name
-			}
-		}
+		e.TeamName = TeamsOfMe(me).Name(sp.Node.TeamID)
 		if o.Grant.Record(e) != nil {
 			return nil, false
 		}
 		spent++
+		held[id] = true
 		return func(st approvals.Status) {
+			reason := ""
+			if st == approvals.StatusFailed && o.FailureCode != nil {
+				reason = o.FailureCode(id)
+			}
 			mu.Lock()
 			defer mu.Unlock()
-			_ = o.Grant.Settle(id, string(st))
+			holds := held[id]
+			delete(held, id)
+			counted := false
+			if st == approvals.StatusFailed && reason == CodeNotTeamMember {
+				// Handed back only by the request that holds the slot, and only
+				// while the hour has free refusals left.
+				free := holds && refused < contextlib.MaxRefusedGrantSharesPerHour
+				if holds {
+					refused++
+				}
+				if free {
+					spent--
+				}
+				counted = !free
+			}
+			_ = o.Grant.Settle(id, string(st), reason, counted)
 		}, true
 	}
 }
@@ -116,7 +162,9 @@ func grantCovers(led contextlib.Ledger, acct contextlib.Account, me fleetapi.MeI
 		// Text marked as drafted from memory gets the person's own look.
 		return sp, "", false
 	}
-	if !memberOf(me.Teams, sp.Node.TeamID) {
+	// A team the member can only read is one they aren't in: the request waits for
+	// the person (and the executor refuses it), and no slot or history line is used.
+	if !TeamsOfMe(me).Member(sp.Node.TeamID) {
 		return sp, "", false
 	}
 	rec, err := led.Get(sp.LedgerKey)
@@ -138,18 +186,9 @@ func grantCovers(led contextlib.Ledger, acct contextlib.Account, me fleetapi.MeI
 	return sp, slug, ok && h.NodeID == sp.Node.ID && h.TeamID == sp.Node.TeamID && sp.Node.Version == 1
 }
 
-func memberOf(teams []fleetapi.TeamRef, id string) bool {
-	for _, t := range teams {
-		if t.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
 // ShareGrantDescription is what context_share_file's description says about the grant.
 var ShareGrantDescription = fmt.Sprintf("Exception: if the user has turned on the context share grant (`kenaz context grant on`), this call shares the file with the team at once, with no approval, up to %d files per clock hour, and the result says so: tell the user what was shared. "+
-	"It covers every team the user is in, including the organization's all-members team (usually named Everyone): a share with that team is readable by the whole organization, so say so when you tell the user. "+
+	"It covers every team the user is a member of, including the organization's all-members team (usually named Everyone) when they are a member of it: a share with that team is readable by the whole organization, so say so when you tell the user. It never covers a team whose context the user can only read: no share goes to such a team, with or without the grant. "+
 	"Text marked as drafted from memory notes (from_memory, here or when it was saved with context_write) still needs approval. The grant can't tell memory-derived text that isn't marked, so always set from_memory when any of the text came from memory notes. Only the user can turn the grant on, at a terminal; no tool can, so never try to and never ask them to for your own convenience.", contextlib.MaxGrantedSharesPerHour)
 
 // wholeOrgNote is what a share's result says, once the file is shared with team,
@@ -199,6 +238,8 @@ func shareGrantNote(ctx context.Context, ap approvals.Preparer, st StatusSource,
 		switch g := ds.ContextShareGrant; {
 		case fromMemory:
 			why = "it doesn't cover text marked as drafted from memory notes"
+		case g.RefusedCap > 0 && g.RefusedThisHour >= g.RefusedCap:
+			why = fmt.Sprintf("%d of its shares this clock hour were refused because the user is not a member of the team, so it shares nothing more without approval until the next hour", g.RefusedThisHour)
 		case g.UsedThisHour >= g.HourlyCap:
 			why = fmt.Sprintf("it has reached its limit of %d files per clock hour", g.HourlyCap)
 		}
@@ -210,6 +251,7 @@ func shareGrantNote(ctx context.Context, ap approvals.Preparer, st StatusSource,
 	_, res, err := ap.Status(ctx, pend.RequestID)
 	var meta struct {
 		ApprovedBy string `json:"approved_by"`
+		Error      string `json:"error"`
 	}
 	if err != nil || json.Unmarshal(res, &meta) != nil || meta.ApprovedBy != approvals.ApprovedByGrant {
 		return "", false
@@ -219,6 +261,9 @@ func shareGrantNote(ctx context.Context, ap approvals.Preparer, st StatusSource,
 		return fmt.Sprintf("Shared without a separate approval, under the context share grant the user turned on: every member of %s can now read the file %q. %sTell the user it was shared. ", team, slug, wholeOrgNote(team, everyone, known)) + off, true
 	case approvals.StatusExecuting, approvals.StatusReconciling:
 		return fmt.Sprintf("Being shared with the team %s without a separate approval, under the context share grant the user turned on. It hasn't finished, so don't say the file %q is shared yet: check with approval_status, and tell the user. ", team, slug) + off, true
+	}
+	if meta.Error == CodeNotTeamMember {
+		return fmt.Sprintf("The context share grant ran this without a separate approval, and it was refused because the user is not a member of %s: nothing was shared. The user can share only to teams they belong to; team_members lists them. ", team) + off, true
 	}
 	return "The context share grant ran this without a separate approval and it didn't go through: nothing was shared. Check approval_status for the reason. " + off, true
 }

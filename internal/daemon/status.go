@@ -108,6 +108,11 @@ type ContextShareGrant struct {
 	On           bool `json:"on"`
 	HourlyCap    int  `json:"hourly_cap"`
 	UsedThisHour int  `json:"used_this_hour"`
+	// RefusedThisHour is how many shares the grant took this clock hour that were
+	// refused because the member isn't in the team; at RefusedCap the grant takes
+	// nothing more that hour.
+	RefusedThisHour int `json:"refused_this_hour,omitempty"`
+	RefusedCap      int `json:"refused_cap,omitempty"`
 }
 
 // HostSetup is one host's `kenaz setup` state.

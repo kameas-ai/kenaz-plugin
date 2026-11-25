@@ -38,12 +38,34 @@ type EnrollBody struct {
 	ClientKind ClientKind `json:"client_kind"`
 }
 
+// MaxNodeIDLen bounds EnrollBody.NodeID.
+const MaxNodeIDLen = 128
+
+// ValidNodeID reports whether id is a node id Fleet accepts: 1 to
+// MaxNodeIDLen printable ASCII characters with no space. Fleet answers any
+// other id with a 400 that no retry changes.
+func ValidNodeID(id string) bool {
+	if id == "" || len(id) > MaxNodeIDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; c <= ' ' || c >= 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 // Validate checks the invariants Fleet enforces plus the display-name
 // bounds. Public callers must validate before calling Enroll.
 func (b EnrollBody) Validate() error {
 	var errs []error
-	if b.NodeID == "" {
+	switch {
+	case b.NodeID == "":
 		errs = append(errs, errors.New("node_id required"))
+	case !ValidNodeID(b.NodeID):
+		// The id itself is never printed: it isn't one this plugin made.
+		errs = append(errs, fmt.Errorf("node_id (%d bytes) must be 1 to %d printable ASCII characters with no space", len(b.NodeID), MaxNodeIDLen))
 	}
 	switch b.Platform {
 	case "darwin", "linux", "windows":

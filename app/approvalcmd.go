@@ -48,8 +48,8 @@ func registerFleetWriteExecutors(m *approvals.Manager, p fleetapi.Provider, _ st
 	m.Register(contexttools.PromoteOperation, contexttools.ExecutePromote(p, st))
 	m.RegisterReconciler(contexttools.PromoteOperation, contexttools.ReconcilePromote(p))
 	m.RegisterRenderer(skillstools.PublishOperation, skillstools.RenderPublish)
-	m.RegisterRenderer(contexttools.ShareOperation, contexttools.RenderShare(teamNames(p)))
-	m.RegisterRenderer(contexttools.PromoteOperation, contexttools.RenderPromote(teamNames(p)))
+	m.RegisterRenderer(contexttools.ShareOperation, contexttools.RenderShare(approvalTeams(p)))
+	m.RegisterRenderer(contexttools.PromoteOperation, contexttools.RenderPromote(noteTeamNames(p)))
 }
 
 // registerContextFileExecutors is sharing a local context file, in builds with
@@ -62,42 +62,32 @@ func registerContextFileExecutors(m *approvals.Manager, p fleetapi.Provider, sta
 	led := contextlib.NewLedger(contextLedgerIn(filepath.Dir(stateDir)))
 	m.Register(contexttools.ShareFileOperation, contexttools.ExecuteShareFile(p, st, led))
 	m.RegisterReconciler(contexttools.ShareFileOperation, contexttools.ReconcileShareFile(p, led))
-	m.RegisterRenderer(contexttools.ShareFileOperation, contexttools.RenderShareFile(memberTeams(p)))
+	m.RegisterRenderer(contexttools.ShareFileOperation, contexttools.RenderShareFile(approvalTeams(p)))
 }
 
-// teamNames resolves a team id to its display name for the approval page
-// (best effort; the page shows the id too).
-func teamNames(p fleetapi.Provider) func(string) string {
-	return func(id string) string {
+// approvalTeams asks Kameas Fleet, once, for the member's teams, split as the
+// context tools split them (contexttools.Teams): what the approval page names a
+// team by and how it tells the organization's all-members team. The page never
+// goes by the raw rows: this read doesn't ask for teams the member only reads,
+// but if a provider returned one anyway it must not be shown as a team of the
+// person's. An empty Teams when Fleet is out of reach.
+func approvalTeams(p fleetapi.Provider) func() contexttools.Teams {
+	return func() contexttools.Teams {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		me, err := p.Me().Get(ctx)
 		if err != nil {
-			return ""
+			return contexttools.Teams{}
 		}
-		for _, t := range me.Teams {
-			if t.ID == id {
-				return t.Name
-			}
-		}
-		return ""
+		return contexttools.TeamsOfMe(me)
 	}
 }
 
-// memberTeams asks Kameas Fleet, once, for the member's teams: what the
-// approval page names a team by and how it tells the organization's
-// all-members team (contexttools.RenderShareFile). nil when Fleet is out
-// of reach.
-func memberTeams(p fleetapi.Provider) func() []fleetapi.TeamRef {
-	return func() []fleetapi.TeamRef {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		me, err := p.Me().Get(ctx)
-		if err != nil {
-			return nil
-		}
-		return me.Teams
-	}
+// noteTeamNames resolves the team a note is shared with now, for a promotion,
+// which says nothing about whose team it is: any team the member can see.
+func noteTeamNames(p fleetapi.Provider) func(string) string {
+	teams := approvalTeams(p)
+	return func(id string) string { return teams().Name(id) }
 }
 
 // approvalsKeyItem names the approvals store key in the OS keychain.

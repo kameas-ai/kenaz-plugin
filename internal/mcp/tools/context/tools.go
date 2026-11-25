@@ -198,6 +198,11 @@ type TeamOut struct {
 	ParentTeamID string `json:"parent_team_id,omitempty"`
 	// Depth is 0 for the all-members team and 1 for a team directly under it.
 	Depth *int `json:"depth,omitempty"`
+	// Membership is "direct" for a team the member belongs to, and can share to,
+	// and "inherited" for a team whose context they can read without being a
+	// member of it: never a share target. Absent when Fleet didn't say, and then
+	// the team is one the member belongs to.
+	Membership string `json:"membership,omitempty"`
 }
 
 // teamsOut is the member's teams for a tool's structured output.
@@ -205,7 +210,7 @@ func teamsOut(teams []fleetapi.TeamRef) []TeamOut {
 	out := make([]TeamOut, 0, len(teams))
 	known := fleetapi.TreeKnown(teams)
 	for _, t := range teams {
-		o := TeamOut{ID: t.ID, Name: t.Name}
+		o := TeamOut{ID: t.ID, Name: t.Name, Membership: t.Membership}
 		if known {
 			isDefault, depth := t.IsDefault, t.Depth
 			o.IsDefault, o.Depth, o.Role, o.ParentTeamID = &isDefault, &depth, t.Role, t.ParentTeamID
@@ -221,10 +226,38 @@ type MemberOut struct {
 }
 
 type TeamMembersOutput struct {
-	Teams   []TeamOut   `json:"teams"`
-	Team    string      `json:"team,omitempty"`
-	Members []MemberOut `json:"members"`
-	Error   *ToolError  `json:"error,omitempty"`
+	Teams []TeamOut `json:"teams"`
+	// Note says, in words, which of teams are the member's own and which they can
+	// only read. It is there only when some are read-only.
+	Note string `json:"note,omitempty"`
+	// TeamsHidden says that Kameas Fleet sent teams this version of Kenaz could
+	// not read, which are not in teams. It is there only when that happened.
+	TeamsHidden string      `json:"teams_hidden,omitempty"`
+	Team        string      `json:"team,omitempty"`
+	Members     []MemberOut `json:"members"`
+	Error       *ToolError  `json:"error,omitempty"`
+}
+
+// teamsNote tells the member's own teams from the teams they can only read, for
+// a reader of team_members who doesn't look at each team's membership. "" when
+// every team listed is the member's own.
+func teamsNote(ts Teams) string {
+	var own, readOnly []string
+	for _, t := range ts.Readable() {
+		if t.Inherited() {
+			readOnly = append(readOnly, teamLabel(t))
+		} else {
+			own = append(own, teamLabel(t))
+		}
+	}
+	if len(readOnly) == 0 {
+		return ""
+	}
+	yours := "You are not a member of any team, so there is no team you can share to."
+	if len(own) > 0 {
+		yours = "Your teams (you belong to these and can share to them): " + strings.Join(own, "; ") + "."
+	}
+	return yours + " Teams whose context you can read but can't share to, because you are not a member of them: " + strings.Join(readOnly, "; ") + "."
 }
 
 // ---- registration ----
@@ -245,7 +278,7 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        ToolSearch,
 		Title:       "Search team context",
-		Description: "Search the notes your team has shared in Kameas Fleet (glossary, explanations, guidance, procedures, docs). Read-only: sends only your query to Kameas Fleet. Use scope=org to search organization-wide notes (Enterprise plan). " + contextlib.TeamNotice,
+		Description: "Search the notes your team has shared in Kameas Fleet (glossary, explanations, guidance, procedures, docs). Read-only: sends only your query to Kameas Fleet. Use scope=org to search organization-wide notes (Enterprise plan). " + readAnyTeam + " " + contextlib.TeamNotice,
 		Annotations: withTitle(readOnly, "Search team context"),
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in SearchInput) (*sdk.CallToolResult, SearchOutput, error) {
 		touch()
@@ -256,7 +289,7 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:        ToolPull,
 		Title:       "Read team context",
-		Description: "Fetch the full text of shared Kameas Fleet context notes by id (ids come from context_search). Read-only. " + contextlib.TeamNotice,
+		Description: "Fetch the full text of shared Kameas Fleet context notes by id (ids come from context_search). Read-only. " + readAnyTeam + " " + contextlib.TeamNotice,
 		Annotations: withTitle(readOnly, "Read team context"),
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in PullInput) (*sdk.CallToolResult, PullOutput, error) {
 		touch()
@@ -269,6 +302,7 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 		Title: "Share a note with your team",
 		Description: "Prepares sharing the given title and body to Kameas Fleet as a note visible to every member of the chosen team. " +
 			"Only share text or files the user asked to share. Never include secrets. " +
+			shareOwnTeamsOnly + " " +
 			usertext.ToolApproval,
 		Annotations: &sdk.ToolAnnotations{Title: "Share a note with your team", DestructiveHint: ptr(false), OpenWorldHint: ptr(true)},
 		Meta:        writes,
@@ -294,8 +328,9 @@ func register(s *sdk.Server, d mcp.Deps, o Options) {
 	sdk.AddTool(s, &sdk.Tool{
 		Name:  ToolTeamMembers,
 		Title: "List your teams and members",
-		Description: "List the Kameas Fleet teams you belong to and the display names and roles of a team's members. Read-only. " +
-			"Each team has an id, which is what to pass as team elsewhere; names are labels. Where Kameas Fleet reports the team tree, each team also has your role on it, its depth, the id of the team it is under, and is_default, true for the organization's all-members team.",
+		Description: "List the Kameas Fleet teams you belong to, any other teams whose context you can read, and the display names and roles of a team's members. Read-only. " +
+			"Each team has an id, which is what to pass as team elsewhere; names are labels. Where Kameas Fleet reports the team tree, each team also has your role on it, its depth, the id of the team it is under, and is_default, true for the organization's all-members team. " +
+			"Where Kameas Fleet reports it, each team has membership: \"direct\" is a team you belong to and can share to; \"inherited\" is a team whose context you can read without being a member of it, which you can search and pull from and can never share to. When some teams are inherited, note says which are which.",
 		Annotations: withTitle(readOnly, "List your teams and members"),
 	}, func(ctx context.Context, _ *sdk.CallToolRequest, in TeamMembersInput) (*sdk.CallToolResult, TeamMembersOutput, error) {
 		touch()
@@ -327,7 +362,8 @@ func runSearch(ctx context.Context, p fleetapi.Provider, st StatusSource, o Opti
 	}
 	teamID := ""
 	if scope == ScopeTeam {
-		t, terr := ResolveTeam(in.Team, o.DefaultTeam(), sess.Me.Teams)
+		// A read: a team the member can only read can be named here.
+		t, terr := sess.Teams().ReadTarget(in.Team, o.DefaultTeam())
 		if terr != nil {
 			out.Error = terr
 			return out
@@ -368,8 +404,9 @@ func runPull(ctx context.Context, p fleetapi.Provider, st StatusSource, o Option
 		return out
 	}
 	teamID := ""
-	if strings.TrimSpace(in.Team) != "" || len(sess.Me.Teams) > 0 {
-		t, terr := ResolveTeam(in.Team, o.DefaultTeam(), sess.Me.Teams)
+	if strings.TrimSpace(in.Team) != "" || len(sess.Teams().Readable()) > 0 {
+		// A read: a team the member can only read can be named here.
+		t, terr := sess.Teams().ReadTarget(in.Team, o.DefaultTeam())
 		if terr != nil {
 			out.Error = terr
 			return out
@@ -434,7 +471,9 @@ func runShare(ctx context.Context, p fleetapi.Provider, ap approvals.Preparer, s
 		out.Error = terr
 		return out
 	}
-	t, terr := ResolveTeam(in.Team, o.DefaultTeam(), sess.Me.Teams)
+	// Only a team the member belongs to: one they can only read is refused here,
+	// before anything is prepared.
+	t, terr := sess.Teams().ShareTarget(in.Team, o.DefaultTeam())
 	if terr != nil {
 		out.Error = terr
 		return out
@@ -565,12 +604,13 @@ func ExecuteShare(p fleetapi.Provider, st StatusSource) approvals.Executor {
 		if err := recheckSession(ctx, p); err != nil {
 			return nil, err
 		}
-		member := false
-		for _, t := range sess.Me.Teams {
-			member = member || t.ID == node.TeamID
+		// Still a team the member belongs to: one they left is scope_changed, and one
+		// they can now only read is not_team_member.
+		if refusal := sess.Teams().ShareRefusal(node.TeamID); refusal != nil {
+			return nil, approvals.ErrorCode(refusal.Code)
 		}
-		if !member || node.Classification != string(fleetapi.ClassificationTeamShared) || node.LoadPolicy != "on_demand" {
-			return nil, approvals.ErrorCode("scope_changed")
+		if node.Classification != string(fleetapi.ClassificationTeamShared) || node.LoadPolicy != "on_demand" {
+			return nil, approvals.ErrorCode(failScopeChanged)
 		}
 		// A share retried after an unknown outcome can find its node taken down
 		// meanwhile, and pushing would bring it back. Only that definite answer stops
@@ -693,9 +733,11 @@ func kindPhrase(kind string) string {
 }
 
 // RenderShare describes a share payload for the approval page from the
-// payload alone. teamName optionally resolves a team id to its display
-// name (the id is shown when it cannot).
-func RenderShare(teamName func(id string) string) approvals.Renderer {
+// payload alone. teams, when given, is the member's teams as Kameas Fleet
+// lists them now: it names the team if the member belongs to it (the id is
+// shown when it cannot), and when they don't belong to it the page says
+// plainly that approving will share nothing.
+func RenderShare(teams func() Teams) approvals.Renderer {
 	return func(payload []byte) (approvals.Rendered, error) {
 		var n NodeInput
 		if err := json.Unmarshal(payload, &n); err != nil {
@@ -704,15 +746,21 @@ func RenderShare(teamName func(id string) string) approvals.Renderer {
 		if n.ID == "" || n.TeamID == "" || n.Classification != string(fleetapi.ClassificationTeamShared) || n.LoadPolicy != "on_demand" || !validShareKind(n.Kind) {
 			return approvals.Rendered{}, errors.New("not a team share")
 		}
+		var listed Teams
+		if teams != nil {
+			listed = teams()
+		}
 		team := n.TeamID
-		if teamName != nil {
-			if name := teamName(n.TeamID); name != "" {
-				team = name + " (" + n.TeamID + ")"
-			}
+		if name := listed.OwnName(n.TeamID); name != "" {
+			team = name + " (" + n.TeamID + ")"
+		}
+		impact := "Every member of " + team + " will be able to read this note."
+		if refusal := listed.ApprovalRefusal(n.TeamID); refusal != "" {
+			impact = refusal
 		}
 		return approvals.Rendered{
 			Summary: fmt.Sprintf("Share %s note titled %q with the team %s in Kameas Fleet.", kindPhrase(n.Kind), n.Title, team),
-			Impact:  "Every member of " + team + " will be able to read this note.",
+			Impact:  impact,
 			Targets: []string{"team:" + n.TeamID, "node:" + n.ID},
 		}, nil
 	}
@@ -788,8 +836,11 @@ func runTeamMembers(ctx context.Context, p fleetapi.Provider, st StatusSource, o
 		out.Error = terr
 		return out
 	}
-	out.Teams = teamsOut(sess.Me.Teams)
-	t, terr := ResolveTeam(in.Team, o.DefaultTeam(), sess.Me.Teams)
+	teams := sess.Teams()
+	out.Teams, out.Note = teamsOut(teams.Readable()), teamsNote(teams)
+	out.TeamsHidden = strings.TrimSpace(teams.HiddenNote() + " " + teams.TreeNote())
+	// A read: Fleet decides whether a team the member can only read lists its members.
+	t, terr := teams.ReadTarget(in.Team, o.DefaultTeam())
 	if terr != nil {
 		out.Error = terr
 		return out

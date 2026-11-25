@@ -476,7 +476,7 @@ func TestExecutorsRecheckAccount(t *testing.T) {
 		t.Fatal("wrote for another account")
 	}
 	// The page text comes from the payload, not from the tool's summary.
-	v, err := RenderShare(func(string) string { return "Platform" })(r.Payload)
+	v, err := RenderShare(func() Teams { return TeamsOf([]fleetapi.TeamRef{platform}) })(r.Payload)
 	if err != nil || !strings.Contains(v.Summary, `"t"`) || !strings.Contains(v.Summary, "Platform (team-plat)") {
 		t.Fatalf("render: %+v %v", v, err)
 	}

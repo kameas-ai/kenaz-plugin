@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // MutateOptions qualify update, forget and forget-all.
@@ -467,7 +469,38 @@ profile_generation = profile_generation + 1, lease_holder = '', lease_until = 0 
 const (
 	metaEraseRequestID      = "erase_request_id"
 	metaEraseRequestBarrier = "erase_request_barrier"
+	// metaEraseRetryAt is when Fleet said a forget-all it refused for its
+	// allowance may be asked again (unix seconds).
+	metaEraseRetryAt = "erase_retry_at"
 )
+
+// SetEraseRetryAt records when Fleet may next be asked for a forget-all it
+// refused because its hourly allowance was spent. The zero time clears it. It
+// is kept in the store so that a restart doesn't ask early. It is the worker's
+// own bookkeeping and is never shown: the worker ignores a time it wouldn't
+// have set, and a status that printed one could promise a time nothing keeps.
+func (s *Store) SetEraseRetryAt(ctx context.Context, at time.Time) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if at.IsZero() {
+			_, err := tx.ExecContext(ctx, `DELETE FROM meta WHERE key = ?`, metaEraseRetryAt)
+			return err
+		}
+		return setMeta(ctx, tx, metaEraseRetryAt, strconv.FormatInt(at.Unix(), 10))
+	})
+}
+
+// EraseRetryAt is the time SetEraseRetryAt recorded, or the zero time.
+func (s *Store) EraseRetryAt(ctx context.Context) (time.Time, error) {
+	v, err := readMeta(ctx, s.db, metaEraseRetryAt)
+	if err != nil || v == "" {
+		return time.Time{}, err
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return time.Time{}, nil
+	}
+	return time.Unix(n, 0), nil
+}
 
 func setEraseRequestID(ctx context.Context, tx *sql.Tx, id, barrier string) error {
 	if err := setMeta(ctx, tx, metaEraseRequestID, id); err != nil {
@@ -523,7 +556,7 @@ func (s *Store) CompleteErase(ctx context.Context, l Lease, erasedBefore string)
 		if err := checkLease(ctx, tx, l); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM meta WHERE key IN (?, ?)`, metaEraseRequestID, metaEraseRequestBarrier); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM meta WHERE key IN (?, ?, ?)`, metaEraseRequestID, metaEraseRequestBarrier, metaEraseRetryAt); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE sync_state SET erase_pending = 0, own_erase_before = ?, erased_before = ? WHERE singleton = 1`, erasedBefore, erasedBefore)

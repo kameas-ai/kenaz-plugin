@@ -48,6 +48,34 @@ type Result struct {
 	Disposition Disposition
 	Export      fleetapi.ExportResult
 	Err         error
+	// RetryAfter is how long Fleet asked the caller to wait before sending
+	// this batch again, on a Retry: for example the 5 s Fleet names when an
+	// upload waits behind the member's opt-out or removal (503 try_again).
+	// It is bounded at MaxRetryAfter, and zero when Fleet named no usable
+	// time. The same bytes are sent again; nothing was stored.
+	RetryAfter time.Duration
+}
+
+// MaxBackoff is the longest Backoff ever puts a retry off.
+const MaxBackoff = time.Hour
+
+// MaxRetryAfter bounds a Retry-After on an upload (Result.RetryAfter): one
+// minute, the most Fleet itself names on the telemetry routes (it sends 5 s
+// for try_again). It is far below MaxBackoff on purpose. The number comes
+// from a header that anything between could have set, and the caller holds a
+// whole backlog on it: without a time the backlog is tried again every 30 s,
+// so a hint may put that off by a minute and no more.
+const MaxRetryAfter = time.Minute
+
+// retryHint is the wait Fleet asked for with err, bounded at MaxRetryAfter. A
+// value that is zero, negative or unreadable is no hint, and a larger one is
+// cut.
+func retryHint(err error) time.Duration {
+	ra, ok := fleetapi.RetryAfter(err)
+	if !ok || ra <= 0 {
+		return 0
+	}
+	return min(ra, MaxRetryAfter)
 }
 
 // Forwarder is safe for concurrent use.
@@ -149,7 +177,7 @@ func (f *Forwarder) Send(ctx context.Context, owner fleetapi.ExpectedSession, b 
 	if errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 && ae.Status != 401 && ae.Status != 408 && ae.Status != 429 {
 		return Result{Disposition: Quarantine, Err: err}
 	}
-	return Result{Disposition: Retry, Err: err}
+	return Result{Disposition: Retry, Err: err, RetryAfter: retryHint(err)}
 }
 
 // noteDrops logs Fleet's drop counters: a 200 can still carry dropped records,
@@ -166,11 +194,11 @@ func (f *Forwarder) noteDrops(b fleetapi.ProjectedBatch, res fleetapi.ExportResu
 // 5s, capped at 1h.
 func Backoff(n int) time.Duration {
 	d := 5 * time.Second
-	for i := 0; i < n && d < time.Hour; i++ {
+	for i := 0; i < n && d < MaxBackoff; i++ {
 		d *= 2
 	}
-	if d > time.Hour {
-		d = time.Hour
+	if d > MaxBackoff {
+		d = MaxBackoff
 	}
 	return d
 }

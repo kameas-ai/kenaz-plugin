@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kameas-ai/kenaz-plugin/fleetapi"
 	"github.com/kameas-ai/kenaz-plugin/fleetapi/allowlist"
@@ -17,6 +18,10 @@ func TestEnrollBodyValidate(t *testing.T) {
 	}
 	cases := map[string]func(*fleetapi.EnrollBody){
 		"no node id":      func(b *fleetapi.EnrollBody) { b.NodeID = "" },
+		"spaced node id":  func(b *fleetapi.EnrollBody) { b.NodeID = "01J ABC" },
+		"long node id":    func(b *fleetapi.EnrollBody) { b.NodeID = strings.Repeat("A", 129) },
+		"control node id": func(b *fleetapi.EnrollBody) { b.NodeID = "01J\x00ABC" },
+		"unicode node id": func(b *fleetapi.EnrollBody) { b.NodeID = "01Jé" },
 		"bad platform":    func(b *fleetapi.EnrollBody) { b.Platform = "plan9" },
 		"bad arch":        func(b *fleetapi.EnrollBody) { b.Arch = "386" },
 		"harness kind":    func(b *fleetapi.EnrollBody) { b.ClientKind = "codex" },
@@ -184,5 +189,67 @@ func TestDefaultTeamAndTreeKnown(t *testing.T) {
 	var z fleetapi.TeamRef
 	if z.IsDefault || z.Role != "" || z.ParentTeamID != "" || z.Depth != 0 || z.Path != nil || z.Slug != "" || z.Membership != "" {
 		t.Fatalf("zero value: %+v", z)
+	}
+}
+
+// MemberTeams is the rows the caller belongs to: everything not inherited, and an
+// empty Membership (an older Fleet) counts as belonging.
+func TestMemberTeams(t *testing.T) {
+	ids := func(teams []fleetapi.TeamRef) string {
+		var out []string
+		for _, tm := range teams {
+			out = append(out, tm.Name)
+		}
+		return strings.Join(out, ",")
+	}
+	old := fleetapitest.SampleTeams()
+	if got := fleetapi.MemberTeams(old); ids(got) != "Everyone,Platform,Payments" {
+		t.Fatalf("no membership sent: %s", ids(got))
+	}
+	if fleetapi.MemberTeams(nil) != nil {
+		t.Fatal("nil")
+	}
+	with := fleetapitest.SampleTeamsWithInherited()
+	if got := fleetapi.MemberTeams(with); ids(got) != "Everyone,Payments" {
+		t.Fatalf("%s", ids(got))
+	}
+	if len(with) != 5 || !with[1].Inherited() || with[1].Role != "" || with[0].Inherited() || (fleetapi.TeamRef{}).Inherited() {
+		t.Fatalf("%+v", with)
+	}
+	// The default team as an inherited row: still the flagged team, and not one
+	// the caller belongs to.
+	def := fleetapitest.SampleTeamsDefaultInherited()
+	root, ok := fleetapi.DefaultTeam(def)
+	if !ok || !root.Inherited() || ids(fleetapi.MemberTeams(def)) != "Payments" || !fleetapi.TreeKnown(def) {
+		t.Fatalf("%+v", def)
+	}
+}
+
+// RetryAfter reads the hint from every refusal Fleet sends one with, and passes
+// it on as sent: bounding it is the caller's job.
+func TestRetryAfter(t *testing.T) {
+	with := func(status int, code, seconds string) error {
+		return &fleetapi.APIError{Status: status, Code: code, Details: map[string]string{"retry_after_seconds": seconds}}
+	}
+	for _, c := range []struct {
+		err  error
+		want time.Duration
+		ok   bool
+	}{
+		{with(429, fleetapi.CodeRateLimited, "1"), time.Second, true},
+		{with(429, fleetapi.CodeRateLimited, "1800"), 30 * time.Minute, true},
+		{with(503, "busy", "5"), 5 * time.Second, true},
+		{with(503, "busy", "30"), 30 * time.Second, true},
+		{with(409, fleetapi.CodeEraseInProgress, "30"), 30 * time.Second, true},
+		{with(503, fleetapi.CodeEraseInProgress, "30"), 30 * time.Second, true},
+		{with(503, "busy", ""), 0, true},
+		{with(429, fleetapi.CodeRateLimited, "-3"), 0, true},
+		{with(500, "internal_error", "30"), 0, false},
+		{with(409, "version_conflict", "30"), 0, false},
+		{errors.New("connection lost"), 0, false},
+	} {
+		if got, ok := fleetapi.RetryAfter(c.err); got != c.want || ok != c.ok {
+			t.Errorf("%v: %v %v, want %v %v", c.err, got, ok, c.want, c.ok)
+		}
 	}
 }

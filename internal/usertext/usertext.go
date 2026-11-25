@@ -138,20 +138,24 @@ func PromptSyncShare(n int, team string, fromMemory int) string {
 
 // Lines for `kenaz context sync`.
 const (
-	SyncNextFile        = "Press Enter for the next file, or q to stop viewing: "
-	SyncUpToDate        = "Everything is up to date."
-	SyncHint            = "To share this with your team, have the person run `kenaz context sync`."
-	SyncNotYoursLine    = "only its author can change it on Kameas Fleet for now. Your text stays in your folder."
-	SyncRemovedLine     = "it was removed from Kameas Fleet, so it wasn't sent. Your copy stays."
-	SyncNameGone        = "a file with this name was removed from Kameas Fleet, so it can't be shared under this name. Rename it and run this again."
-	SyncPromotedLine    = "it's now shared with the whole organization, so it can't be changed from here."
-	SyncBlockedLine     = "Kameas Fleet blocked it because it may hold a credential or unsafe content."
-	SyncUnreachLine     = "not confirmed, because Kameas Fleet didn't answer. Run sync again."
-	SyncRefusedLine     = "Kameas Fleet refused it."
-	SyncCancelled       = "Nothing was shared."
-	TeamFilesNeedSignIn = "Some team files are hidden until you sign in with `kenaz login`."
-	SyncPickTeam        = "Which team? Type its number or name: "
-	SyncNoSuchTeam      = "That isn't one of your teams, so nothing was shared."
+	SyncNextFile      = "Press Enter for the next file, or q to stop viewing: "
+	SyncUpToDate      = "Everything is up to date."
+	SyncHint          = "To share this with your team, have the person run `kenaz context sync`."
+	SyncNotYoursLine  = "only its author can change it on Kameas Fleet for now. Your text stays in your folder."
+	SyncRemovedLine   = "it was removed from Kameas Fleet, so it wasn't sent. Your copy stays."
+	SyncNameGone      = "a file with this name was removed from Kameas Fleet, so it can't be shared under this name. Rename it and run this again."
+	SyncPromotedLine  = "it's now shared with the whole organization, so it can't be changed from here."
+	SyncBlockedLine   = "Kameas Fleet blocked it because it may hold a credential or unsafe content."
+	SyncUnreachLine   = "not confirmed, because Kameas Fleet didn't answer. Run sync again."
+	SyncRefusedLine   = "Kameas Fleet refused it."
+	SyncNotMemberLine = "you are not a member of this team, so it wasn't sent. Your copy stays."
+	// SyncReadOnlyTeamsHint follows the menu of the member's own teams when they
+	// can also read other teams' context.
+	SyncReadOnlyTeamsHint = "You can also read context from teams you are not a member of. To bring one's files down, without sharing anything, run this again with --team and its name."
+	SyncCancelled         = "Nothing was shared."
+	TeamFilesNeedSignIn   = "Some team files are hidden until you sign in with `kenaz login`."
+	SyncPickTeam          = "Which team? Type its number or name: "
+	SyncNoSuchTeam        = "That isn't one of your teams, so nothing was shared."
 )
 
 // SyncStopped says the run stopped sending because Kameas Fleet wasn't answering.
@@ -186,6 +190,12 @@ func SyncFolderBound(folder, team string) string {
 	return "The folder " + folder + " now belongs to this account and to " + team + "."
 }
 
+// SyncReadOnlyFolderBeside says a team the person only reads was brought down
+// beside a folder of that name that already held files of theirs.
+func SyncReadOnlyFolderBeside(theirs, pulled, team string) string {
+	return "The folder " + theirs + " already holds files that didn't come from " + team + ", so they stay where they are and " + team + "'s files are in " + pulled + ". Nothing in either folder is sent to " + team + "."
+}
+
 // SyncUnclaimed reports a folder of this account's that matches none of its teams.
 func SyncUnclaimed(folder string) string {
 	return "The folder " + folder + " has files, but you have no team of that name, so they aren't sent. To share them, move them into your team's folder."
@@ -207,6 +217,36 @@ func SyncResult(sent, total int, team string) string {
 // EraseTryingAgain follows the line saying an erase is in progress, once an attempt hasn't
 // been answered. It may have worked, so it never says the erase failed.
 const EraseTryingAgain = "Kameas Fleet hasn't confirmed it yet. Kenaz will try again to confirm whenever your AI tool is running."
+
+// TeamsHidden says, in one sentence, that Kameas Fleet sent teams this version
+// of Kenaz could not read. hidden is how many; notAList says the whole list
+// couldn't be read, so there is no count. "" when neither.
+func TeamsHidden(hidden int, notAList bool) string {
+	switch {
+	case notAList:
+		return "Kameas Fleet sent your teams in a form this version of Kenaz could not read; they are hidden. Updating Kenaz may fix this."
+	case hidden == 1:
+		return "Kameas Fleet sent 1 team this version of Kenaz could not read; it is hidden. Updating Kenaz may fix this."
+	case hidden > 1:
+		return "Kameas Fleet sent " + strconv.Itoa(hidden) + " teams this version of Kenaz could not read; they are hidden. Updating Kenaz may fix this."
+	}
+	return ""
+}
+
+// TeamTreeUnread says that some teams are listed without their place in the
+// team tree. "" when none.
+func TeamTreeUnread(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return "Kameas Fleet sent " + plural(n, "team") + " whose place in the team tree this version of Kenaz could not read, so Kenaz can't say which is your organization's all-members team. Updating Kenaz may fix this."
+}
+
+// EraseAskedAgain follows the line saying an erase is in progress, when Kameas
+// Fleet has had its hourly allowance of erase requests. It names no time, so it
+// is true whenever it is shown. Like EraseTryingAgain it never says the erase
+// failed.
+const EraseAskedAgain = "Kameas Fleet takes only a few erase requests an hour; Kenaz asks again every few minutes, whenever your AI tool is running, until it is accepted."
 
 // ImportingNotes is the progress line.
 func ImportingNotes(done, total int) string {

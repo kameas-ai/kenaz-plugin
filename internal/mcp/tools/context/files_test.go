@@ -169,7 +169,7 @@ func (d *desk) approve(t *testing.T) (approvals.Rendered, []byte, error) {
 		}
 		return out
 	}
-	view, err := RenderShareFile(named)(req.Payload)
+	view, err := RenderShareFile(func() Teams { return TeamsOf(named()) })(req.Payload)
 	if err != nil {
 		t.Fatalf("render: %v", err)
 	}

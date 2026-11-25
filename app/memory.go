@@ -172,6 +172,8 @@ func (mp memoryPaths) statusLine(ctx context.Context) string {
 
 func syncWord(st memory.SyncStatus) string {
 	switch {
+	case st.ErasePending && st.StatusCode == "rate_limited":
+		return "erasing (Kameas Fleet is asked again every few minutes until it accepts)"
 	case st.ErasePending:
 		return "erasing"
 	case !st.Enabled:

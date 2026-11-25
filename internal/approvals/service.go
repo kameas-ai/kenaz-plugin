@@ -590,6 +590,26 @@ func (m *Manager) Status(ctx context.Context, requestID string) (Status, []byte,
 	return st, res, nil
 }
 
+// FailureCode is the machine code a failed request ended with, such as
+// not_team_member, or "" for any other request. It only reads the record: no
+// sweep and no sign-out check, so a settled callback can ask it.
+func (m *Manager) FailureCode(requestID string) string {
+	code := ""
+	m.st.view(func(s *state) {
+		r, ok := s.Records[requestID]
+		if !ok || r.Status != StatusFailed {
+			return
+		}
+		var res struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(r.Result, &res) == nil && codeRe.MatchString(res.Error) {
+			code = res.Error
+		}
+	})
+	return code
+}
+
 // ApprovalURL returns the page link for requestID.
 func (m *Manager) ApprovalURL(_ context.Context, requestID string) (string, error) {
 	if !ValidID(requestID) {

@@ -12,32 +12,32 @@ func TestResolveTeam(t *testing.T) {
 	a := fleetapi.TeamRef{ID: "id-a", Name: "Platform"}
 	b := fleetapi.TeamRef{ID: "id-b", Name: "Payments"}
 
-	if _, e := ResolveTeam("", "", nil); e == nil || e.Code != CodeTeamRequired {
+	if _, e := resolveBoth(t, "", "", nil); e == nil || e.Code != CodeTeamRequired {
 		t.Fatalf("no teams: %+v", e)
 	}
-	if got, e := ResolveTeam("", "", []fleetapi.TeamRef{a}); e != nil || got.ID != a.ID {
+	if got, e := resolveBoth(t, "", "", []fleetapi.TeamRef{a}); e != nil || got.ID != a.ID {
 		t.Fatalf("single team: %+v %+v", got, e)
 	}
-	if _, e := ResolveTeam("", "", []fleetapi.TeamRef{a, b}); e == nil || e.Code != CodeTeamRequired || len(e.Choices) != 2 {
+	if _, e := resolveBoth(t, "", "", []fleetapi.TeamRef{a, b}); e == nil || e.Code != CodeTeamRequired || len(e.Choices) != 2 {
 		t.Fatalf("many teams, no choice: %+v", e)
 	}
-	if got, e := ResolveTeam("payments", "", []fleetapi.TeamRef{a, b}); e != nil || got.ID != b.ID {
+	if got, e := resolveBoth(t, "payments", "", []fleetapi.TeamRef{a, b}); e != nil || got.ID != b.ID {
 		t.Fatalf("by name: %+v %+v", got, e)
 	}
-	if got, e := ResolveTeam("id-a", "", []fleetapi.TeamRef{a, b}); e != nil || got.ID != a.ID {
+	if got, e := resolveBoth(t, "id-a", "", []fleetapi.TeamRef{a, b}); e != nil || got.ID != a.ID {
 		t.Fatalf("by id: %+v %+v", got, e)
 	}
-	if got, e := ResolveTeam("", "Payments", []fleetapi.TeamRef{a, b}); e != nil || got.ID != b.ID {
+	if got, e := resolveBoth(t, "", "Payments", []fleetapi.TeamRef{a, b}); e != nil || got.ID != b.ID {
 		t.Fatalf("configured default: %+v %+v", got, e)
 	}
-	if _, e := ResolveTeam("Growth", "Payments", []fleetapi.TeamRef{a, b}); e == nil || e.Code != CodeTeamRequired {
+	if _, e := resolveBoth(t, "Growth", "Payments", []fleetapi.TeamRef{a, b}); e == nil || e.Code != CodeTeamRequired {
 		t.Fatalf("unknown explicit team must not fall back: %+v", e)
 	}
-	if got, e := ResolveTeam("", "Old team", []fleetapi.TeamRef{a}); e != nil || got.ID != a.ID {
+	if got, e := resolveBoth(t, "", "Old team", []fleetapi.TeamRef{a}); e != nil || got.ID != a.ID {
 		t.Fatalf("stale default with one team: %+v %+v", got, e)
 	}
 	dup := fleetapi.TeamRef{ID: "id-c", Name: "platform"}
-	if _, e := ResolveTeam("Platform", "", []fleetapi.TeamRef{a, dup}); e == nil {
+	if _, e := resolveBoth(t, "Platform", "", []fleetapi.TeamRef{a, dup}); e == nil {
 		t.Fatal("ambiguous name resolved")
 	}
 }
@@ -50,7 +50,7 @@ func TestResolveTeamAmbiguousName(t *testing.T) {
 	b := fleetapi.TeamRef{ID: "id-a", Name: "docs", Role: "lead", ParentTeamID: "id-x", Depth: 2, Path: []string{"id-x"}}
 	teams := []fleetapi.TeamRef{root, a, b}
 	for name, args := range map[string][2]string{"asked for": {"Docs", ""}, "configured": {"", "DOCS"}, "asked for over a good default": {"docs", "Everyone"}} {
-		got, e := ResolveTeam(args[0], args[1], teams)
+		got, e := resolveBoth(t, args[0], args[1], teams)
 		if e == nil || e.Code != CodeTeamRequired || got.ID != "" {
 			t.Fatalf("%s: %+v %+v", name, got, e)
 		}
@@ -61,11 +61,11 @@ func TestResolveTeamAmbiguousName(t *testing.T) {
 			t.Fatalf("%s: message doesn't list the ids: %s", name, e.Message)
 		}
 	}
-	if got, e := ResolveTeam("id-a", "Docs", teams); e != nil || got.ID != "id-a" || got.Depth != 2 {
+	if got, e := resolveBoth(t, "id-a", "Docs", teams); e != nil || got.ID != "id-a" || got.Depth != 2 {
 		t.Fatalf("by id: %+v %+v", got, e)
 	}
 	// An unambiguous argument wins over an ambiguous configured default.
-	if got, e := ResolveTeam("Everyone", "Docs", teams); e != nil || got.ID != "id-root" {
+	if got, e := resolveBoth(t, "Everyone", "Docs", teams); e != nil || got.ID != "id-root" {
 		t.Fatalf("argument over ambiguous default: %+v %+v", got, e)
 	}
 }
@@ -105,5 +105,41 @@ func TestSharedWithWholeOrg(t *testing.T) {
 	}
 	if everyone, known := SharedWithWholeOrg(nil, root.ID); everyone || known {
 		t.Fatalf("no teams: %v %v", everyone, known)
+	}
+}
+
+// resolveBoth resolves a team for a read and for a share over rows that hold no
+// inherited team, where the two must agree in every particular, and returns that
+// answer.
+func resolveBoth(t *testing.T, arg, configured string, rows []fleetapi.TeamRef) (fleetapi.TeamRef, *ToolError) {
+	t.Helper()
+	ts := TeamsOf(rows)
+	rt, re := ts.ReadTarget(arg, configured)
+	st, se := ts.ShareTarget(arg, configured)
+	if rt.ID != st.ID || (re == nil) != (se == nil) || (re != nil && (re.Code != se.Code || re.Message != se.Message || re.Remedy != se.Remedy || strings.Join(re.Choices, "\x00") != strings.Join(se.Choices, "\x00"))) {
+		t.Fatalf("read and share disagree with no inherited team: %+v %+v / %+v %+v", rt, re, st, se)
+	}
+	return rt, re
+}
+
+// A name shared by one of the member's teams and one they only read: a read can't
+// pick, and doesn't call the read-only one theirs; a share takes the member's own.
+func TestAmbiguousNameAcrossOwnAndReadOnlyTeams(t *testing.T) {
+	own := fleetapi.TeamRef{ID: "id-own", Name: "Docs", Role: "member", Membership: fleetapi.TeamMembershipDirect}
+	ro := fleetapi.TeamRef{ID: "id-ro", Name: "docs", Membership: fleetapi.TeamMembershipInherited}
+	ts := TeamsOf([]fleetapi.TeamRef{own, ro})
+	_, e := ts.ReadTarget("Docs", "")
+	if e == nil || e.Code != CodeTeamRequired || e.Message != `More than one of the teams you belong to or can read is named "Docs" (ids: id-own, id-ro).` {
+		t.Fatalf("%+v", e)
+	}
+	if got, e := ts.ShareTarget("docs", ""); e != nil || got.ID != "id-own" {
+		t.Fatalf("%+v %+v", got, e)
+	}
+	// Two of the member's own keep the words they had.
+	own2 := fleetapi.TeamRef{ID: "id-own2", Name: "DOCS", Role: "lead", Membership: fleetapi.TeamMembershipDirect}
+	for _, resolve := range []func(string, string) (fleetapi.TeamRef, *ToolError){TeamsOf([]fleetapi.TeamRef{own, own2, ro}).ShareTarget, TeamsOf([]fleetapi.TeamRef{own, own2}).ReadTarget} {
+		if _, e := resolve("docs", ""); e == nil || e.Message != `More than one of your teams is named "docs" (ids: id-own, id-own2).` {
+			t.Fatalf("%+v", e)
+		}
 	}
 }

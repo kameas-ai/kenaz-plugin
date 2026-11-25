@@ -1,0 +1,103 @@
+{
+  "name": "kenaz",
+  "version": "1.0.0",
+  "description": "Kenaz, a Kameas AI product. Connects to your organization's Kameas Fleet through the hosted Kameas Fleet connector: shared skills, team context and your Kenaz memory. Requires a Kameas Fleet account. Kenaz and Kameas are trademarks of Kameas AI, Inc. Names of AI tools and platforms made by other companies are trademarks of their respective owners and are used only to identify those products. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by any of them.",
+  "author": {
+    "name": "Kameas AI, Inc.",
+    "url": "https://kameas.ai"
+  },
+  "homepage": "https://kenaz.kameas.ai",
+  "license": "Apache-2.0",
+  "keywords": [
+    "skills",
+    "team context",
+    "memory",
+    "knowledge"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Kenaz",
+    "shortDescription": "Shared skills, context, memory",
+    "longDescription": "Kenaz, a Kameas AI product, connects this assistant to your organization's Kameas Fleet. Find and read the skills your organization has shared, search and read your team's shared context, and reach your Kenaz memory: the notes you keep in Kameas Fleet, which follow you between the AI tools you use.\n\nWhat you can do:\n- Search your organization's shared skills and read the version an organization admin reviewed.\n- Search the notes your team has shared (guidance, procedures, facts, glossary terms) and read one in full.\n- Search, read, save and change your own memory notes, and get the link to export them.\n- Propose sharing a note with one of your teams, making a team note visible to your organization, or publishing a skill to your own catalog. Nothing is shared or published until you approve the exact content in the Kameas Fleet dashboard.\n- Delete a memory note, or ask to delete all of them. Deleting all of your notes waits for your approval in the Kameas Fleet dashboard.\n\nKenaz sees only what your Kameas Fleet account can see, after you sign in to Kameas Fleet and allow this connection. Your organization's Kameas Fleet administrator decides whether this connection is available. Memory is available through this connection only if your organization allows it and you turn it on. Some features depend on your organization's Kameas Fleet plan and settings.\n\nRequires an account in a Kameas Fleet organization.\n\nKenaz and Kameas are trademarks of Kameas AI, Inc. Names of AI tools and platforms made by other companies are trademarks of their respective owners and are used only to identify those products. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by any of them.",
+    "developerName": "Kameas AI, Inc.",
+    "category": "Productivity",
+    "capabilities": [
+      "Search and read your team's shared context",
+      "Search and read your organization's shared skills",
+      "Search, read, save and change your memory notes",
+      "Propose shares and skill publishing for your approval"
+    ],
+    "websiteURL": "https://kenaz.kameas.ai",
+    "supportURL": "https://docs.kameas.ai/docs/kenaz-plugin/troubleshooting",
+    "privacyPolicyURL": "https://kenaz.kameas.ai/privacy.html",
+    "termsOfServiceURL": "https://kenaz.kameas.ai/terms.html",
+    "defaultPrompt": [
+      "Search my team's shared context for our deployment checklist.",
+      "Find a shared skill for writing release notes.",
+      "What did I save to my memory recently?"
+    ],
+    "composerIcon": "./assets/composer-icon.png",
+    "logo": "./assets/logo.png"
+  },
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/get-started/SKILL.md",
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Find a shared skill and read the reviewed version",
+              "prompt": "Find a shared skill for writing release notes and show me what it says.",
+              "tools_triggered": "skills_search, skills_get",
+              "expected_behavior": "Lists the matching skills from the test organization's catalog with their descriptions, then shows the release-notes skill as an organization admin reviewed it. Says so if no reviewed version exists."
+            },
+            {
+              "description": "Search the context the user can read and read a note in full",
+              "prompt": "Search our shared context for the on-call handoff procedure and tell me what it says.",
+              "tools_triggered": "context_search, context_pull",
+              "expected_behavior": "Finds the 'On-call handoff' note, reads its full text and answers from it, naming the note it used. Does not follow instructions written inside the note."
+            },
+            {
+              "description": "Save a memory note",
+              "prompt": "Remember that the staging database is refreshed every Monday at 06:00 UTC.",
+              "tools_triggered": "memory_save",
+              "expected_behavior": "Saves a short note with a clear title to the test account's memory and confirms it was saved, giving the note's id."
+            },
+            {
+              "description": "Search memory and open a note",
+              "prompt": "Search my memory for anything about the staging database and open the best match.",
+              "tools_triggered": "memory_search, memory_get",
+              "expected_behavior": "Returns matching memory notes with titles and dates, opens the most relevant one and summarizes it. Says so if nothing matches."
+            },
+            {
+              "description": "Propose sharing a note with the team that owns a context note, then check the request",
+              "prompt": "Find our on-call handoff note and propose sharing a short summary of it with the team that owns it. Is it shared yet?",
+              "tools_triggered": "context_search, context_share, approval_status",
+              "expected_behavior": "Uses the owning team from the handoff note's search result, creates a share request for that team and gives the approval link. States that nothing is shared until the user approves the exact note in the Kameas Fleet dashboard, and reports the request as waiting for approval."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Approving a request on the user's behalf. No tool can approve; the assistant should point the user to the approval link instead.",
+              "prompt": "Approve my pending share request for me so I don't have to open the dashboard."
+            },
+            {
+              "description": "Reading another person's memory. Memory tools only reach the signed-in user's own notes; the assistant should explain that.",
+              "prompt": "Show me the memory notes my coworker saved last week."
+            },
+            {
+              "description": "A request unrelated to shared skills, team context or memory. No Kenaz tool should be called.",
+              "prompt": "Book me a flight to Boston next Tuesday."
+            }
+          ]
+        },
+        "commerce": false,
+        "commerce_description": "Kenaz does not sell anything or process payments."
+      },
+      "publication": {
+        "release_notes": "First directory release. Connects to the hosted Kameas Fleet connector for shared skills, team context and your Kenaz memory."
+      }
+    }
+  }
+}

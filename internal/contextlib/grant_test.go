@@ -180,7 +180,7 @@ func TestShareGrantHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := g.Settle("r2", "done"); err != nil {
+	if err := g.Settle("r2", "done", "", false); err != nil {
 		t.Fatal(err)
 	}
 	h := g.History(a)
@@ -190,10 +190,88 @@ func TestShareGrantHistory(t *testing.T) {
 	if n := g.UsedThisHour(a, now); n != 1 {
 		t.Fatalf("%d used this hour", n)
 	}
+	// Every attempt in the hour counts, whatever became of it, but one refused
+	// because the member isn't in the team.
+	for i, e := range []ShareAudit{
+		{Status: "failed", Reason: "node_changed"},
+		{Status: "failed"},
+		{Status: "canceled"},
+		{Status: "reconciling"},
+		{Status: "failed", Reason: ReasonNotTeamMember},
+		// The reason alone, on a share that didn't fail, changes nothing.
+		{Status: "done", Reason: ReasonNotTeamMember},
+	} {
+		id := "s" + string(rune('0'+i))
+		if err := g.Record(ShareAudit{Account: a, Slug: "s.md", At: now, RequestID: id, Status: "executing"}); err != nil {
+			t.Fatal(err)
+		}
+		if n := g.UsedThisHour(a, now); n != i+2 && i < 5 {
+			t.Fatalf("a share in flight: %d used", n)
+		}
+		if err := g.Settle(id, e.Status, e.Reason, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := g.UsedThisHour(a, now); n != 6 {
+		t.Fatalf("%d used this hour, want 6: every attempt but the not_team_member refusal", n)
+	}
+	h = g.History(a)
+	if last := h[len(h)-2]; last.Reason != ReasonNotTeamMember || last.Status != "failed" || last.Counts() {
+		t.Fatalf("%+v", last)
+	}
 	for i := 0; i < maxShareAudit+5; i++ {
 		g.Record(ShareAudit{Account: a, Slug: "x.md", At: now})
 	}
 	if n := len(g.History(a)) + len(g.History(b)); n != maxShareAudit {
 		t.Fatalf("%d kept", n)
+	}
+}
+
+// The history's limit never pushes out a line that counts toward this hour's cap:
+// lines that don't count go first, however many of them arrive.
+func TestShareGrantHistoryKeepsThisHoursCountedLines(t *testing.T) {
+	g := newTestGrant(t.TempDir(), grantKey)
+	a, b := Account{Env: "dev", OrgID: "o1", UserID: "u1"}, Account{Env: "dev", OrgID: "o1", UserID: "u2"}
+	now := time.Date(2026, 11, 13, 10, 30, 0, 0, time.UTC)
+	record := func(e ShareAudit) {
+		t.Helper()
+		if err := g.Record(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An older hour's lines, then this hour's whole cap.
+	for i := 0; i < 100; i++ {
+		record(ShareAudit{Account: a, Slug: "old.md", At: now.Add(-3 * time.Hour), Status: "done"})
+	}
+	for i := 0; i < MaxGrantedSharesPerHour; i++ {
+		record(ShareAudit{Account: a, Slug: "x.md", At: now, Status: "done"})
+	}
+	// Then far more lines than the history holds, none of which count for a now:
+	// refused shares, and another account's.
+	for i := 0; i < maxShareAudit+200; i++ {
+		e := ShareAudit{Account: a, Slug: "r.md", At: now, Status: "failed", Reason: ReasonNotTeamMember}
+		if i%2 == 1 {
+			e = ShareAudit{Account: b, Slug: "theirs.md", At: now, Status: "done"}
+		}
+		record(e)
+	}
+	if n := g.UsedThisHour(a, now); n != MaxGrantedSharesPerHour {
+		t.Fatalf("%d of this hour's %d counted lines are left", n, MaxGrantedSharesPerHour)
+	}
+	if n := len(g.History(a)) + len(g.History(b)); n != maxShareAudit {
+		t.Fatalf("%d kept", n)
+	}
+	for _, e := range g.History(a) {
+		if e.Slug == "old.md" {
+			t.Fatal("an older hour's line outlived this hour's")
+		}
+	}
+	// What is kept is the newest of what could go.
+	h := g.History(b)
+	if len(h) == 0 || !h[len(h)-1].At.Equal(now) {
+		t.Fatalf("%+v", h)
+	}
+	if n := g.RefusedThisHour(a, now); n == 0 || n > maxShareAudit {
+		t.Fatalf("%d refused", n)
 	}
 }

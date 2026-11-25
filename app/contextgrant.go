@@ -204,6 +204,9 @@ func writeContextGrantStatus(env Env, g contextlib.ShareGrant, acct contextlib.A
 	case on:
 		fmt.Fprintf(w, "On since %s: your AI tool can share context files with your teams without asking each time.\n", since.Local().Format("2006-01-02 15:04"))
 		fmt.Fprintf(w, "Used this hour: %d of %d. Turn it off with `%s context grant off`.\n", g.UsedThisHour(acct, env.now()), contextlib.MaxGrantedSharesPerHour, variant.Current.Binary)
+		if n := g.RefusedThisHour(acct, env.now()); n >= contextlib.MaxRefusedGrantSharesPerHour {
+			fmt.Fprintf(w, "Paused until the next hour: %d shares this hour were refused because you are not a member of the team, so sharing asks for your approval until then.\n", n)
+		}
 	default:
 		fmt.Fprintf(w, "Off: sharing a context file asks for your approval each time. Turn it on with `%s context grant on`.\n", variant.Current.Binary)
 	}
@@ -223,11 +226,18 @@ func writeContextGrantStatus(env Env, g contextlib.ShareGrant, acct contextlib.A
 		if e.TeamName != "" {
 			team = e.TeamName + " (" + e.TeamID + ")"
 		}
-		fmt.Fprintf(w, "  %s  %s  %s  %s  %s\n", e.At.Local().Format("2006-01-02 15:04"), safetext.Terminal(e.Slug), safetext.Terminal(safetext.OneLine(team, 80)), e.SHA256, grantResultText(e.Status))
+		fmt.Fprintf(w, "  %s  %s  %s  %s  %s\n", e.At.Local().Format("2006-01-02 15:04"), safetext.Terminal(e.Slug), safetext.Terminal(safetext.OneLine(team, 80)), e.SHA256, grantResultText(e))
 	}
 }
 
-func grantResultText(status string) string {
+func grantResultText(e contextlib.ShareAudit) string {
+	status := e.Status
+	switch {
+	case !e.Counts():
+		return "not shared: you are not a member of this team (not counted toward the hourly limit)"
+	case e.RefusedNotMember():
+		return "not shared: you are not a member of this team"
+	}
 	switch approvals.Status(status) {
 	case approvals.StatusDone:
 		return "shared"
@@ -256,16 +266,17 @@ func installContextShareGrant(opt *daemon.Options, m *approvals.Manager, g conte
 	led := contextlib.NewLedger(contextLedgerIn(filepath.Dir(opt.StateDir)))
 	return func() {
 		m.RegisterAutoApprover(contexttools.ShareFileOperation, contexttools.AutoApproveShareFile(contexttools.ShareGrantOptions{
-			Grant: g, Ledger: led, Provider: p,
+			Grant: g, Ledger: led, Provider: p, FailureCode: m.FailureCode,
 		}))
 	}, func() { _ = g.Wipe() }
 }
 
 func contextShareGrantStatus(ctx context.Context, g contextlib.ShareGrant, p fleetapi.Provider, acct contextlib.Account) *daemon.ContextShareGrant {
 	_, on := g.On(acct)
-	out := &daemon.ContextShareGrant{On: on && contexttools.OrgAllowsShareGrant(ctx, p), HourlyCap: contextlib.MaxGrantedSharesPerHour}
+	out := &daemon.ContextShareGrant{On: on && contexttools.OrgAllowsShareGrant(ctx, p), HourlyCap: contextlib.MaxGrantedSharesPerHour, RefusedCap: contextlib.MaxRefusedGrantSharesPerHour}
 	if out.On {
 		out.UsedThisHour = g.UsedThisHour(acct, time.Now())
+		out.RefusedThisHour = g.RefusedThisHour(acct, time.Now())
 	}
 	return out
 }

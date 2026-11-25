@@ -32,6 +32,15 @@ import (
 // and a shared file is readable by a whole team.
 const MaxGrantedSharesPerHour = 30
 
+// MaxRefusedGrantSharesPerHour bounds the shares in a clock hour that the grant took
+// and Kameas Fleet refused because the member isn't in the team. Such a refusal
+// doesn't use one of the hour's MaxGrantedSharesPerHour, so without a bound of its
+// own a caller could have the relay send any number of them. It should never be
+// reached: the tools refuse such a share before the grant is asked, and this many
+// membership changes in an hour isn't a person's work. Once it is reached the
+// grant takes nothing more that hour, and every share waits for the person.
+const MaxRefusedGrantSharesPerHour = 10
+
 // maxShareAudit is how many grant shares the history keeps: several hours at the cap.
 const maxShareAudit = 500
 
@@ -91,7 +100,37 @@ type ShareAudit struct {
 	// Status is how the request ended: done, failed or canceled (nothing was shared),
 	// or executing or reconciling (sent, not confirmed when this was written).
 	Status string `json:"status"`
+	// Reason is the machine code a failed share ended with, when there is one.
+	Reason string `json:"reason,omitempty"`
+	// Counted marks a not_team_member refusal that used one of the hour's slots
+	// all the same, because the hour's allowance of free ones was spent
+	// (MaxRefusedGrantSharesPerHour).
+	Counted bool `json:"counted,omitempty"`
 }
+
+// ReasonNotTeamMember is Kameas Fleet's refusal of a share to a team the member
+// doesn't belong to.
+const ReasonNotTeamMember = "not_team_member"
+
+// Counts reports whether this share uses one of the hour's slots. Every attempt
+// does, whatever became of it: done, still being sent, canceled, or failed for a
+// reason that may have left something on Kameas Fleet or may happen again at once
+// (a network failure, a conflict, a refusal of the text). The one exception is a
+// share refused outright because the member isn't in the team: nothing was sent
+// that Fleet kept, the same request can never succeed, and the tools refuse it
+// before it gets this far, so it reaches here only when a membership changed
+// between the tool's check and the upload.
+func (e ShareAudit) Counts() bool {
+	return !e.RefusedNotMember() || e.Counted
+}
+
+// RefusedNotMember reports whether this share failed because the member isn't in
+// the team, counted or not.
+func (e ShareAudit) RefusedNotMember() bool {
+	return e.Status == "failed" && e.Reason == ReasonNotTeamMember
+}
+
+func sameHour(a, b time.Time) bool { return a.Unix()/3600 == b.Unix()/3600 }
 
 type sealedGrantFile struct {
 	Body json.RawMessage `json:"body"`
@@ -242,21 +281,43 @@ func (g ShareGrant) Record(e ShareAudit) error {
 	var all []ShareAudit
 	g.read(grantAuditFile, &all)
 	all = append(all, e)
-	if len(all) > maxShareAudit {
-		all = all[len(all)-maxShareAudit:]
-	}
-	return g.write(grantAuditFile, all)
+	return g.write(grantAuditFile, trimAudit(all, e.At))
 }
 
-// Settle sets the final status of the share made for request id.
-func (g ShareGrant) Settle(requestID, status string) error {
+// trimAudit keeps the history to maxShareAudit lines, dropping the oldest. A line
+// that counts toward the cap of the clock hour of now is dropped last of all, after
+// every other line: the cap is read from these lines, so nothing that doesn't count
+// (a refused share, another hour's or another account's line) can push one out and
+// hand its slot back.
+func trimAudit(all []ShareAudit, now time.Time) []ShareAudit {
+	over := len(all) - maxShareAudit
+	if over <= 0 {
+		return all
+	}
+	kept := make([]ShareAudit, 0, maxShareAudit)
+	for _, e := range all {
+		if over > 0 && !(sameHour(e.At, now) && e.Counts()) {
+			over--
+			continue
+		}
+		kept = append(kept, e)
+	}
+	// Only counted lines of this hour are left to drop: more of them than the
+	// history holds, which the cap itself rules out.
+	return kept[len(kept)-min(len(kept), maxShareAudit):]
+}
+
+// Settle sets the final status of the share made for request id, and for a failed
+// one the machine code it failed with, if known. counted says a not_team_member
+// refusal used a slot all the same (ShareAudit.Counted).
+func (g ShareGrant) Settle(requestID, status, reason string, counted bool) error {
 	var all []ShareAudit
 	if !g.read(grantAuditFile, &all) {
 		return nil
 	}
 	for i := range all {
 		if all[i].RequestID == requestID {
-			all[i].Status = status
+			all[i].Status, all[i].Reason, all[i].Counted = status, reason, counted
 		}
 	}
 	return g.write(grantAuditFile, all)
@@ -274,11 +335,25 @@ func (g ShareGrant) History(a Account) []ShareAudit {
 	return out
 }
 
-// UsedThisHour counts a's shares under the grant in the clock hour of now.
+// UsedThisHour counts a's shares under the grant in the clock hour of now: every
+// attempt, whatever its outcome, but one Fleet refused because the member isn't in
+// the team (ShareAudit.Counts).
 func (g ShareGrant) UsedThisHour(a Account, now time.Time) int {
 	n := 0
 	for _, e := range g.History(a) {
-		if e.At.Unix()/3600 == now.Unix()/3600 {
+		if sameHour(e.At, now) && e.Counts() {
+			n++
+		}
+	}
+	return n
+}
+
+// RefusedThisHour counts a's shares in the clock hour of now that the grant took
+// and Fleet refused because the member isn't in the team, counted or not.
+func (g ShareGrant) RefusedThisHour(a Account, now time.Time) int {
+	n := 0
+	for _, e := range g.History(a) {
+		if sameHour(e.At, now) && e.RefusedNotMember() {
 			n++
 		}
 	}

@@ -964,7 +964,10 @@ func SyncSummary(st memory.SyncStatus, available bool) string {
 		b.WriteString("Memory sync is not available in this build; notes stay on this device.")
 	case st.ErasePending:
 		b.WriteString("Erasing this account's memory in Kameas Fleet is in progress; nothing new syncs until Fleet confirms.")
-		if st.StatusCode != "" && st.StatusCode != "erase_pending" {
+		switch {
+		case st.StatusCode == "rate_limited":
+			b.WriteString(" " + usertext.EraseAskedAgain)
+		case st.StatusCode != "" && st.StatusCode != "erase_pending":
 			b.WriteString(" " + usertext.EraseTryingAgain)
 		}
 	case st.Enabled && st.StatusCode == "consent_reconfirm":

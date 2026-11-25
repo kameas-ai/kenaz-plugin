@@ -133,13 +133,16 @@ func StableFileID(orgID, teamID, name string) string {
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
-// Syncer is one sync of one team's folder.
+// Syncer is one sync of one team's folder. Pull works for any team the member can
+// read. Plan and Send are for a team the member belongs to: Teams, which is the
+// member's teams as /me lists them, decides, and a Syncer without it sends nothing.
 type Syncer struct {
 	Store SyncStore
 	Set   contextlib.Set
 	Led   contextlib.Ledger
 	Acct  contextlib.Account
 	Team  fleetapi.TeamRef
+	Teams Teams
 
 	folder string
 	links  map[string]contextlib.LinkedFile
@@ -159,6 +162,9 @@ type syncSeen struct {
 // Folder is the team's folder name.
 func (s *Syncer) Folder() string { return s.folder }
 
+// CodeNoFolder: no folder name is free for a team's files on this device.
+const CodeNoFolder = "no_folder"
+
 // SyncLegacy is what's left of an older folder: files that aren't sent, because they can't
 // be claimed, and whether its owner's record can't be read.
 type SyncLegacy struct {
@@ -167,6 +173,10 @@ type SyncLegacy struct {
 	Unreadable bool
 	// Claim is set when this run made the folder this owner's.
 	Claim *FolderClaim
+	// Beside is set, for a team the member only reads, when a folder of the
+	// team's name was passed over because it holds files: it is that folder,
+	// which keeps its record and those files, and the team's copies are in another.
+	Beside string
 }
 
 // FolderClaim is a folder this run bound. Prior is its record before, if any, and HadFiles
@@ -182,7 +192,17 @@ type FolderClaim struct {
 // bound to anyone else is never used. An older folder with no record is taken unless a
 // file in it is linked to someone else: then this owner's own files move to a new folder,
 // and the rest stay where they are, reported and not sent.
-func ResolveTeamFolder(set contextlib.Set, led contextlib.Ledger, owner contextlib.FolderOwner, name string) (string, SyncLegacy, error) {
+//
+// readOnly says the member can read this team's context and isn't in it, so the
+// folder is only ever a place for copies that came down. Such a team never takes a
+// folder that already holds files: they are the person's own, or another team's,
+// and binding their folder to a team they can't share to would leave their drafts
+// in a folder that sends nothing, among files that aren't theirs. The copies go to
+// the next free folder, and Beside names the one passed over. That folder's
+// record and the person's files in it are untouched; the one thing that moves
+// out of it, as for any team, is a copy the ledger shows this account pulled
+// from this same team (moveProvable), which goes with the team's other copies.
+func ResolveTeamFolder(set contextlib.Set, led contextlib.Ledger, owner contextlib.FolderOwner, name string, readOnly bool) (string, SyncLegacy, error) {
 	lib := set.Team
 	want := contextlib.FolderName(name)
 	if f, ok := lib.FindFolder(owner); ok {
@@ -192,8 +212,17 @@ func ResolveTeamFolder(set contextlib.Set, led contextlib.Ledger, owner contextl
 		return f, legacyOf(set, led, owner, want), nil
 	}
 	candidates := []string{want, want + "-" + shortID(owner.TeamID), want + "-" + contextlib.FolderName(owner.TeamID)}
+	beside := ""
 	for _, folder := range candidates {
 		cur, bound := lib.FolderOwner(folder)
+		if readOnly {
+			if _, has := lib.FolderHasFiles(folder); has {
+				if beside == "" {
+					beside = folder
+				}
+				continue
+			}
+		}
 		if bound && !(cur.Unassigned && cur.Account() == owner.Account()) {
 			continue
 		}
@@ -213,10 +242,14 @@ func ResolveTeamFolder(set contextlib.Set, led contextlib.Ledger, owner contextl
 		}
 		claim.Moved = moveProvable(set, led, owner, want, folder)
 		legacy := legacyOf(set, led, owner, want)
-		legacy.Claim = claim
+		legacy.Claim, legacy.Beside = claim, beside
 		return folder, legacy, nil
 	}
-	return "", SyncLegacy{}, errors.New("no free folder")
+	// Every name this team's folder could have is taken: by another account, by
+	// another team, or, for a team the member only reads, by files that aren't
+	// that team's. Nothing was brought down, and Fleet had no part in it.
+	return "", SyncLegacy{}, &ToolError{Code: CodeNoFolder,
+		Message: "Kenaz has no folder to keep " + name + "'s files in: " + strings.Join(candidates, ", ") + " are all in use, by another account or team or by files that aren't " + name + "'s. Nothing was brought down. Rename or move one of those folders and run this again."}
 }
 
 // unbound sorts the files in a folder with no record: this owner's by their links, those
@@ -323,7 +356,7 @@ type PullResult struct {
 func (s *Syncer) Pull(ctx context.Context) (PullResult, error) {
 	var res PullResult
 	acct := contextlib.FolderOwner{Env: s.Acct.Env, OrgID: s.Acct.OrgID, UserID: s.Acct.UserID, TeamID: s.Team.ID}
-	folder, legacy, err := ResolveTeamFolder(s.Set, s.Led, acct, s.Team.Name)
+	folder, legacy, err := ResolveTeamFolder(s.Set, s.Led, acct, s.Team.Name, s.Teams.ShareRefusal(s.Team.ID) != nil)
 	if err != nil {
 		return res, err
 	}
@@ -555,8 +588,15 @@ func (p SyncPlan) FromMemory() int {
 
 // Plan reads the folder, after Pull, and works out what would go up. Only this team's
 // folder is read: your own files, and a repository's, are never part of it.
+//
+// A folder whose team the member can only read is never planned: its files came
+// down from that team and nothing in it goes up. The refusal is the same one a
+// share to that team gets (Teams.ShareRefusal).
 func (s *Syncer) Plan(ctx context.Context) (SyncPlan, error) {
 	var plan SyncPlan
+	if refusal := s.Teams.ShareRefusal(s.Team.ID); refusal != nil {
+		return plan, refusal
+	}
 	files, _, truncated, err := s.Set.Team.List(ctx)
 	if err != nil {
 		return plan, err
@@ -694,6 +734,7 @@ const (
 	SyncRemoved     = "removed"
 	SyncPromoted    = "promoted"
 	SyncBlocked     = "blocked"
+	SyncNotMember   = "not_team_member"
 	SyncUnreachable = "unreachable"
 	SyncRefusedElse = "refused"
 )
@@ -710,8 +751,11 @@ func Retryable(err error) bool {
 	return errors.Is(err, approvals.ErrOutcomeUnknown) || approvals.CodeOf(err) == CodeFleetError
 }
 
-// Send writes one file.
+// Send writes one file, to a team the member belongs to and no other.
 func (s *Syncer) Send(ctx context.Context, it SyncItem) (PushResult, error) {
+	if s.Teams.ShareRefusal(it.put.TeamID) != nil {
+		return PushResult{Outcome: SyncNotMember}, nil
+	}
 	return s.result(ctx, it, s.Store.Put(ctx, it.put))
 }
 
@@ -731,6 +775,9 @@ func (s *Syncer) result(ctx context.Context, it SyncItem, err error) (PushResult
 		return PushResult{Outcome: SyncPromoted}, nil
 	case CodeCredentialDetected:
 		return PushResult{Outcome: SyncBlocked}, nil
+	case CodeNotTeamMember:
+		// The member left the team, or can now only read it, since the plan was made.
+		return PushResult{Outcome: SyncNotMember}, nil
 	case failNodeChanged:
 		// Someone got there first: theirs at the name, and this text beside it.
 		cur, found, rerr := s.Store.File(ctx, it.put.Local.NodeID)

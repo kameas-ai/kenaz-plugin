@@ -30,12 +30,17 @@ type TeamRef struct {
 	// and for a team directly under it. The caller need not be a member of
 	// them.
 	Path []string
-	// Slug is the team's short name for paths. Fleet does not send it yet:
-	// always "" until it does.
+	// Slug is the team's short name for paths. Fleet sends it on every
+	// team; "" only from a Fleet, or a Fleet connection, that predates it.
 	Slug string
-	// Membership is how the caller comes to be in the team:
-	// TeamMembershipDirect or TeamMembershipInherited. Fleet does not send it
-	// yet: always "" until it does.
+	// Membership is how the row comes to be in the list. Fleet sends it on
+	// every row: TeamMembershipDirect for a team the caller belongs to,
+	// TeamMembershipInherited for one the caller can read context from
+	// without being a member of it (an ancestor of one of their teams, or a
+	// team below one of their direct non-default teams). Inherited rows
+	// appear only once Fleet turns on reading context across the team tree,
+	// and carry no Role. "" only from a Fleet, or a Fleet connection, that
+	// predates the field, and then the row is a team the caller belongs to.
 	Membership string
 }
 
@@ -47,6 +52,61 @@ const (
 	TeamMembershipDirect    = "direct"
 	TeamMembershipInherited = "inherited"
 )
+
+// Inherited reports whether the caller can read this team's context without
+// being a member of it. Such a team is never one the caller can share to:
+// Fleet refuses the write (not_team_member).
+func (t TeamRef) Inherited() bool { return t.Membership == TeamMembershipInherited }
+
+// MemberTeams returns the teams the caller belongs to: every row of teams
+// that is not inherited. An empty Membership counts as belonging, since a
+// Fleet or a Fleet connection that predates the field lists only the caller's
+// own teams. Use it wherever a share target or a fact about membership is
+// needed; reading context may use every row.
+func MemberTeams(teams []TeamRef) []TeamRef {
+	n := 0
+	for _, t := range teams {
+		if !t.Inherited() {
+			n++
+		}
+	}
+	if n == len(teams) {
+		return teams
+	}
+	out := make([]TeamRef, 0, n)
+	for _, t := range teams {
+		if !t.Inherited() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+type inheritedTeamsKey struct{}
+
+// WithInheritedTeams returns ctx carrying the caller's declaration, for a
+// Me.Get made with it, that it handles inherited team rows: it treats every
+// row whose Membership is TeamMembershipInherited as a team to read context
+// from and never as a team to share to (MemberTeams gives the others).
+//
+// It is off unless a caller sets it, call by call. Fleet lists inherited rows
+// only for a client that asks for them, and asking is this promise, so an
+// implementation asks only for a Me.Get whose ctx carries the declaration
+// (InheritedTeamsRequested) and otherwise returns the caller's own teams and
+// nothing else. A caller that has not made the promise therefore never sees
+// a row it could mistake for a membership, whatever the implementation or
+// Fleet can do. An implementation that keeps Me.Get's answer must not hand
+// one fetched with the declaration to a call made without it.
+func WithInheritedTeams(ctx context.Context) context.Context {
+	return context.WithValue(ctx, inheritedTeamsKey{}, true)
+}
+
+// InheritedTeamsRequested reports whether ctx carries WithInheritedTeams'
+// declaration. Implementations of Me read it; see WithInheritedTeams.
+func InheritedTeamsRequested(ctx context.Context) bool {
+	on, _ := ctx.Value(inheritedTeamsKey{}).(bool)
+	return on
+}
 
 // TreeKnown reports whether Fleet sent the team tree fields for these teams. It
 // goes by Role, which Fleet sends on every team once it has the tree, and by
@@ -63,6 +123,11 @@ func TreeKnown(teams []TeamRef) bool {
 // DefaultTeam returns the team Fleet flagged as the organization's all-members
 // team. ok is false when no team is flagged: a Fleet that predates the flag,
 // or no teams at all. It never guesses from position or name.
+//
+// The flagged row says which team everyone in the organization reads; it does
+// not say the caller can share to it. Fleet lists the default team as an
+// inherited row for a caller with no membership row on it, so check
+// Inherited (or look in MemberTeams) before treating it as a share target.
 func DefaultTeam(teams []TeamRef) (t TeamRef, ok bool) {
 	for _, t := range teams {
 		if t.IsDefault {
@@ -70,6 +135,34 @@ func DefaultTeam(teams []TeamRef) (t TeamRef, ok bool) {
 		}
 	}
 	return TeamRef{}, false
+}
+
+// TeamsDegraded says that MeInfo.Teams is not everything Fleet sent, in counts
+// only: never a team's id or name. A provider that reads /me tolerantly, so
+// that one row it can't make sense of doesn't cost the member all their teams,
+// sets it; the zero value means Teams is what Fleet sent, or that the provider
+// doesn't say. Without it a member whose rows were all held back looks exactly
+// like a member of no team.
+type TeamsDegraded struct {
+	// Skipped is the rows the provider could not read at all.
+	Skipped int
+	// Withheld is the rows it read and held back, because showing them could
+	// mislead: for example a row with a membership it doesn't know.
+	Withheld int
+	// TreeDropped is the rows it returned without their team tree fields
+	// (IsDefault, Role, ParentTeamID, Depth, Path), because those didn't hold
+	// together. The rows are in Teams.
+	TreeDropped int
+	// NotAList says Fleet's teams was not a list at all, and Teams is empty.
+	NotAList bool
+}
+
+// Hidden is how many rows Fleet sent that are not in Teams.
+func (d TeamsDegraded) Hidden() int { return max(d.Skipped, 0) + max(d.Withheld, 0) }
+
+// Any reports whether anything was skipped, withheld, dropped or unreadable.
+func (d TeamsDegraded) Any() bool {
+	return d.Hidden() > 0 || d.TreeDropped > 0 || d.NotAList
 }
 
 // MeInfo is GET /api/v1/me, reduced to what public code uses. Fleet keeps
@@ -85,6 +178,10 @@ type MeInfo struct {
 	OrgPaused      bool
 	PausedCategory string
 	Teams          []TeamRef
+	// TeamsDegraded is set by a provider when Teams is not everything Fleet
+	// sent. Optional: the zero value says nothing was held back, or that the
+	// provider doesn't report it.
+	TeamsDegraded TeamsDegraded
 	// OrgSizeBand is Fleet's coarse org-size band for the analytics floor:
 	// "sole" (1 Authorized User), "small" (2–4), "standard"
 	// (5+), or "" when Fleet does not send it. It selects the Agent
@@ -108,7 +205,10 @@ func (c Capabilities) Has(k string) bool { return c.Keys[k] }
 
 // Me reads the caller's identity and entitlements.
 type Me interface {
-	// Get returns /me for the active session.
+	// Get returns /me for the active session. Teams holds the caller's own
+	// teams; it also holds the teams the caller can only read (Membership
+	// TeamMembershipInherited) when Fleet lists them and only if ctx carries
+	// WithInheritedTeams.
 	Get(ctx context.Context) (MeInfo, error)
 	// Capabilities returns /me/capabilities. Callers poll about every 5
 	// minutes.

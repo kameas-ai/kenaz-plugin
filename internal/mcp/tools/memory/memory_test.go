@@ -6,6 +6,7 @@ import (
 	"go/build"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -452,9 +453,28 @@ func TestRecallNoticeOnce(t *testing.T) {
 	}
 }
 
+// A forget-all waiting for Fleet's allowance says why and that Kenaz keeps
+// asking. It names no time: none it could name would be kept.
+func TestSyncSummaryWhenTheEraseAllowanceIsSpent(t *testing.T) {
+	st := memory.SyncStatus{SyncSettings: memory.SyncSettings{Enabled: true, ErasePending: true, StatusCode: "rate_limited"}}
+	got := SyncSummary(st, true)
+	want := "Kameas Fleet takes only a few erase requests an hour; Kenaz asks again every few minutes, whenever your AI tool is running, until it is accepted."
+	if !strings.Contains(got, want) || strings.Contains(got, usertext.EraseTryingAgain) {
+		t.Fatal(got)
+	}
+	if regexp.MustCompile(`\d\d:\d\d`).MatchString(got) {
+		t.Fatalf("the status names a time: %s", got)
+	}
+	for _, bad := range []string{"failed", "kept", "couldn't", "didn't"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("says %q: %s", bad, got)
+		}
+	}
+}
+
 // However an attempt went, the status never says the erase failed or that notes were kept.
 func TestSyncSummaryWhileErasing(t *testing.T) {
-	for code, again := range map[string]bool{"": false, "erase_pending": false, "fleet_unavailable": true, "rate_limited": true} {
+	for code, again := range map[string]bool{"": false, "erase_pending": false, "fleet_unavailable": true, "rate_limited": false} {
 		st := memory.SyncStatus{SyncSettings: memory.SyncSettings{Enabled: true, ErasePending: true, StatusCode: code}}
 		got := SyncSummary(st, true)
 		if strings.Contains(got, usertext.EraseTryingAgain) != again {
