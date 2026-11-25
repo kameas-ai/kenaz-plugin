@@ -2,6 +2,7 @@ package variant_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -315,6 +316,13 @@ func (m *machine) tree(dir string, contents func(rel string) bool) string {
 		fmt.Fprintf(&b, "== %s\n", m.norm(rel))
 		if contents(rel) {
 			c, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+			if bytes.IndexByte(c, 0) >= 0 {
+				// A binary file (the listing icon) is pinned by size and
+				// digest, not dumped into the golden.
+				sum := sha256.Sum256(c)
+				fmt.Fprintf(&b, "(binary, %d bytes, sha256 %x)\n", len(c), sum)
+				continue
+			}
 			b.WriteString(m.norm(string(c)))
 			if len(c) > 0 && c[len(c)-1] != '\n' {
 				b.WriteString("\n")

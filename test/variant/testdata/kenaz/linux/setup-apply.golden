@@ -198,7 +198,7 @@ $TIME
       "name": "kenaz",
       "source": "./plugin",
       "version": "$VERSION",
-      "description": "Kenaz, a Kameas AI product. Connects AI tools such as Claude Code, Cowork and Codex to your organization's Kameas Fleet: shared skills, team context, your private memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
+      "description": "Kenaz, a Kameas AI product. Connects AI tools such as Claude Code, Cowork and Codex to your organization's Kameas Fleet: shared skills, team context, your own memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. OpenAI and Codex are trademarks of OpenAI. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic or OpenAI.",
       "license": "Apache-2.0",
       "homepage": "https://kameas.ai"
     }
@@ -206,11 +206,13 @@ $TIME
 }
 == .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/.kenaz-rendered
 $SHA256
+== .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.claude-plugin/icon.png
+(binary, 31427 bytes, sha256 $SHA256)
 == .kenaz/plugin/prod/setup/bundle/$VERSION_$PLATFORM/plugin/.claude-plugin/plugin.json
 {
   "name": "kenaz",
   "version": "$VERSION",
-  "description": "Kenaz, a Kameas AI product. Connects Claude Code and Cowork on your computer to your organization's Kameas Fleet: shared skills, team context and your private memory, and in Claude Code, usage summaries you choose to share. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic.",
+  "description": "Kenaz, a Kameas AI product. Connects Claude Code and Cowork on your computer to your organization's Kameas Fleet: shared skills, team context and your own memory, and in Claude Code, usage summaries you choose to share. Requires the kenaz program and a Kameas Fleet account. Claude, Claude Code and Cowork are trademarks of Anthropic, PBC. Kenaz and Kameas are trademarks of Kameas AI, Inc. Kenaz is an independent product of Kameas AI, Inc. and is not affiliated with, endorsed or sponsored by Anthropic.",
   "author": {
     "name": "Kameas AI, Inc.",
     "url": "https://kameas.ai"
@@ -509,7 +511,7 @@ $SHA256
 
 Kenaz for Claude Code and Codex. One plugin package, loaded by both harnesses from `.claude-plugin/`.
 
-It gives your AI tool your organization's shared skills, team context and a private memory from Kameas Fleet, and in Claude Code it can share usage summaries you choose. Its MCP server and hooks run the `kenaz` program directly, so `kenaz` must be on your `PATH`, and you need a Kameas Fleet sign-in (`kenaz login`). Requires a Kameas Fleet account.
+It gives your AI tool your organization's shared skills, team context and your own memory from Kameas Fleet, and in Claude Code it can share usage summaries you choose. Its MCP server and hooks run the `kenaz` program directly, so `kenaz` must be on your `PATH`, and you need a Kameas Fleet sign-in (`kenaz login`). Requires a Kameas Fleet account.
 
 ### Before you install: the `kenaz` program
 

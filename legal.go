@@ -39,11 +39,23 @@ const DisclaimerGAnthropicOpenAI = "Claude, Claude Code and Cowork are trademark
 // ClaudePluginDescription is the approved description in
 // plugin/.claude-plugin/plugin.json, read by Claude Code and Cowork and
 // shown in the Claude directory.
-const ClaudePluginDescription = "Kenaz, a Kameas AI product. Connects Claude Code and Cowork on your computer to your organization's Kameas Fleet: shared skills, team context and your private memory, and in Claude Code, usage summaries you choose to share. Requires the kenaz program and a Kameas Fleet account. " + DisclaimerGAnthropic
+//
+// Deliberate deviation: the approved listing copy says "your private memory".
+// By owner decision of 2026-11-25 this says "your own memory" instead,
+// because administrators and the team leads above a member can read the
+// member's synced notes if the organization allows it (privacy policy
+// section 13). Every other character is as approved.
+const ClaudePluginDescription = "Kenaz, a Kameas AI product. Connects Claude Code and Cowork on your computer to your organization's Kameas Fleet: shared skills, team context and your own memory, and in Claude Code, usage summaries you choose to share. Requires the kenaz program and a Kameas Fleet account. " + DisclaimerGAnthropic
 
 // MarketplaceDescription is the approved description of the kenaz entry in
 // .claude-plugin/marketplace.json, imported by Claude Code and Codex.
-const MarketplaceDescription = "Kenaz, a Kameas AI product. Connects AI tools such as Claude Code, Cowork and Codex to your organization's Kameas Fleet: shared skills, team context, your private memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. " + DisclaimerGAnthropicOpenAI
+//
+// Deliberate deviation: the approved listing copy says "your private memory".
+// By owner decision of 2026-11-25 this says "your own memory" instead,
+// because administrators and the team leads above a member can read the
+// member's synced notes if the organization allows it (privacy policy
+// section 13). Every other character is as approved.
+const MarketplaceDescription = "Kenaz, a Kameas AI product. Connects AI tools such as Claude Code, Cowork and Codex to your organization's Kameas Fleet: shared skills, team context, your own memory and, where you choose, usage summaries. Requires the kenaz program and a Kameas Fleet account. " + DisclaimerGAnthropicOpenAI
 
 // MarketplaceMetadataDescription is the marketplace's own description.
 const MarketplaceMetadataDescription = "Kenaz plugins. " + DisclaimerGAnthropicOpenAI

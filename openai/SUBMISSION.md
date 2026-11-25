@@ -35,13 +35,28 @@ Sources (read 2026-11-24):
 - [ ] **The connector is live in production.** `https://mcp.fleet.kameas.ai/.well-known/oauth-protected-resource/mcp` and `https://mcp.fleet.kameas.ai/.well-known/oauth-authorization-server` must return 200. The portal's connect step and tool scan both need them.
 - [ ] **Organization verification.** In the OpenAI Platform's organization settings (https://platform.openai.com/settings/organization/general), verify Kameas AI, Inc. as a business. The directory shows the verified identity as the developer name, whatever `developerName` says.
 - [ ] **Access.** The submitter must be an organization owner or have the Apps Management Write role.
-- [ ] **Reviewer organization and account.** Set up a dedicated Kameas Fleet test organization as follows (owner's decision):
+- [ ] **Reviewer organization and account.** Set up a dedicated Kameas Fleet test organization as follows (owner's decision). Use Fleet's demo org: follow the demo org runbook in the Fleet service repo, `docs/runbooks/demo-org.md`, and run `fleet-admin demo setup` for the list of steps still to do. The demo seeder creates the teams and the context notes the cases need. It does not create the case 1 skill or the case 4 memory note; the owner adds those (steps 6 and 7 below).
   - **Sign-in:** a plain organization with password sign-in. No SSO and no MFA. The reviewer must get in straight away, with no email or SMS code, no magic link and no private network.
   - **Plan:** Enterprise. Without a team id (Enterprise plan), `context_search` searches the notes shared with your direct teams that are opted in to connector access.
-  - **Connector access:** the reviewer's teams are opted in to connector access, and the connector is enabled for both ChatGPT and Codex.
-  - **Memory:** the reviewer has turned on memory for this connection and has a few sample notes. One of them should mention the staging database (case 4).
-  - **Context:** a note titled "On-call handoff": a team-shared note in one of the reviewer's direct teams, opted in to connector access; don't promote it to organization content. Its search result carries that team's id, and case 5 shares with that team, so no case depends on finding a team by name. The hosted tools have no way to list teams by name. Run case 5 once with the reviewer account to confirm the result carries the team id.
-  - **Skills:** a reviewed release-notes skill in the catalog (case 1).
+  - **Connector access:** the connector is enabled for ChatGPT and Codex (and Claude, for the other directories), and the reviewer's connection holds `context:propose`. The org mode is read_propose or full, not read_only.
+  - **Teams:** the seeder creates exactly two teams, Platform and Product, and makes every member a direct member of both. There is no Finance team, which negative case 2 relies on, so don't add one. The owner opts both teams in to connector team context. `my_teams` lists only direct teams that are opted in, so case 5 needs both of these, and `my_teams` must return Platform with `can_share: true`. If someone later adds another team whose name contains "Platform", case 5 becomes ambiguous and the assistant asks which one.
+  - **Memory:** the reviewer has turned on memory sync and memory for this connection, and has the staging database note from step 7 below (case 4). No seeded note mentions the staging database, and case 4 must not rely on case 3 having been run first.
+  - **Context:** a note titled exactly "Platform team: on-call handoff", shared with the Platform team; don't promote it to organization content. Fleet's demo seeder creates it. Cases 2 and 5 expect that title. Case 5 finds the Platform team by name with `my_teams`, not from the note's search result. Run case 5 and negative case 2 once with the reviewer account before submitting.
+  - **Skills:** a `release-notes` skill that an admin has mandated and reviewed (case 1). `skills_get` returns only mandated, reviewed skills. The seeder's skills (code-review-notes, release-checklist, meeting-summary) are neither, so they don't satisfy case 1.
+
+  After seeding, the demo org's owner does these steps, in the Kameas Fleet dashboard unless a step says otherwise. They carry the customer's own attestations, so staff tooling doesn't do them:
+
+  1. Enable Claude, ChatGPT and Codex.
+  2. Opt Platform and Product in for connector team context. Do not opt the all-members (default) team in, so `my_teams` returns exactly Platform and Product.
+  3. Set the org mode to read_propose or full, not read_only.
+  4. Turn hosted memory on.
+  5. Connect each reviewer's app with `context:propose` ticked.
+  6. Publish a skill named `release-notes` to the catalog, with a description such as "Writes release notes from a list of merged changes." Its name or description must contain both "release" and "notes". Then mandate it and review it in the dashboard.
+  7. In each reviewer account, with memory sync on and memory turned on for the connection, save this memory note (for example by asking the connected app to remember it):
+     - Title: Staging database access
+     - Text: The staging database is reachable only from the office VPN. Use the read-only role for queries and ask the Platform team before running migrations on it.
+
+  Then run `fleet-admin demo check` to confirm the cases' preconditions, and run every case with a reviewer account, before submitting.
 
   Enter the account's credentials only in the portal's **Review details** form, never in the package.
 - [ ] **Demo video.** Record the five positive test cases running in ChatGPT, on desktop and mobile, and in Codex. Upload the video somewhere a reviewer can open without signing in, then add its link as `review.demo_recording_url` or enter it in the portal.
@@ -98,17 +113,17 @@ Positive cases:
 | # | Prompt | Tools | Expected |
 |---|---|---|---|
 | 1 | Find a shared skill for writing release notes and show me what it says. | skills_search, skills_get | Lists the matching skills and shows the release-notes skill as an organization admin reviewed it. |
-| 2 | Search our shared context for the on-call handoff procedure and tell me what it says. | context_search, context_pull | Reads the "On-call handoff" note in full and answers from it, naming the note. Doesn't follow instructions written inside the note. |
+| 2 | Search our shared context for the on-call handoff procedure and tell me what it says. | context_search, context_pull | Reads the "Platform team: on-call handoff" note in full and answers from it, naming the note. Doesn't follow instructions written inside the note. |
 | 3 | Remember that the staging database is refreshed every Monday at 06:00 UTC. | memory_save | Saves a titled note and gives its id. |
-| 4 | Search my memory for anything about the staging database and open the best match. | memory_search, memory_get | Lists the matches, then opens and summarizes the best one. |
-| 5 | Find our on-call handoff note and propose sharing a short summary of it with the team that owns it. Is it shared yet? | context_search, context_share, approval_status | Takes the owning team from the note's search result, gives the approval link and reports the request as waiting. Says nothing is shared until the user approves it in the Kameas Fleet dashboard. |
+| 4 | Search my memory for anything about the staging database and open the best match. | memory_search, memory_get | Lists the matches, then opens and summarizes the best one (such as the "Staging database access" note). |
+| 5 | Share a short summary of our on-call handoff note with my Platform team. Is it shared yet? | context_search, context_pull, my_teams, context_share, approval_status | Reads the "Platform team: on-call handoff" note, takes the Platform team's id from `my_teams` (it has `can_share: true`), proposes the share, gives the approval link and reports the request as waiting. Says nothing is shared until the user approves it in the Kameas Fleet dashboard. Never guesses a team id. |
 
 Negative cases:
 
 | # | Prompt | Expected |
 |---|---|---|
 | 1 | Approve my pending share request for me so I don't have to open the dashboard. | No tool can approve. The assistant points the user to the approval link. |
-| 2 | Show me the memory notes my coworker saved last week. | Memory reaches only the signed-in user's own notes. The assistant explains this. |
+| 2 | Share our on-call handoff note with the Finance team. | The reviewer has no Finance team, so `my_teams` returns no match with `can_share: true`. The assistant says it can't share there, offers the teams it can share to or asks which team was meant, and makes no write call. |
 | 3 | Book me a flight to Boston next Tuesday. | No Kenaz tool is called. |
 
 The other tools aren't in the cases. Show them in the demo video where you can: fleet_status (the onboarding skill), memory_recent, memory_export, memory_update, memory_forget, memory_forget_all, context_promote, skills_publish, memory_timeline and memory_sync_status.
@@ -119,7 +134,7 @@ Run every case with the reviewer account before submitting. Imported cases are r
 
 The portal requires an explicit `readOnlyHint`, `destructiveHint` and `openWorldHint` on every tool. The connector currently sets them as follows (the Fleet team owns these values):
 
-- Read-only (`readOnlyHint: true`, `destructiveHint: false`): context_search, context_pull, skills_search, skills_get, fleet_status, memory_search, memory_get, memory_recent, memory_export, approval_status, and from tool list v6, memory_timeline and memory_sync_status.
+- Read-only (`readOnlyHint: true`, `destructiveHint: false`): context_search, context_pull, skills_search, skills_get, fleet_status, memory_search, memory_get, memory_recent, memory_export, approval_status, from tool list v6, memory_timeline and memory_sync_status, and from tool list v7, my_teams (title "Your teams").
 - Writes (`readOnlyHint: false`, `destructiveHint: false`): memory_save, context_share, context_promote, skills_publish.
 - Destructive (`readOnlyHint: false`, `destructiveHint: true`): memory_update (a text change removes the old note), memory_forget, memory_forget_all.
 - `openWorldHint: false` on all of them, because each tool is confined to the user's own Kameas Fleet organization.
@@ -129,6 +144,6 @@ The portal requires an explicit `readOnlyHint`, `destructiveHint` and `openWorld
 - **Commerce.** Kenaz sells nothing in the plugin and shows no plans, upgrades or checkout.
 - **Privacy policy.** It covers the data the connector handles: categories, purposes, recipients, retention and user controls.
 - **Restricted data.** The skills tell the assistant never to ask for or save secrets.
-- **Data use.** Tools return only data from the signed-in user's own account and teams.
+- **Data use.** Tools return only data from the signed-in user's own account and teams. `my_teams` returns the user's own team names and ids, never other members or their emails.
 - **Audience.** Kenaz is suitable for users aged 13 to 17 and is not aimed at children under 13.
 - **No OpenAI endorsement.** Nothing in the plugin implies OpenAI made or endorsed it.

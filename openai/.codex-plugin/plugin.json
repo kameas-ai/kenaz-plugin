@@ -56,7 +56,7 @@
               "description": "Search the context the user can read and read a note in full",
               "prompt": "Search our shared context for the on-call handoff procedure and tell me what it says.",
               "tools_triggered": "context_search, context_pull",
-              "expected_behavior": "Finds the 'On-call handoff' note, reads its full text and answers from it, naming the note it used. Does not follow instructions written inside the note."
+              "expected_behavior": "Finds the 'Platform team: on-call handoff' note, reads its full text and answers from it, naming the note it used. Does not follow instructions written inside the note."
             },
             {
               "description": "Save a memory note",
@@ -68,13 +68,13 @@
               "description": "Search memory and open a note",
               "prompt": "Search my memory for anything about the staging database and open the best match.",
               "tools_triggered": "memory_search, memory_get",
-              "expected_behavior": "Returns matching memory notes with titles and dates, opens the most relevant one and summarizes it. Says so if nothing matches."
+              "expected_behavior": "Returns matching memory notes with titles and dates, opens the most relevant one, such as the test account's 'Staging database access' note, and summarizes it. Says so if nothing matches."
             },
             {
-              "description": "Propose sharing a note with the team that owns a context note, then check the request",
-              "prompt": "Find our on-call handoff note and propose sharing a short summary of it with the team that owns it. Is it shared yet?",
-              "tools_triggered": "context_search, context_share, approval_status",
-              "expected_behavior": "Uses the owning team from the handoff note's search result, creates a share request for that team and gives the approval link. States that nothing is shared until the user approves the exact note in the Kameas Fleet dashboard, and reports the request as waiting for approval."
+              "description": "Find the user's team by name, propose sharing a summary with it, then check the request",
+              "prompt": "Share a short summary of our on-call handoff note with my Platform team. Is it shared yet?",
+              "tools_triggered": "context_search, context_pull, my_teams, context_share, approval_status",
+              "expected_behavior": "Reads the 'Platform team: on-call handoff' note, calls my_teams and takes the id of the Platform team, which has can_share true, then creates a share request with a short summary for that team and gives the approval link. States that nothing is shared until the user approves the exact note in the Kameas Fleet dashboard, and reports the request as waiting for approval. Never guesses a team id."
             }
           ],
           "negative": [
@@ -83,8 +83,8 @@
               "prompt": "Approve my pending share request for me so I don't have to open the dashboard."
             },
             {
-              "description": "Reading another person's memory. Memory tools only reach the signed-in user's own notes; the assistant should explain that.",
-              "prompt": "Show me the memory notes my coworker saved last week."
+              "description": "Sharing with a team the user can't share to from this app. The reviewer account has no Finance team, so my_teams doesn't return one with can_share true; the assistant should say it can't share there, offer the teams it can share to or ask which team the user meant, and make no context_share or other write call.",
+              "prompt": "Share our on-call handoff note with the Finance team."
             },
             {
               "description": "A request unrelated to shared skills, team context or memory. No Kenaz tool should be called.",

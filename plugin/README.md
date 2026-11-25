@@ -4,7 +4,7 @@
 
 Kenaz for Claude Code and Codex. One plugin package, loaded by both harnesses from `.claude-plugin/`.
 
-It gives your AI tool your organization's shared skills, team context and a private memory from Kameas Fleet, and in Claude Code it can share usage summaries you choose. Its MCP server and hooks run the `kenaz` program directly, so `kenaz` must be on your `PATH`, and you need a Kameas Fleet sign-in (`kenaz login`). Requires a Kameas Fleet account.
+It gives your AI tool your organization's shared skills, team context and your own memory from Kameas Fleet, and in Claude Code it can share usage summaries you choose. Its MCP server and hooks run the `kenaz` program directly, so `kenaz` must be on your `PATH`, and you need a Kameas Fleet sign-in (`kenaz login`). Requires a Kameas Fleet account.
 
 ### Before you install: the `kenaz` program
 

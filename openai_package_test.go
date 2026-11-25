@@ -46,6 +46,9 @@ var hostedTools = []string{
 	"context_share", "context_promote", "skills_publish",
 	// Tool list v6 adds these two read-only tools.
 	"memory_timeline", "memory_sync_status",
+	// Tool list v7 adds this read-only tool: the caller's own direct teams
+	// opted in to connector access, with the ids context_share takes.
+	"my_teams",
 }
 
 // openAIPackageFiles is every file the package may contain. A stray file
